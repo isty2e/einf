@@ -109,20 +109,3 @@ def forward(x):
 def slow_forward(x):
     return reduce(ax[b, n, d], ax[b, d])(x)
 ```
-
-## Docs
-
-- Spec index: `docs/spec/README.md`
-- Core spec: `docs/spec/SPEC.md`
-- Conformance: `docs/spec/CONFORMANCE.md`
-- Error model: `docs/spec/ERRORS.md`
-- Benchmarks: `docs/benchmarks/README.md`
-
-## Development
-
-```bash
-pytest -q
-basedpyright src tests
-ruff check --extend-select I,UP .
-ruff format .
-```
