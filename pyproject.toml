@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatch-vcs>=0.4", "hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+
+[project]
+name = "einf"
+dynamic = ["version"]
+description = "Tensor DSL with axis signatures and first-class TensorOp transforms."
+requires-python = ">=3.10"
+dependencies = [
+  "array-api-compat>=1.13",
+  "opt_einsum>=3.4",
+  "typing_extensions>=4.8; python_version < '3.11'",
+]
+
+
+[project.optional-dependencies]
+dev = [
+  "einx",
+  "einops",
+  "pytest>=8.0",
+]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/einf"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/einf/operations.pyi" = "einf/operations.pyi"
+"src/einf/py.typed" = "einf/py.typed"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/einf/**/*.py",
+  "src/einf/**/*.pyi",
+  "src/einf/py.typed",
+  "tests/**/*.py",
+  "pyproject.toml",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/einf/_version.py"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
