@@ -501,6 +501,31 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     )
     assert len(contract_outputs) == 1
 
+    contract_ir = lowering.ir_program(
+        op_name="contract",
+        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
+        rhs=AxisSide.from_spec(ax[b, n, j], side_name="rhs"),
+        explicit_sizes_items=(),
+    )
+    contract_plan = lowering.symbolic_candidates(
+        ir_program=contract_ir,
+        explicit_sizes_items=(),
+    )[0]
+    assert contract_plan.kind == "contract"
+    assert einop_contract_plan.kind == "contract"
+    assert len(contract_plan.steps) == 1
+    assert len(einop_contract_plan.steps) == 1
+
+    contract_step = contract_plan.steps[0]
+    einop_contract_step = einop_contract_plan.steps[0]
+    assert isinstance(contract_step, EinsumSymbolicStep)
+    assert isinstance(einop_contract_step, EinsumSymbolicStep)
+    assert contract_step.program == einop_contract_step.program
+    assert contract_step.preview_equations() == ("abc,cd->abd",)
+    assert einop_contract_step.preview_equations() == ("abc,cd->abd",)
+    assert contract_step.program.allow_native_matmul
+    assert einop_contract_step.program.allow_native_matmul
+
     route_abstract_plan = AbstractPlan(
         op_name="rearrange",
         lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),

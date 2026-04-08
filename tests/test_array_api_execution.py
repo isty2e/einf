@@ -11,6 +11,7 @@ import einf.steps.einsum.step as einsum_step_impl
 import einf.steps.permute as permute_step_module
 from einf import (
     ErrorCode,
+    TensorOp,
     ValidationError,
     ax,
     axes,
@@ -770,6 +771,7 @@ def test_contract_matrix_multiply_executes_with_numpy() -> None:
     left = np.arange(2 * 3).reshape(2, 3)
     right = np.arange(3 * 4).reshape(3, 4)
     result = op(left, right)
+    assert not isinstance(result, tuple)
 
     expected = left @ right
     np.testing.assert_array_equal(result, expected)
@@ -783,6 +785,15 @@ def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
+
+
+def _single_tensor_output(
+    result: TensorLike | tuple[TensorLike, ...],
+    /,
+) -> TensorLike:
+    if isinstance(result, tuple):
+        raise AssertionError("expected one tensor output")
+    return result
 
 
 def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
@@ -799,7 +810,37 @@ def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
 
     left = np.arange(2 * 3).reshape(2, 3)
     right = np.arange(3 * 4).reshape(3, 4)
-    result = op(left, right)
+    result = _single_tensor_output(op(left, right))
+    assert isinstance(result, np.ndarray)
+
+    expected = left @ right
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    "build_op",
+    (
+        lambda i, k, j: contract((ax[i, k], ax[k, j]), ax[i, j]),
+        lambda i, k, j: einop((ax[i, k], ax[k, j]), ax[i, j]),
+    ),
+)
+def test_atomic_contract_equivalent_numpy_ops_prefer_native_matmul_path(
+    monkeypatch: pytest.MonkeyPatch,
+    build_op: Callable[..., TensorOp],
+) -> None:
+    i, k, j = axes("i", "k", "j")
+    op = build_op(i, k, j)
+
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        _explode_opt_einsum_contract,
+    )
+
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+    result = _single_tensor_output(op(left, right))
+    assert isinstance(result, np.ndarray)
 
     expected = left @ right
     np.testing.assert_array_equal(result, expected)
@@ -821,7 +862,39 @@ def test_contract_matrix_multiply_torch_uses_native_einsum_path(
     assert torch is not None
     left = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3)
     right = torch.arange(3 * 4, dtype=torch.float32).reshape(3, 4)
-    result = op(left, right)
+    result = _single_tensor_output(op(left, right))
+    assert isinstance(result, torch.Tensor)
+
+    expected = left @ right
+    assert torch.equal(result, expected)
+
+
+@pytest.mark.skipif(torch is None, reason="requires torch")
+@pytest.mark.parametrize(
+    "build_op",
+    (
+        lambda i, k, j: contract((ax[i, k], ax[k, j]), ax[i, j]),
+        lambda i, k, j: einop((ax[i, k], ax[k, j]), ax[i, j]),
+    ),
+)
+def test_atomic_contract_equivalent_torch_ops_skip_opt_einsum_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    build_op: Callable[..., TensorOp],
+) -> None:
+    i, k, j = axes("i", "k", "j")
+    op = build_op(i, k, j)
+
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        _explode_opt_einsum_contract,
+    )
+
+    assert torch is not None
+    left = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3)
+    right = torch.arange(3 * 4, dtype=torch.float32).reshape(3, 4)
+    result = _single_tensor_output(op(left, right))
+    assert isinstance(result, torch.Tensor)
 
     expected = left @ right
     assert torch.equal(result, expected)

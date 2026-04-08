@@ -21,6 +21,17 @@ dev = [
   "einops",
   "pytest>=8.0",
 ]
+analysis = [
+  "libcst>=1.0",
+]
+lsp = [
+  "lsprotocol>=2023.0.0",
+  "pygls>=1.3",
+]
+
+[project.scripts]
+einf-validate = "einf.analysis.validator.cli:main"
+einf-lsp = "einf.analysis.lsp.cli:main"
 
 
 [tool.hatch.build.targets.wheel]
