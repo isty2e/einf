@@ -24,6 +24,7 @@ from .equation import build_contract_equation
 from .native import try_native_contract_einsum
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
 
 
 def _parse_binary_einsum_equation(
@@ -69,7 +70,7 @@ def _operand_shapes_key(
     return tuple(shape_key)
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=_CONTRACT_EXPRESSION_CACHE_MAXSIZE)
 def _cached_contract_expression(
     equation: str,
     operand_shapes: tuple[tuple[int, ...], ...],

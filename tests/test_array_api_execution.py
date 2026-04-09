@@ -946,6 +946,57 @@ def test_contract_three_inputs_reuses_cached_contract_expression(
     np.testing.assert_allclose(second, expected)
 
 
+def test_contract_expression_cache_is_shared_across_nary_contract_and_einop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    i, j, k, out = axes("i", "j", "k", "out")
+    contract_op = contract((ax[i, j], ax[j, k], ax[k, out]), ax[i, out])
+    einop_op = einop((ax[i, j], ax[j, k], ax[k, out]), ax[i, out])
+    compiled_calls = {"value": 0}
+
+    def _spy_contract_expression(
+        equation: str,
+        *operand_shapes: tuple[int, ...],
+        optimize: str,
+    ) -> Callable[..., np.ndarray]:
+        compiled_calls["value"] += 1
+        _ = operand_shapes
+        _ = optimize
+
+        def _run(*operands: np.ndarray) -> np.ndarray:
+            return np.einsum(equation, *operands, optimize=True)
+
+        return _run
+
+    einsum_step_impl._cached_contract_expression.cache_clear()
+
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract_expression",
+        _spy_contract_expression,
+    )
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        _explode_native_contract_einsum,
+    )
+
+    left = np.arange(2 * 5, dtype=np.float32).reshape(2, 5)
+    middle = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    right = np.arange(7 * 11, dtype=np.float32).reshape(7, 11)
+
+    contract_result = _single_tensor_output(contract_op(left, middle, right))
+    einop_result = _single_tensor_output(einop_op(left, middle, right))
+    assert isinstance(contract_result, np.ndarray)
+    assert isinstance(einop_result, np.ndarray)
+
+    expected = left @ middle @ right
+    assert compiled_calls["value"] == 1
+    np.testing.assert_allclose(contract_result, expected)
+    np.testing.assert_allclose(einop_result, expected)
+    assert einsum_step_impl._cached_contract_expression.cache_info().maxsize == 2048
+
+
 @pytest.mark.skipif(torch is None, reason="requires torch")
 def test_einop_chain_two_input_torch_uses_native_contract_path(
     monkeypatch: pytest.MonkeyPatch,
