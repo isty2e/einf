@@ -181,7 +181,6 @@ CLAUDE.md
 archived
 .pytest_cache
 .gitattributes
-benchmarks
 docs/benchmarks
 docs/spec
 

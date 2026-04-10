@@ -1,4 +1,4 @@
-from benchmarks.guardrails import (
+from benchmarks.guardrail.policy import (
     OverheadReportDict,
     collect_case_metrics,
     compare_overhead_reports,
@@ -15,7 +15,7 @@ def _report(*, call_ms: float) -> OverheadReportDict:
             "torch": "not-installed",
             "einops": "not-installed",
             "einx": "not-installed",
-            "stages": ["__call__", "solve", "kernel"],
+            "stages": ["__call__", "solve", "runner_resolve", "fusion", "kernel"],
         },
         scenarios=[
             {
@@ -29,8 +29,11 @@ def _report(*, call_ms: float) -> OverheadReportDict:
                         "loops": 100,
                         "unpatched_call_ms": call_ms,
                         "instrumented_call_ms": call_ms,
+                        "residual_ms_per_call": call_ms * 0.1,
                         "stage_ms_per_call": {
                             "solve": call_ms * 0.1,
+                            "runner_resolve": 0.0,
+                            "fusion": 0.0,
                             "kernel": call_ms * 0.8,
                         },
                     }
