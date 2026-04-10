@@ -186,3 +186,4 @@ docs/benchmarks
 docs/spec
 
 pyrightconfig.json
+.tickets/
