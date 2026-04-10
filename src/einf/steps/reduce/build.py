@@ -7,9 +7,9 @@ from einf.backend import (
     ArrayNamespace,
     BackendArrayOps,
     BackendProfile,
-    derive_namespace_id,
     get_backend_array_ops,
 )
+from einf.backend.namespace import derive_namespace_id
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.plans.context import expand_pack_terms
 from einf.reduction.schema import Reducer

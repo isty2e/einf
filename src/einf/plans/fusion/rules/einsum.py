@@ -12,7 +12,7 @@ from einf.steps.einsum.step import (
 )
 from einf.tensor_types import TensorLike
 
-from ..types import RuntimeSteps, TupleFusionRule, TupleRunner
+from ..types import RuntimeStepFusionRule, RuntimeSteps, TupleRunner
 
 
 def _slice_tensor_by_sizes_unchecked(
@@ -259,16 +259,16 @@ def build_einsum_axis_slice_tuple_runner(
     return run_fused_binary_split
 
 
-EINSUM_AXIS_SLICE_RULE = TupleFusionRule(
+EINSUM_AXIS_SLICE_RULE = RuntimeStepFusionRule(
     name="einsum_axis_slice",
     window_size=2,
-    build_runner=build_einsum_axis_slice_tuple_runner,
+    build_tuple_runner=build_einsum_axis_slice_tuple_runner,
 )
 
-EINSUM_BINARY_RULE = TupleFusionRule(
+EINSUM_BINARY_RULE = RuntimeStepFusionRule(
     name="einsum_binary",
     window_size=1,
-    build_runner=build_einsum_binary_tuple_runner,
+    build_tuple_runner=build_einsum_binary_tuple_runner,
 )
 
 

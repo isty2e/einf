@@ -6,6 +6,7 @@ import pytest
 from numpy.typing import NDArray
 
 import einf.plans.abstract as abstract_plan_module
+import einf.plans.runners as runner_module
 import einf.steps.einsum as einsum_step_module
 import einf.steps.einsum.step as einsum_step_impl
 import einf.steps.permute as permute_step_module
@@ -787,6 +788,12 @@ def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
 
 
+def _explode_build_tuple_runner(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError(
+        "build_tuple_runner should not be called for one-step single-output plans"
+    )
+
+
 def _single_tensor_output(
     result: TensorLike | tuple[TensorLike, ...],
     /,
@@ -1275,6 +1282,41 @@ def test_shape_free_tuple_runner_cache_is_arity_agnostic_for_ternary_inputs(
     )
     np.testing.assert_array_equal(second_out_left, second_intermediate[:, :2, :])
     np.testing.assert_array_equal(second_out_right, second_intermediate[:, 2:, :])
+
+
+@pytest.mark.parametrize("case_name", ["reduce", "repeat", "contract"])
+def test_single_output_runner_bypasses_tuple_chain_compile_for_one_step_plans(
+    case_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b, h, w, d, r, j = axes("b", "h", "w", "d", "r", "j")
+
+    if case_name == "reduce":
+        op = reduce(ax[b, h, w, d], ax[b, d])
+        tensor = np.arange(2 * 3 * 4 * 5).reshape(2, 3, 4, 5)
+        tensors = (tensor,)
+        expected = np.sum(tensor, axis=(1, 2))
+    elif case_name == "repeat":
+        op = repeat(ax[b, d], ax[b, d, r]).with_sizes(r=4)
+        tensor = np.arange(2 * 5).reshape(2, 5)
+        tensors = (tensor,)
+        expected = np.broadcast_to(np.expand_dims(tensor, axis=2), (2, 5, 4))
+    else:
+        op = contract((ax[b, h, d], ax[d, j]), ax[b, h, j])
+        lhs = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+        rhs = np.arange(4 * 6).reshape(4, 6)
+        tensors = (lhs, rhs)
+        expected = np.einsum("bhd,dj->bhj", lhs, rhs)
+
+    monkeypatch.setattr(
+        runner_module.StepChainRunnerKernel,
+        "build_tuple_runner",
+        _explode_build_tuple_runner,
+    )
+
+    result = op(*tensors)
+    assert not isinstance(result, tuple)
+    np.testing.assert_array_equal(result, expected)
 
 
 def test_einop_inflate_like_broadcast_matches_inflate() -> None:

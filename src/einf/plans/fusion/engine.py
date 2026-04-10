@@ -1,25 +1,25 @@
-from .registry import TUPLE_FUSION_RULES_BY_WINDOW
+from .registry import RUNTIME_STEP_FUSION_RULES_BY_WINDOW
 from .types import RuntimeStepFusion, RuntimeStepFusions, RuntimeSteps, TupleRunner
 
 
-def discover_tuple_step_fusion(
+def discover_step_fusion(
     runtime_steps: RuntimeSteps,
     /,
     *,
     required_output_arity: int | None = None,
 ) -> RuntimeStepFusion[TupleRunner] | None:
-    """Discover one best consecutive runtime-step fusion for tuple output."""
+    """Discover one best consecutive runtime-step fusion."""
     total_steps = len(runtime_steps)
     for window_size in range(total_steps, 0, -1):
-        fusion_rules = TUPLE_FUSION_RULES_BY_WINDOW.get(window_size, ())
+        fusion_rules = RUNTIME_STEP_FUSION_RULES_BY_WINDOW.get(window_size, ())
         if not fusion_rules:
             continue
         for start in range(total_steps - window_size + 1):
             stop = start + window_size
             window = runtime_steps[start:stop]
             for fusion_rule in fusion_rules:
-                runner = fusion_rule.build_runner(window)
-                if runner is None:
+                tuple_runner = fusion_rule.build_tuple_runner(window)
+                if tuple_runner is None:
                     continue
                 input_arity = window[0].input_arity
                 output_arity = window[-1].output_arity
@@ -34,7 +34,7 @@ def discover_tuple_step_fusion(
                     stop=stop,
                     input_arity=input_arity,
                     output_arity=output_arity,
-                    runner=runner,
+                    tuple_runner=tuple_runner,
                 )
     return None
 
@@ -48,27 +48,28 @@ def _discover_fusion_from_start(
     """Return one best fusion that starts at one fixed step index."""
     total_steps = len(runtime_steps)
     for window_size in range(total_steps - start, 0, -1):
-        fusion_rules = TUPLE_FUSION_RULES_BY_WINDOW.get(window_size, ())
+        fusion_rules = RUNTIME_STEP_FUSION_RULES_BY_WINDOW.get(window_size, ())
         if not fusion_rules:
             continue
         stop = start + window_size
         window = runtime_steps[start:stop]
         for fusion_rule in fusion_rules:
-            runner = fusion_rule.build_runner(window)
-            if runner is None:
+            tuple_runner = fusion_rule.build_tuple_runner(window)
+            if tuple_runner is None:
                 continue
+            output_arity = window[-1].output_arity
             return RuntimeStepFusion(
                 name=fusion_rule.name,
                 start=start,
                 stop=stop,
                 input_arity=window[0].input_arity,
-                output_arity=window[-1].output_arity,
-                runner=runner,
+                output_arity=output_arity,
+                tuple_runner=tuple_runner,
             )
     return None
 
 
-def discover_tuple_step_fusions(runtime_steps: RuntimeSteps, /) -> RuntimeStepFusions:
+def discover_step_fusions(runtime_steps: RuntimeSteps, /) -> RuntimeStepFusions:
     """Discover non-overlapping fused segments across full runtime-step chain."""
     total_steps = len(runtime_steps)
     if total_steps == 0:
@@ -87,6 +88,6 @@ def discover_tuple_step_fusions(runtime_steps: RuntimeSteps, /) -> RuntimeStepFu
 
 
 __all__ = [
-    "discover_tuple_step_fusion",
-    "discover_tuple_step_fusions",
+    "discover_step_fusion",
+    "discover_step_fusions",
 ]

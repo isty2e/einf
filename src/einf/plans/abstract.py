@@ -4,7 +4,7 @@ from einf.axis import AxisSide
 from einf.backend import BACKEND_RESOLVER, BackendProfile
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.ir import IRProgram
-from einf.ir.routing.runtime import resolve_route_output_indices, route_outputs
+from einf.ir.routing.runtime import resolve_route_output_indices
 from einf.ir.routing.static import precompute_route_output_indices
 from einf.plans.context import PlanSelectionContext
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
@@ -23,14 +23,30 @@ from .fusion import (
     RuntimeStepFusions,
     SingleOutputRunner,
     TupleRunner,
-    discover_tuple_step_fusions,
+    discover_step_fusions,
 )
+from .runners import RouteRunnerKernel, RunnerKernel, StepChainRunnerKernel
 from .symbolic import SymbolicPlan
+
+
+@dataclass(slots=True)
+class AbstractPlanRuntimeCaches:
+    """Mutable runtime memoization owned by one abstract plan."""
+
+    selection: SelectionCache = field(default_factory=SelectionCache)
+    backend_profiles: BackendProfileCache = field(default_factory=BackendProfileCache)
+    route_output_indices: RouteOutputIndexCache | None = None
+    single_output_runners: RunnerCache[SingleOutputRunner] = field(
+        default_factory=lambda: RunnerCache()
+    )
+    tuple_runners: RunnerCache[TupleRunner] = field(
+        default_factory=lambda: RunnerCache()
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class AbstractPlan:
-    """Ingress-normalized operation model independent from runtime context."""
+    """Ingress-normalized abstract operation facade with detached runtime caches."""
 
     op_name: str
     lhs: AxisSide
@@ -40,21 +56,6 @@ class AbstractPlan:
     ir_program: IRProgram = field(init=False)
     symbolic_candidates: tuple[SymbolicPlan, ...] = field(init=False)
     _candidate_indices_by_input_arity: dict[int, tuple[int, ...]] = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _selection_cache: SelectionCache = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _backend_profile_cache: BackendProfileCache = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _route_output_index_cache: RouteOutputIndexCache = field(
         init=False,
         repr=False,
         compare=False,
@@ -69,16 +70,7 @@ class AbstractPlan:
         repr=False,
         compare=False,
     )
-    _single_output_runner_cache: RunnerCache[SingleOutputRunner] = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _tuple_runner_cache: RunnerCache[TupleRunner] = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
+    _runtime: AbstractPlanRuntimeCaches = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Lower one abstract operation once into deterministic symbolic candidates."""
@@ -120,15 +112,15 @@ class AbstractPlan:
             },
         )
         object.__setattr__(self, "_explicit_sizes", dict(self.explicit_sizes_items))
-        object.__setattr__(self, "_selection_cache", SelectionCache())
-        object.__setattr__(self, "_backend_profile_cache", BackendProfileCache())
-        object.__setattr__(self, "_single_output_runner_cache", RunnerCache())
-        object.__setattr__(self, "_tuple_runner_cache", RunnerCache())
         static_output_indices = precompute_route_output_indices(self.lhs, self.rhs)
         object.__setattr__(
             self,
-            "_route_output_index_cache",
-            RouteOutputIndexCache(static_output_indices=static_output_indices),
+            "_runtime",
+            AbstractPlanRuntimeCaches(
+                route_output_indices=RouteOutputIndexCache(
+                    static_output_indices=static_output_indices
+                )
+            ),
         )
         object.__setattr__(
             self,
@@ -191,7 +183,7 @@ class AbstractPlan:
             input_shapes=context.input_shapes,
             explicit_sizes=tuple(sorted(context.explicit_sizes.items())),
         )
-        cached_index = self._selection_cache.get_index(cache_key)
+        cached_index = self._runtime.selection.get_index(cache_key)
         if cached_index is not None:
             cached_candidate = self.symbolic_candidates[cached_index]
             if cached_candidate.input_arity == input_arity:
@@ -204,7 +196,7 @@ class AbstractPlan:
                 candidate_index,
             ),
         )
-        self._selection_cache.set_index(cache_key, best_index)
+        self._runtime.selection.set_index(cache_key, best_index)
 
         return self.symbolic_candidates[best_index]
 
@@ -267,189 +259,48 @@ class AbstractPlan:
         shape_key = input_shapes if requires_shapes else None
         return (tensor_types, shape_key)
 
-    def _run_runtime_step(
+    def _build_step_chain_runner_kernel(
         self,
         *,
-        runtime_step: RuntimeStep[StepProgram],
-        current: tuple[TensorLike, ...],
-    ) -> tuple[TensorLike, ...]:
-        """Run one runtime step with unary/binary fast dispatch."""
-        if (
-            len(current) == 1
-            and runtime_step.input_arity == 1
-            and runtime_step.output_arity == 1
-        ):
-            return (runtime_step.run_unary(current[0]),)
-        if (
-            len(current) == 2
-            and runtime_step.input_arity == 2
-            and runtime_step.output_arity == 1
-        ):
-            return (runtime_step.run_binary(current[0], current[1]),)
-        return runtime_step.run(current)
-
-    def _compile_step_chain_runner(
-        self,
-        *,
+        input_arity: int,
+        output_arity: int,
         runtime_steps: tuple[RuntimeStep[StepProgram], ...],
         fusions: RuntimeStepFusions,
-    ) -> TupleRunner:
-        """Compile one tuple runner with optional fused runtime-step segments."""
-        if not runtime_steps:
+    ) -> StepChainRunnerKernel:
+        """Build one runner kernel for specialized runtime-step chains."""
+        return StepChainRunnerKernel(
+            _input_arity=input_arity,
+            _output_arity=output_arity,
+            runtime_steps=runtime_steps,
+            fusions=fusions,
+        )
 
-            def run_identity(
-                runtime_tensors: tuple[TensorLike, ...], /
-            ) -> tuple[TensorLike, ...]:
-                return runtime_tensors
-
-            return run_identity
-        if (
-            len(fusions) == 1
-            and fusions[0].start == 0
-            and fusions[0].stop == len(runtime_steps)
-        ):
-            return fusions[0].runner
-        if len(runtime_steps) == 1:
-            runtime_step = runtime_steps[0]
-            if runtime_step.input_arity == 1 and runtime_step.output_arity == 1:
-                run_unary_method = runtime_step.run_unary
-
-                def run_unary(
-                    runtime_tensors: tuple[TensorLike, ...], /
-                ) -> tuple[TensorLike, ...]:
-                    return (run_unary_method(runtime_tensors[0]),)
-
-                return run_unary
-            if runtime_step.input_arity == 2 and runtime_step.output_arity == 1:
-                run_binary_method = runtime_step.run_binary
-
-                def run_binary(
-                    runtime_tensors: tuple[TensorLike, ...], /
-                ) -> tuple[TensorLike, ...]:
-                    return (run_binary_method(runtime_tensors[0], runtime_tensors[1]),)
-
-                return run_binary
-
-            def run_single(
-                runtime_tensors: tuple[TensorLike, ...], /
-            ) -> tuple[TensorLike, ...]:
-                return runtime_step.run(runtime_tensors)
-
-            return run_single
-
-        fusion_by_start = {fusion.start: fusion for fusion in fusions}
-
-        def run_chain(
-            runtime_tensors: tuple[TensorLike, ...], /
-        ) -> tuple[TensorLike, ...]:
-            current = runtime_tensors
-            step_index = 0
-            while step_index < len(runtime_steps):
-                fusion = fusion_by_start.get(step_index)
-                if fusion is not None:
-                    if len(current) != fusion.input_arity:
-                        raise ValueError(
-                            "runtime step fusion input arity mismatch: "
-                            f"expected {fusion.input_arity}, got {len(current)}"
-                        )
-                    current = fusion.runner(current)
-                    step_index = fusion.stop
-                    continue
-                current = self._run_runtime_step(
-                    runtime_step=runtime_steps[step_index],
-                    current=current,
-                )
-                step_index += 1
-            return current
-
-        return run_chain
-
-    def _compile_tuple_runner(
+    def _build_runner_kernel(
         self,
         *,
         symbolic_plan: SymbolicPlan,
         context: RuntimeSpecializationContext,
         tensors: tuple[TensorLike, ...],
-    ) -> TupleRunner:
-        """Compile one tuple-output runtime runner from one symbolic plan."""
+    ) -> RunnerKernel:
+        """Build one runner kernel from one symbolic plan."""
         if symbolic_plan.kind == "route" and not symbolic_plan.steps:
             output_indices = self._resolve_route_output_indices(
                 context=context,
                 tensors=tensors,
             )
-
-            def run_route(
-                runtime_tensors: tuple[TensorLike, ...], /
-            ) -> tuple[TensorLike, ...]:
-                return route_outputs(
-                    tensors=runtime_tensors,
-                    output_indices=output_indices,
-                )
-
-            return run_route
-
-        runtime_steps = symbolic_plan.specialize(context)
-        fusions = discover_tuple_step_fusions(runtime_steps)
-        return self._compile_step_chain_runner(
-            runtime_steps=runtime_steps,
-            fusions=fusions,
-        )
-
-    def _compile_single_output_runner(
-        self,
-        *,
-        symbolic_plan: SymbolicPlan,
-        context: RuntimeSpecializationContext,
-        tensors: tuple[TensorLike, ...],
-    ) -> SingleOutputRunner:
-        """Compile one single-output runtime runner from one symbolic plan."""
-        if symbolic_plan.kind == "route" and not symbolic_plan.steps:
-            output_indices = self._resolve_route_output_indices(
-                context=context,
-                tensors=tensors,
+            return RouteRunnerKernel(
+                _input_arity=symbolic_plan.input_arity,
+                output_indices=output_indices,
             )
-            if len(output_indices) != 1:
-                raise ValueError(
-                    "runtime step chain output arity mismatch: "
-                    f"expected 1, got {len(output_indices)}"
-                )
-            output_index = output_indices[0]
-
-            def run_route(runtime_tensors: tuple[TensorLike, ...], /) -> TensorLike:
-                return runtime_tensors[output_index]
-
-            return run_route
 
         runtime_steps = symbolic_plan.specialize(context)
-        if not runtime_steps:
-            if symbolic_plan.input_arity != 1:
-                raise ValueError(
-                    "runtime step chain output arity mismatch: "
-                    "cannot emit one output without runtime steps"
-                )
-
-            def run_identity(runtime_tensors: tuple[TensorLike, ...], /) -> TensorLike:
-                return runtime_tensors[0]
-
-            return run_identity
-
-        fusions = discover_tuple_step_fusions(runtime_steps)
-
-        tuple_runner = self._compile_step_chain_runner(
+        fusions = discover_step_fusions(runtime_steps)
+        return self._build_step_chain_runner_kernel(
+            input_arity=symbolic_plan.input_arity,
+            output_arity=symbolic_plan.output_arity,
             runtime_steps=runtime_steps,
             fusions=fusions,
         )
-
-        def run_chain(runtime_tensors: tuple[TensorLike, ...], /) -> TensorLike:
-            outputs = tuple_runner(runtime_tensors)
-            if len(outputs) != 1:
-                raise ValueError(
-                    "runtime step chain output arity mismatch: "
-                    f"expected 1, got {len(outputs)}"
-                )
-            return outputs[0]
-
-        return run_chain
 
     def execute(
         self,
@@ -478,7 +329,7 @@ class AbstractPlan:
             requires_shapes=requires_shapes,
             input_shapes=context.input_shapes,
         )
-        cached_runner = self._tuple_runner_cache.get(runner_cache_key)
+        cached_runner = self._runtime.tuple_runners.get(runner_cache_key)
         if cached_runner is not None:
             return cached_runner
 
@@ -488,12 +339,13 @@ class AbstractPlan:
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
-        runner = self._compile_tuple_runner(
+        runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
             context=runtime_context,
             tensors=tensors,
         )
-        self._tuple_runner_cache.set(runner_cache_key, runner)
+        runner = runner_kernel.build_tuple_runner()
+        self._runtime.tuple_runners.set(runner_cache_key, runner)
         return runner
 
     def execute_single_output(
@@ -523,7 +375,7 @@ class AbstractPlan:
             requires_shapes=requires_shapes,
             input_shapes=context.input_shapes,
         )
-        cached_runner = self._single_output_runner_cache.get(runner_cache_key)
+        cached_runner = self._runtime.single_output_runners.get(runner_cache_key)
         if cached_runner is not None:
             return cached_runner
 
@@ -533,12 +385,13 @@ class AbstractPlan:
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
-        runner = self._compile_single_output_runner(
+        runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
             context=runtime_context,
             tensors=tensors,
         )
-        self._single_output_runner_cache.set(runner_cache_key, runner)
+        runner = runner_kernel.build_single_output_runner()
+        self._runtime.single_output_runners.set(runner_cache_key, runner)
         return runner
 
     def _validate_view_backend_profile(
@@ -574,7 +427,10 @@ class AbstractPlan:
         input_shapes = context.input_shapes
         if not input_shapes:
             input_shapes = tuple(tensor.shape for tensor in tensors)
-        cached_output_indices = self._route_output_index_cache.get(input_shapes)
+        route_output_indices = self._runtime.route_output_indices
+        if route_output_indices is None:
+            raise RuntimeError("abstract plan route cache is not initialized")
+        cached_output_indices = route_output_indices.get(input_shapes)
         if cached_output_indices is not None:
             return cached_output_indices
 
@@ -585,7 +441,7 @@ class AbstractPlan:
             tensors=tensors,
             input_shapes=input_shapes,
         )
-        self._route_output_index_cache.set(
+        route_output_indices.set(
             input_shapes=input_shapes,
             output_indices=output_indices,
         )
@@ -598,11 +454,11 @@ class AbstractPlan:
         tensors: tuple[TensorLike, ...],
     ) -> BackendProfile:
         """Resolve and cache backend profile by input runtime tensor types."""
-        cached_profile = self._backend_profile_cache.get(tensors)
+        cached_profile = self._runtime.backend_profiles.get(tensors)
         if cached_profile is not None:
             return cached_profile
         backend_profile = BACKEND_RESOLVER.resolve(*tensors, op_name=op_name)
-        self._backend_profile_cache.set(
+        self._runtime.backend_profiles.set(
             tensors=tensors,
             profile=backend_profile,
         )

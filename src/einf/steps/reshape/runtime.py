@@ -4,10 +4,9 @@ from einf.backend import (
     ArrayNamespace,
     BackendArrayOps,
     bind_array_namespace,
-    derive_namespace_id,
-    is_namespace_family,
-    load_backend_module,
 )
+from einf.backend.namespace import derive_namespace_id, is_namespace_family
+from einf.backend.runtime import load_backend_module
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.tensor_types import TensorLike
 

@@ -1,10 +1,8 @@
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from einf.axis import AxisSide, AxisTerms, ScalarAxisTerms, term_size
 from einf.backend import (
-    ArrayNamespace,
-    BackendArrayOps,
     BackendProfile,
     get_backend_array_ops,
 )
@@ -13,12 +11,21 @@ from einf.plans.context import build_runtime_execution_context
 from einf.reduction.plan import infer_unary_reduced_terms
 from einf.reduction.schema import STRING_REDUCERS, Reducer
 from einf.signature import Signature
-from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, SymbolicProgram
+from einf.steps.base import (
+    RuntimeSpecializationContext,
+    RuntimeStep,
+    SymbolicProgram,
+    UnaryRuntimeProgram,
+)
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
-from .build import ReduceAxesResolver, build_reduce_compiled_program
-from .runtime import ReducerRuntimeContext
+from .build import (
+    ReduceAxesResolver,
+    _has_reduce_namespace_methods,
+    build_reduce_compiled_program,
+)
+from .runtime import NamespaceReducer, ReducerRuntimeContext
 
 _DIRECT_TORCH_REDUCER_METHODS: dict[str, str] = {
     "sum": "sum",
@@ -72,67 +79,85 @@ def build_reduce_symbolic_program(
     )
 
 
+class ReduceRuntimeProgram(UnaryRuntimeProgram):
+    """Base runtime program for one unary reduce execution strategy."""
+
+
 @dataclass(frozen=True, slots=True)
-class ReduceRuntimeStep(RuntimeStep[ReduceSymbolicProgram]):
-    """Runtime reduce step that executes one unary reduce primitive."""
+class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
+    """Shape-invariant unary reduce program bound to one tensor method."""
 
-    name: str
-    input_arity: int
-    output_arity: int
-    program: ReduceSymbolicProgram
-    explicit_sizes: dict[str, int]
-    backend_profile: BackendProfile
-    runtime_backend_ops: BackendArrayOps | None = None
-    runtime_xp: ArrayNamespace | None = None
-    compiled_unary_runner: Callable[[TensorLike], TensorLike] | None = None
-
-    def run(
-        self,
-        tensors: tuple[TensorLike, ...],
-        /,
-    ) -> tuple[TensorLike, ...]:
-        if len(tensors) == 1:
-            return (self.run_unary(tensors[0]),)
-        return self._run_general(tensors)
+    reducer: str
+    axes: tuple[int, ...]
+    runtime_context: ReducerRuntimeContext
+    direct_method_name: str
+    direct_axis_keyword: Literal["axis", "dim"]
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
-        """Execute one unary reduce runtime step."""
-        compiled_unary_runner = self.compiled_unary_runner
-        if compiled_unary_runner is not None:
-            return compiled_unary_runner(tensor)
+        """Execute one direct-method unary reduce program."""
+        if not self.axes:
+            return tensor
 
-        outputs = self._run_general((tensor,))
-        if len(outputs) != 1:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message="inconsistent dims: reduce unary runtime produced invalid output arity",
-                help="ensure reduce symbolic step remains unary (1->1)",
-                related=("reduce runtime",),
-                data={"operation": "reduce"},
+        try:
+            if self.direct_axis_keyword == "dim":
+                return getattr(tensor, self.direct_method_name)(dim=self.axes)
+            return getattr(tensor, self.direct_method_name)(axis=self.axes)
+        except Exception as error:
+            self.runtime_context.raise_string_reducer_error(
+                reducer_name=self.reducer,
+                error=error,
             )
-        return outputs[0]
 
-    def _run_general(
-        self,
-        tensors: tuple[TensorLike, ...],
-        /,
-    ) -> tuple[TensorLike, ...]:
-        """Run one unary reduce runtime step with context normalization."""
+
+@dataclass(frozen=True, slots=True)
+class NamespaceReduceRuntimeProgram(ReduceRuntimeProgram):
+    """Shape-invariant unary reduce program bound to one namespace reducer."""
+
+    reducer: str
+    axes: tuple[int, ...]
+    runtime_context: ReducerRuntimeContext
+    reducer_fn: NamespaceReducer
+
+    def run_unary(self, tensor: TensorLike, /) -> TensorLike:
+        """Execute one namespace-bound unary reduce program."""
+        if not self.axes:
+            return tensor
+
+        return self.runtime_context.apply_string_reducer(
+            reducer_name=self.reducer,
+            reducer_fn=self.reducer_fn,
+            tensor=tensor,
+            axes=self.axes,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
+    """Call-time unary reduce program that still depends on runtime context."""
+
+    signature: Signature
+    explicit_sizes: dict[str, int]
+    reduce_axes: AxisTerms
+    reducer: Reducer
+    backend_profile: BackendProfile
+
+    def run_unary(self, tensor: TensorLike, /) -> TensorLike:
+        """Execute one dynamic unary reduce program."""
         context = build_runtime_execution_context(
-            signature=self.program.signature,
-            tensors=tensors,
+            signature=self.signature,
+            tensors=(tensor,),
             explicit_sizes=self.explicit_sizes,
         )
 
         plan = build_reduce_compiled_program(
-            tensor=tensors[0],
+            tensor=tensor,
             lhs_terms=context.lhs_terms[0],
             expected_output_terms=context.rhs_terms[0],
             axis_sizes=context.axis_sizes,
             pack_sizes=context.pack_sizes,
             pack_ranks=context.pack_ranks,
-            reduce_axes=self.program.reduce_axes,
-            reducer=self.program.reducer,
+            reduce_axes=self.reduce_axes,
+            reducer=self.reducer,
             backend_profile=self.backend_profile,
         )
 
@@ -140,18 +165,47 @@ class ReduceRuntimeStep(RuntimeStep[ReduceSymbolicProgram]):
             xp=plan.xp,
             backend_ops=plan.backend_ops,
         )
-        tensor = plan.compiled_reducer.apply(
-            tensor=tensors[0],
+        output = plan.compiled_reducer.apply(
+            tensor=tensor,
             axes=plan.axes,
             context=reducer_runtime_context,
         )
 
         _validate_reduce_output_shape(
-            tensor=tensor,
+            tensor=output,
             terms=context.rhs_terms[0],
             axis_sizes=context.axis_sizes,
         )
-        return (tensor,)
+        return output
+
+
+@dataclass(frozen=True, slots=True)
+class ReduceRuntimeStep(RuntimeStep[ReduceRuntimeProgram]):
+    """Runtime reduce step that executes one unary reduce primitive."""
+
+    name: str
+    input_arity: int
+    output_arity: int
+    program: ReduceRuntimeProgram
+
+    def run(
+        self,
+        tensors: tuple[TensorLike, ...],
+        /,
+    ) -> tuple[TensorLike, ...]:
+        if len(tensors) != 1:
+            raise ValidationError(
+                code=ErrorCode.OP_ARITY_MISMATCH,
+                message=f"reduce arity mismatch: expected 1 input, got {len(tensors)}",
+                help="reduce runtime step requires one tensor",
+                related=("reduce runtime",),
+                data={"operation": "reduce"},
+            )
+        return self.program(tensors)
+
+    def run_unary(self, tensor: TensorLike, /) -> TensorLike:
+        """Execute one unary reduce runtime step."""
+        return self.program.run_unary(tensor)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -196,24 +250,33 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 related=("backend dispatch",),
                 data={"operation": "reduce"},
             )
+        runtime_program: ReduceRuntimeProgram | None = None
         runtime_backend_ops = get_backend_array_ops(backend_profile.backend_family)
-        runtime_xp = backend_profile.namespace
-        compiled_unary_runner = _build_static_reduce_unary_runner(
-            program=self.program,
-            runtime_backend_ops=runtime_backend_ops,
-            runtime_xp=runtime_xp,
-        )
+        runtime_xp_candidate = backend_profile.namespace
+        if _has_reduce_namespace_methods(runtime_xp_candidate):
+            runtime_context = ReducerRuntimeContext(
+                xp=runtime_xp_candidate,
+                backend_ops=runtime_backend_ops,
+            )
+            runtime_program = _build_shape_invariant_reduce_runtime_program(
+                program=self.program,
+                runtime_context=runtime_context,
+                backend_family=backend_profile.backend_family,
+            )
+        if runtime_program is None:
+            runtime_program = DynamicReduceRuntimeProgram(
+                signature=self.program.signature,
+                explicit_sizes=explicit_sizes,
+                reduce_axes=self.program.reduce_axes,
+                reducer=self.program.reducer,
+                backend_profile=backend_profile,
+            )
 
         return ReduceRuntimeStep(
             name=self.name,
             input_arity=self.input_arity,
             output_arity=self.output_arity,
-            program=self.program,
-            explicit_sizes=explicit_sizes,
-            backend_profile=backend_profile,
-            runtime_backend_ops=runtime_backend_ops,
-            runtime_xp=runtime_xp,
-            compiled_unary_runner=compiled_unary_runner,
+            program=runtime_program,
         )
 
     def reducer_label(self) -> str:
@@ -262,13 +325,13 @@ def _validate_reduce_output_shape(
     )
 
 
-def _build_static_reduce_unary_runner(
+def _build_shape_invariant_reduce_runtime_program(
     *,
     program: ReduceSymbolicProgram,
-    runtime_backend_ops: BackendArrayOps | None,
-    runtime_xp: ArrayNamespace,
-) -> Callable[[TensorLike], TensorLike] | None:
-    """Build one static unary reduce runner when axis mapping is shape-invariant."""
+    runtime_context: ReducerRuntimeContext,
+    backend_family: str | None,
+) -> ReduceRuntimeProgram | None:
+    """Build one static unary reduce program when axis mapping is shape-invariant."""
     reducer = program.reducer
     if not isinstance(reducer, str) or reducer not in STRING_REDUCERS:
         return None
@@ -289,149 +352,46 @@ def _build_static_reduce_unary_runner(
     reduce_axes = resolved.axes
 
     if not reduce_axes:
-
-        def run_identity(tensor: TensorLike, /) -> TensorLike:
-            return tensor
-
-        return run_identity
-
-    if runtime_backend_ops is not None:
-        backend_family = runtime_backend_ops.backend_family
-        if backend_family == "torch":
-            method_name = _DIRECT_TORCH_REDUCER_METHODS.get(reducer)
-            if isinstance(method_name, str):
-
-                def run_torch_method(tensor: TensorLike, /) -> TensorLike:
-                    reducer_method = getattr(tensor, method_name, None)
-                    if not callable(reducer_method):
-                        raise ValidationError(
-                            code=ErrorCode.INCONSISTENT_DIMS,
-                            message=(
-                                "inconsistent dims: backend reducer "
-                                f"{reducer!r} is unavailable"
-                            ),
-                            help=(
-                                "choose a reducer available on the active backend namespace"
-                            ),
-                            related=("reduce reducer",),
-                            data={},
-                        )
-                    try:
-                        return reducer_method(dim=reduce_axes)
-                    except Exception as error:
-                        raise ValidationError(
-                            code=ErrorCode.INCONSISTENT_DIMS,
-                            message=(
-                                f"inconsistent dims: backend reducer {reducer!r} failed: {error}"
-                            ),
-                            help=(
-                                "ensure reducer domain is valid for the selected axes "
-                                "(for example non-empty domain for max/min)"
-                            ),
-                            related=("reduce reducer",),
-                            data={"reducer": reducer},
-                        ) from error
-
-                return run_torch_method
-        if backend_family == "numpy":
-            method_name = _DIRECT_NUMPY_REDUCER_METHODS.get(reducer)
-            if isinstance(method_name, str):
-
-                def run_numpy_method(tensor: TensorLike, /) -> TensorLike:
-                    reducer_method = getattr(tensor, method_name, None)
-                    if not callable(reducer_method):
-                        raise ValidationError(
-                            code=ErrorCode.INCONSISTENT_DIMS,
-                            message=(
-                                "inconsistent dims: backend reducer "
-                                f"{reducer!r} is unavailable"
-                            ),
-                            help=(
-                                "choose a reducer available on the active backend namespace"
-                            ),
-                            related=("reduce reducer",),
-                            data={},
-                        )
-                    try:
-                        return reducer_method(axis=reduce_axes)
-                    except Exception as error:
-                        raise ValidationError(
-                            code=ErrorCode.INCONSISTENT_DIMS,
-                            message=(
-                                f"inconsistent dims: backend reducer {reducer!r} failed: {error}"
-                            ),
-                            help=(
-                                "ensure reducer domain is valid for the selected axes "
-                                "(for example non-empty domain for max/min)"
-                            ),
-                            related=("reduce reducer",),
-                            data={"reducer": reducer},
-                        ) from error
-
-                return run_numpy_method
-
-        reducer_fn = runtime_backend_ops.reducers.get(reducer)
-        if reducer_fn is None:
+        reducer_candidate = getattr(runtime_context.xp, reducer, None)
+        if not callable(reducer_candidate):
             return None
+        return NamespaceReduceRuntimeProgram(
+            reducer=reducer,
+            axes=reduce_axes,
+            runtime_context=runtime_context,
+            reducer_fn=reducer_candidate,
+        )
 
-        def run_with_backend_ops(tensor: TensorLike, /) -> TensorLike:
-            try:
-                return reducer_fn(tensor, reduce_axes)
-            except Exception as error:
-                raise ValidationError(
-                    code=ErrorCode.INCONSISTENT_DIMS,
-                    message=(
-                        f"inconsistent dims: backend reducer {reducer!r} failed: {error}"
-                    ),
-                    help=(
-                        "ensure reducer domain is valid for the selected axes "
-                        "(for example non-empty domain for max/min)"
-                    ),
-                    related=("reduce reducer",),
-                    data={"reducer": reducer},
-                ) from error
-
-        return run_with_backend_ops
-
-    reducer_candidate = getattr(runtime_xp, reducer, None)
+    reducer_candidate = getattr(runtime_context.xp, reducer, None)
     if not callable(reducer_candidate):
         return None
+    if backend_family == "torch":
+        direct_method_name = _DIRECT_TORCH_REDUCER_METHODS.get(reducer)
+        if isinstance(direct_method_name, str):
+            return DirectMethodReduceRuntimeProgram(
+                reducer=reducer,
+                axes=reduce_axes,
+                runtime_context=runtime_context,
+                direct_method_name=direct_method_name,
+                direct_axis_keyword="dim",
+            )
+    if backend_family == "numpy":
+        direct_method_name = _DIRECT_NUMPY_REDUCER_METHODS.get(reducer)
+        if isinstance(direct_method_name, str):
+            return DirectMethodReduceRuntimeProgram(
+                reducer=reducer,
+                axes=reduce_axes,
+                runtime_context=runtime_context,
+                direct_method_name=direct_method_name,
+                direct_axis_keyword="axis",
+            )
 
-    def run_with_namespace(tensor: TensorLike, /) -> TensorLike:
-        try:
-            reduced = reducer_candidate(tensor, axis=reduce_axes)
-        except Exception as error:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=(
-                    f"inconsistent dims: backend reducer {reducer!r} failed: {error}"
-                ),
-                help=(
-                    "ensure reducer domain is valid for the selected axes "
-                    "(for example non-empty domain for max/min)"
-                ),
-                related=("reduce reducer",),
-                data={"reducer": reducer},
-            ) from error
-
-        shape = getattr(reduced, "shape", None)
-        if not isinstance(shape, tuple):
-            try:
-                coerced = runtime_xp.asarray(reduced)
-            except Exception as error:
-                raise ValidationError(
-                    code=ErrorCode.INCONSISTENT_DIMS,
-                    message=(
-                        "inconsistent dims: reducer output must be tensor-like"
-                    ),
-                    help="return a tensor or scalar value from reducer",
-                    related=("reduce reducer output",),
-                    data={},
-                ) from error
-            return coerced
-        return reduced
-
-    return run_with_namespace
+    return NamespaceReduceRuntimeProgram(
+        reducer=reducer,
+        axes=reduce_axes,
+        runtime_context=runtime_context,
+        reducer_fn=reducer_candidate,
+    )
 
 
 __all__ = [

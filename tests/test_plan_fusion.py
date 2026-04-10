@@ -3,8 +3,8 @@ import numpy as np
 from einf.axis import AxisTerms
 from einf.backend import get_backend_array_ops
 from einf.plans.fusion import (
-    discover_tuple_step_fusion,
-    discover_tuple_step_fusions,
+    discover_step_fusion,
+    discover_step_fusions,
 )
 from einf.steps.expand import (
     ExpandRuntimeStep,
@@ -44,12 +44,12 @@ def test_discover_fuses_permute_then_permute() -> None:
         runtime_xp=None,
     )
 
-    fusion = discover_tuple_step_fusion((first_step, second_step))
+    fusion = discover_step_fusion((first_step, second_step))
     assert fusion is not None
     assert fusion.name == "permute_permute"
 
     tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
-    fused_output = fusion.runner((tensor,))
+    fused_output = fusion.tuple_runner((tensor,))
     sequential_output = (second_step.run_unary(first_step.run_unary(tensor)),)
     expected = (np.transpose(tensor, (2, 1, 0)),)
 
@@ -89,12 +89,12 @@ def test_discover_fuses_permute_then_expand() -> None:
         runtime_xp=None,
     )
 
-    fusion = discover_tuple_step_fusion((permute_step, expand_step))
+    fusion = discover_step_fusion((permute_step, expand_step))
     assert fusion is not None
     assert fusion.name == "permute_expand"
 
     tensor = np.arange(6).reshape(3, 2)
-    fused_output = fusion.runner((tensor,))
+    fused_output = fusion.tuple_runner((tensor,))
     sequential_output = (expand_step.run_unary(permute_step.run_unary(tensor)),)
 
     assert isinstance(fused_output[0], np.ndarray)
@@ -148,12 +148,12 @@ def test_discover_fuses_reshape_then_reshape() -> None:
         zero_copy_mode=second_program.zero_copy_mode,
     )
 
-    fusion = discover_tuple_step_fusion((first_step, second_step))
+    fusion = discover_step_fusion((first_step, second_step))
     assert fusion is not None
     assert fusion.name == "reshape_reshape"
 
     tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
-    fused_output = fusion.runner((tensor,))
+    fused_output = fusion.tuple_runner((tensor,))
     sequential_output = (second_step.run_unary(first_step.run_unary(tensor)),)
     expected = (np.reshape(tensor, (2, 12)),)
 
@@ -210,7 +210,7 @@ def test_discover_does_not_fuse_reshape_chain_when_zero_copy_required() -> None:
         zero_copy_mode=second_program.zero_copy_mode,
     )
 
-    fusion = discover_tuple_step_fusion((first_step, second_step))
+    fusion = discover_step_fusion((first_step, second_step))
     assert fusion is None
 
 
@@ -277,7 +277,7 @@ def test_discover_finds_multiple_non_overlapping_fusions() -> None:
         zero_copy_mode=reshape_second_program.zero_copy_mode,
     )
 
-    fusions = discover_tuple_step_fusions(
+    fusions = discover_step_fusions(
         (
             permute_first,
             permute_second,

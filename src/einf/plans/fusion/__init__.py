@@ -1,6 +1,7 @@
-from .engine import discover_tuple_step_fusion, discover_tuple_step_fusions
+from .engine import discover_step_fusion, discover_step_fusions
 from .types import (
     RuntimeStepFusion,
+    RuntimeStepFusionRule,
     RuntimeStepFusions,
     RuntimeSteps,
     SingleOutputRunner,
@@ -8,8 +9,9 @@ from .types import (
 )
 
 __all__ = [
-    "discover_tuple_step_fusion",
-    "discover_tuple_step_fusions",
+    "discover_step_fusion",
+    "discover_step_fusions",
+    "RuntimeStepFusionRule",
     "RuntimeStepFusion",
     "RuntimeStepFusions",
     "RuntimeSteps",

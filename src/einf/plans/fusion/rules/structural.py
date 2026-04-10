@@ -5,7 +5,7 @@ from einf.steps.reshape.constants import ZERO_COPY_ALLOWED_RESHAPE_MODE
 from einf.steps.reshape.runtime import run_reshape_program
 from einf.tensor_types import TensorLike
 
-from ..types import RuntimeSteps, TupleFusionRule, TupleRunner
+from ..types import RuntimeStepFusionRule, RuntimeSteps, TupleRunner
 
 
 def _compose_permutations(
@@ -64,12 +64,15 @@ def build_permute_permute_tuple_runner(window: RuntimeSteps, /) -> TupleRunner |
         runtime_xp=runtime_xp,
     )
 
-    def run_fused_permute(
+    def run_fused_permute(runtime_tensors: tuple[TensorLike, ...], /) -> TensorLike:
+        return fused_step.run_unary(runtime_tensors[0])
+
+    def run_fused_permute_tuple(
         runtime_tensors: tuple[TensorLike, ...], /
     ) -> tuple[TensorLike, ...]:
-        return (fused_step.run_unary(runtime_tensors[0]),)
+        return (run_fused_permute(runtime_tensors),)
 
-    return run_fused_permute
+    return run_fused_permute_tuple
 
 
 def build_permute_expand_tuple_runner(window: RuntimeSteps, /) -> TupleRunner | None:
@@ -225,22 +228,22 @@ def build_reshape_reshape_tuple_runner(window: RuntimeSteps, /) -> TupleRunner |
     return run_fused_reshape
 
 
-PERMUTE_EXPAND_RULE = TupleFusionRule(
+PERMUTE_EXPAND_RULE = RuntimeStepFusionRule(
     name="permute_expand",
     window_size=2,
-    build_runner=build_permute_expand_tuple_runner,
+    build_tuple_runner=build_permute_expand_tuple_runner,
 )
 
-PERMUTE_PERMUTE_RULE = TupleFusionRule(
+PERMUTE_PERMUTE_RULE = RuntimeStepFusionRule(
     name="permute_permute",
     window_size=2,
-    build_runner=build_permute_permute_tuple_runner,
+    build_tuple_runner=build_permute_permute_tuple_runner,
 )
 
-RESHAPE_RESHAPE_RULE = TupleFusionRule(
+RESHAPE_RESHAPE_RULE = RuntimeStepFusionRule(
     name="reshape_reshape",
     window_size=2,
-    build_runner=build_reshape_reshape_tuple_runner,
+    build_tuple_runner=build_reshape_reshape_tuple_runner,
 )
 
 
