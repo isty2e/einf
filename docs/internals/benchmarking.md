@@ -47,7 +47,7 @@ python benchmarks/compare/einf_einops_einx.py \
   --warmup 4 \
   --warm-repeats 3 \
   --warm-iterations 60 \
-  --output docs/benchmarks/2026-02-15-einf-vs-einops-einx-large-torch.md
+  --output artifacts/bench/2026-02-15-einf-vs-einops-einx-large-torch.md
 ```
 
 What the script reports:
@@ -72,7 +72,7 @@ python benchmarks/compare/einf_einops_einx_dynamic.py \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output docs/benchmarks/2026-02-15-einf-vs-einops-einx-dynamic-large-target-r3-torch.md
+  --output artifacts/bench/2026-02-15-einf-vs-einops-einx-dynamic-large-target-r3-torch.md
 ```
 
 What matters here:
@@ -96,8 +96,8 @@ python benchmarks/compare/expression_parity.py \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output docs/benchmarks/2026-04-10-gap-expression-parity.md \
-  --raw-output docs/benchmarks/raw/2026-04-10-gap-expression-parity.json
+  --output artifacts/bench/2026-04-10-gap-expression-parity.md \
+  --raw-output artifacts/bench/raw/2026-04-10-gap-expression-parity.json
 ```
 
 Current built-in strategies include:
@@ -122,8 +122,8 @@ python benchmarks/audit/expression_layout.py \
   --seed 20260215 \
   --batches 32 \
   --top-k 3 \
-  --output docs/benchmarks/2026-04-10-gap-expression-layout.md \
-  --raw-output docs/benchmarks/raw/2026-04-10-gap-expression-layout.json
+  --output artifacts/bench/2026-04-10-gap-expression-layout.md \
+  --raw-output artifacts/bench/raw/2026-04-10-gap-expression-layout.json
 ```
 
 This audit records:
@@ -142,8 +142,8 @@ Example:
 ```bash
 python benchmarks/profile/overhead_breakdown.py \
   --backend torch \
-  --output docs/benchmarks/2026-02-15-overhead-breakdown-torch.md \
-  --raw-output docs/benchmarks/raw/2026-02-15-overhead-breakdown-torch.json
+  --output artifacts/bench/2026-02-15-overhead-breakdown-torch.md \
+  --raw-output artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json
 ```
 
 This is an internal profiler, not a library-to-library fairness benchmark.
@@ -164,8 +164,8 @@ python benchmarks/profile/warm_calltree.py \
   --loops 128 \
   --sort cumtime \
   --top 40 \
-  --output docs/benchmarks/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.md \
-  --raw-output docs/benchmarks/raw/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.json
+  --output artifacts/bench/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.md \
+  --raw-output artifacts/bench/raw/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.json
 ```
 
 ## Guardrail Checks
@@ -176,8 +176,8 @@ Example:
 
 ```bash
 python benchmarks/guardrail/check_overhead.py \
-  --baseline docs/benchmarks/raw/2026-02-15-overhead-breakdown-post-6pv-10-torch.json \
-  --candidate docs/benchmarks/raw/2026-02-16-overhead-breakdown-torch.json \
+  --baseline artifacts/bench/raw/2026-02-15-overhead-breakdown-post-6pv-10-torch.json \
+  --candidate artifacts/bench/raw/2026-02-16-overhead-breakdown-torch.json \
   --metric instrumented_call_ms \
   --max-regression-ratio 0.10
 ```

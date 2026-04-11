@@ -11,7 +11,13 @@ InitializeOptions = Mapping[str, str | Sequence[str] | None]
 
 @dataclass(frozen=True, slots=True)
 class LspConfig:
-    """Static LSP session configuration derived from initialize options."""
+    """Static LSP session configuration for the `einf-lsp` sidecar.
+
+    The recommended editor model runs `einf-lsp` alongside a primary Python
+    language server and leaves ``checkers`` empty. Configured checkers act as a
+    fallback single-server mode for editors that cannot comfortably host a
+    separate Python checker server.
+    """
 
     parser: str = "ast"
     checkers: tuple[str, ...] = ()
@@ -21,7 +27,7 @@ class LspConfig:
         cls,
         initialize_options: InitializeOptions | None,
     ) -> Self:
-        """Build one canonical config from LSP initialize options."""
+        """Build one canonical sidecar config from LSP initialize options."""
         if initialize_options is None:
             return cls()
 

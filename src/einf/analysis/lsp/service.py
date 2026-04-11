@@ -33,7 +33,12 @@ class LspDocumentState:
 
 
 class LspService:
-    """Pure document-analysis service used by the pygls transport layer."""
+    """Pure document-analysis service used by the pygls transport layer.
+
+    `einf` semantic analysis is the primary responsibility. External checker
+    execution is an optional save-boundary fallback for single-server editor
+    setups, not the preferred integration path.
+    """
 
     def __init__(self, config: LspConfig) -> None:
         self._config = config
@@ -85,7 +90,7 @@ class LspService:
         source: str,
         version: int | None,
     ) -> LspDocumentState:
-        """Reanalyze one saved document and refresh external checker state."""
+        """Reanalyze one saved document and refresh fallback checker state."""
         return self._update_document(
             uri=uri,
             source=source,

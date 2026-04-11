@@ -1,224 +1,51 @@
 # einf
 
-`einf` is a tensor DSL with axis signatures and first-class `TensorOp` objects.
-
-You define an operation once (for example `rearrange`, `reduce`, `contract`, `einop`) and reuse it across calls.
+`einf` is a tensor DSL with axis signatures and first-class `TensorOp`
+objects. Define an operation once — `rearrange`, `reduce`, `contract`,
+`einop`, `view`, `repeat` — and reuse it across calls, shapes, and
+backends.
 
 ## Install
 
 ```bash
-pip install -e .
-pip install -e ".[dev]"
-pip install -e ".[analysis]"
-pip install -e ".[lsp]"
+pip install git+https://github.com/isty2e/einf.git
 ```
 
-Python: `>=3.10`
+Python `>=3.10`. Extras (`analysis`, `lsp`, `dev`, `docs`) and the
+contributor editable install are documented in
+[docs/getting-started/install.md](docs/getting-started/install.md).
 
-`analysis` installs optional parser dependencies used by the validator/LSP analysis stack, including `LibCstParserBackend`.
-`lsp` installs the optional LSP sidecar dependencies (`pygls`, `lsprotocol`).
-
-## Support Matrix
-
-Current 0.2.x support tiers:
-
-| Surface | Status | Notes |
-| --- | --- | --- |
-| Core DSL/runtime (`rearrange`, `reduce`, `contract`, `einop`) | Stable | Main product surface. |
-| Validator CLI (`einf-validate`) | Stable | Batch/CI-friendly static analysis path. |
-| `einf-lsp` sidecar | Supported | Semantic sidecar; keep a primary Python server alongside it when possible. |
-| Helix integration | Supported | Clean documented multi-LSP path. |
-| Zed integration | Supported with manual configuration | No extension is required, but the path is less validated than Helix. |
-| VS Code integration | Not first-class yet | A thin extension is still the intended supported path. |
-| External checker execution through `einf-lsp` | Fallback | Useful when a separate Python server is impractical. |
-| Benchmark tooling | Supported for development and release gates | Compare/audit/profile/guardrail tools live under `benchmarks/`; usage notes are in `docs/benchmarking.md`. |
-
-## LSP Sidecar
-
-`einf` ships a minimal external language server sidecar for editor integration.
-
-```bash
-einf-lsp
-```
-
-Recommended editor model:
-
-1. run `einf-lsp` alongside your primary Python language server,
-2. let the primary Python server handle Python typing/navigation,
-3. use `einf-lsp` for `einf` semantics, semantic tokens, hover metadata, and inlay hints.
-
-For editors that can comfortably run multiple language servers, keep `einf-lsp`
-focused on `einf` semantics and leave external checker execution to the primary
-Python toolchain.
-
-Editor-specific setup notes live under `docs/editors/`.
-
-The LSP server uses `initialize` options as its configuration source of truth.
-The default and recommended mode keeps `checkers` empty.
-
-```json
-{
-  "parser": "ast",
-  "checkers": []
-}
-```
-
-Current minimal scope:
-
-1. document sync,
-2. `publishDiagnostics` from `einf` semantic analysis,
-3. optional saved-file checker diagnostics from configured external checkers,
-4. semantic tokens derived from `axis_tokens`.
-
-Current richer editor affordances on top of the minimal sidecar:
-
-1. hover metadata for axis-group relationships and role summaries,
-2. inlay hints for selected non-trivial axis roles (`contracted`, `reduced`, `introduced`, `pack`).
-
-Current editor support summary:
-
-1. Helix: clean documented sidecar path.
-2. Zed: documented manual sidecar path, but less polished and less validated than Helix.
-3. VS Code: not a first-class path from this repository until a thin extension exists.
-
-Fallback single-server mode:
-
-If your editor setup cannot comfortably run `einf-lsp` alongside a separate
-Python language server, you can ask `einf-lsp` to invoke external checkers on
-save by passing `checkers` in `initialize` options.
-
-```json
-{
-  "parser": "ast",
-  "checkers": ["basedpyright", "pyrefly"]
-}
-```
-
-External checker diagnostics refresh on save boundaries. Unsaved document changes continue to receive fresh `einf` semantic diagnostics and semantic tokens, but stale checker diagnostics are not retained as if they were current.
-
-## Validator CLI
-
-`einf` ships a checker-agnostic validator CLI for static DSL analysis.
-
-```bash
-einf-validate path/to/module.py
-einf-validate src/ --parser ast
-einf-validate src/ --parser libcst
-einf-validate src/ --checker basedpyright --checker pyrefly
-```
-
-The command writes stable JSON to stdout and returns:
-
-1. `0` when no diagnostics or validator failures are present,
-2. `1` when any file contains semantic diagnostics, parse failures, or read failures.
-
-Output contract:
-
-1. `schema_version`
-2. `parser_backend`
-3. `checker_failures[]`
-3. `files[]`
-   `path`
-   `diagnostics[]`
-   `checker_diagnostics[]`
-   `axis_tokens[]`
-   `failures[]`
-
-`diagnostics` contains `einf` semantic diagnostics. `checker_diagnostics` contains normalized external type-checker diagnostics. `failures` contains validator ingress failures such as unreadable files or parse errors. `checker_failures` contains checker invocation failures such as unavailable executables or malformed checker output.
-
-## Quick Start
+## A taste
 
 ```python
 import numpy as np
-from einf import ax, axes, rearrange, reduce, einop
+from einf import ax, axes, einop
 
 b, n, d, m = axes("b", "n", "d", "m")
-h, w, r, j = axes("h", "w", "r", "j")
 
-# 1) Rearrange
-transpose = rearrange(ax[b, n, d], ax[b, d, n])
-y = transpose(np.zeros((2, 3, 4), dtype=np.float32))
+matmul = einop((ax[b, n, d], ax[d, m]), ax[b, n, m])
 
-# 2) Split with explicit sizes
-split_dim1 = rearrange(
-    ax[b, (n + m), d],
-    (ax[b, n, d], ax[b, m, d]),
-).with_sizes(n=1, m=2)
-splitted_1, splitted_2 = split_dim1(np.zeros((2, 3, 4), dtype=np.float32))
-
-# 3) Reduce (default reducer is sum)
-reduce_dim1 = reduce(ax[b, n, d], ax[b, d])
-r = reduce_dim1(np.zeros((2, 3, 4), dtype=np.float32))
-
-# 4) Generic einop
-matmul_like = einop((ax[b, n, d], ax[d, m]), ax[b, n, m])
-out = matmul_like(
-    np.zeros((2, 3, 4), dtype=np.float32),
-    np.zeros((4, 5), dtype=np.float32),
-)
-
-# 5) Generic einop: contract + split outputs (2 -> 2)
-contract_split_factorized = einop(
-    (ax[b, ((h + w) * r), n], ax[n, d]),
-    (ax[b, (h * r), d], ax[b, (w * r), d]),
-).with_sizes(h=2, r=3)
-left_f, right_f = contract_split_factorized(
-    np.zeros((2, 9, 4), dtype=np.float32),
-    np.zeros((4, 5), dtype=np.float32),
-)
-# left_f: (2, 6, 5), right_f: (2, 3, 5)
+x = np.zeros((2, 3, 4), dtype=np.float32)
+w = np.zeros((4, 5), dtype=np.float32)
+matmul(x, w).shape
+# -> (2, 3, 5)
 ```
 
-## More Examples
+## Documentation
 
-```python
-import numpy as np
-from einf import ax, axes, rearrange, reduce
+The [docs site](docs/index.md) is the canonical source of truth.
 
-b, h, w, d = axes("b", "h", "w", "d")
+- [First ops](docs/getting-started/first-ops.md) and
+  [attention, progressively](docs/getting-started/attention-progressive.md)
+  for the tutorial path.
+- [Axis signatures](docs/concepts/axis-signatures.md),
+  [TensorOp as a value](docs/concepts/tensorop-as-value.md), and
+  [shapes and broadcasting](docs/concepts/shapes-and-broadcasting.md)
+  for the mental model.
+- Recipes in [cookbook/](docs/cookbook/): attention, layernorm,
+  conv/pool, batched gather.
+- [Validator CLI](docs/guides/validator-cli.md) and
+  [LSP sidecar](docs/guides/lsp-sidecar.md) for tooling.
+- [API reference](docs/reference/api/index.md) and
+  [internals](docs/internals/architecture.md).
 
-# 1) Callable reducer (non-string reducer)
-reduce_with_callable = reduce(ax[b, h, d], ax[b]).reduce_by(np.max)
-result = reduce_with_callable(np.arange(24, dtype=np.float32).reshape(2, 3, 4))
-
-# 2) Partial explicit sizes:
-#    you do not need to provide every dim if remaining dims can be solved from input shape.
-split_hw = rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(h=2)
-y = split_hw(np.zeros((3, 10, 4), dtype=np.float32))  # shape: (3, 2, 5, 4)
-```
-
-## Pack (Variadic Axes)
-
-```python
-import numpy as np
-from einf import ax, axes, packs, rearrange
-
-(b,) = axes("b")
-(tail,) = packs("tail")
-
-# tail matches zero or more axes
-move_b_to_last = rearrange(ax[b, tail], ax[tail, b])
-
-y1 = move_b_to_last(np.zeros((2, 3, 4), dtype=np.float32))  # (3, 4, 2)
-y2 = move_b_to_last(np.zeros((5,), dtype=np.float32))       # (5,)  (tail == empty)
-```
-
-## Performance Note (Cold vs Warm)
-
-`TensorOp` construction includes planning/lowering. Reuse the same op instance for warm-path performance.
-
-`einf` also has bounded constructor caches for identical operation specs (including configured variants such as `with_sizes(...)` and `reduce_by(...)`), so repeated identical construction often reuses existing objects.
-
-Still, cache misses are cold-path work, so hoisting/reusing one op instance remains the recommended pattern.
-
-```python
-# good: one-time construction
-REDUCE_BD = reduce(ax[b, n, d], ax[b, d])
-
-def forward(x):
-    return REDUCE_BD(x)
-
-# avoid: cold construction per call
-def slow_forward(x):
-    return reduce(ax[b, n, d], ax[b, d])(x)
-```

@@ -81,3 +81,4 @@ nav:
       - Design rationale: internals/design-rationale.md
       - Module map: internals/module-map.md
       - Benchmarking: internals/benchmarking.md
+      - Performance: internals/performance.md

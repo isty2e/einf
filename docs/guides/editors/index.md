@@ -1,5 +1,13 @@
 # Editor Integration
 
+## Per-editor status
+
+| Editor | Status | Notes |
+| --- | --- | --- |
+| [Helix](helix.md) | **Supported** | Working copy-paste `languages.toml` recipe. |
+| [Zed](zed.md) | **Adapter required** | Architectural fit is good, but no adapter ships from this repo yet. |
+| [VS Code](vscode.md) | **Not shipped** | Needs a thin extension; fall back to the validator CLI or another editor. |
+
 `einf` exposes three integration modes today.
 
 ## 1. Separate `einf-lsp` Sidecar
@@ -16,8 +24,7 @@ server for Python.
 Install:
 
 ```bash
-pip install -e .
-pip install -e ".[lsp]"
+pip install "einf[lsp] @ git+https://github.com/isty2e/einf.git"
 ```
 
 Launch command:
@@ -35,17 +42,9 @@ Recommended initialize options:
 }
 ```
 
-Current editor-specific status:
-
-- Helix: clean documented path and the most validated editor target today
-- Zed: documented manual sidecar path exists, but it is less polished and less validated than Helix
-- VS Code: not yet a first-class path from this repository; a thin extension is still needed
-
-See:
-
-- `docs/editors/helix.md`
-- `docs/editors/zed.md`
-- `docs/editors/vscode.md`
+Per-editor recipes: [Helix](helix.md), [Zed](zed.md), [VS Code](vscode.md).
+See the [status table](#per-editor-status) above for what each page
+actually delivers today.
 
 ## 2. Fallback Single-Server Mode
 
@@ -58,8 +57,7 @@ your editor setup.
 Install:
 
 ```bash
-pip install -e .
-pip install -e ".[lsp]"
+pip install "einf[lsp] @ git+https://github.com/isty2e/einf.git"
 ```
 
 You must also install the checker executables you reference in `checkers`, for
@@ -88,13 +86,13 @@ checks without editor integration.
 Base install:
 
 ```bash
-pip install -e .
+pip install git+https://github.com/isty2e/einf.git
 ```
 
 Optional parser support:
 
 ```bash
-pip install -e ".[analysis]"
+pip install "einf[analysis] @ git+https://github.com/isty2e/einf.git"
 ```
 
 Examples:

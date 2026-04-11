@@ -1,5 +1,11 @@
 # VS Code
 
+!!! warning "Extension not shipped yet"
+    VS Code needs a thin extension to launch `einf-lsp`, and this
+    repository does not ship one. There is no editor-local workaround
+    today — use the [validator CLI](../validator-cli.md) or a
+    [supported editor](index.md) instead.
+
 VS Code is still not a first-class editor target for `einf-lsp` from this
 repository.
 

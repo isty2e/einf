@@ -124,6 +124,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-*/
 env/
 venv/
 ENV/
@@ -186,3 +187,6 @@ docs/spec
 
 pyrightconfig.json
 .tickets/
+
+# Benchmark raw JSON dumps (summary/report markdown stays tracked)
+artifacts/**/raw/
