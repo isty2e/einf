@@ -18,6 +18,21 @@ Python: `>=3.10`
 `analysis` installs optional parser dependencies used by the validator/LSP analysis stack, including `LibCstParserBackend`.
 `lsp` installs the optional LSP sidecar dependencies (`pygls`, `lsprotocol`).
 
+## Support Matrix
+
+Current 0.2.x support tiers:
+
+| Surface | Status | Notes |
+| --- | --- | --- |
+| Core DSL/runtime (`rearrange`, `reduce`, `contract`, `einop`) | Stable | Main product surface. |
+| Validator CLI (`einf-validate`) | Stable | Batch/CI-friendly static analysis path. |
+| `einf-lsp` sidecar | Supported | Semantic sidecar; keep a primary Python server alongside it when possible. |
+| Helix integration | Supported | Clean documented multi-LSP path. |
+| Zed integration | Supported with manual configuration | No extension is required, but the path is less validated than Helix. |
+| VS Code integration | Not first-class yet | A thin extension is still the intended supported path. |
+| External checker execution through `einf-lsp` | Fallback | Useful when a separate Python server is impractical. |
+| Benchmark tooling | Supported for development and release gates | Compare/audit/profile/guardrail tools live under `benchmarks/`; usage notes are in `docs/benchmarking.md`. |
+
 ## LSP Sidecar
 
 `einf` ships a minimal external language server sidecar for editor integration.
@@ -26,12 +41,25 @@ Python: `>=3.10`
 einf-lsp
 ```
 
+Recommended editor model:
+
+1. run `einf-lsp` alongside your primary Python language server,
+2. let the primary Python server handle Python typing/navigation,
+3. use `einf-lsp` for `einf` semantics, semantic tokens, hover metadata, and inlay hints.
+
+For editors that can comfortably run multiple language servers, keep `einf-lsp`
+focused on `einf` semantics and leave external checker execution to the primary
+Python toolchain.
+
+Editor-specific setup notes live under `docs/editors/`.
+
 The LSP server uses `initialize` options as its configuration source of truth.
+The default and recommended mode keeps `checkers` empty.
 
 ```json
 {
   "parser": "ast",
-  "checkers": ["basedpyright", "pyrefly"]
+  "checkers": []
 }
 ```
 
@@ -39,13 +67,32 @@ Current minimal scope:
 
 1. document sync,
 2. `publishDiagnostics` from `einf` semantic analysis,
-3. saved-file checker diagnostics from configured external checkers,
+3. optional saved-file checker diagnostics from configured external checkers,
 4. semantic tokens derived from `axis_tokens`.
 
 Current richer editor affordances on top of the minimal sidecar:
 
 1. hover metadata for axis-group relationships and role summaries,
 2. inlay hints for selected non-trivial axis roles (`contracted`, `reduced`, `introduced`, `pack`).
+
+Current editor support summary:
+
+1. Helix: clean documented sidecar path.
+2. Zed: documented manual sidecar path, but less polished and less validated than Helix.
+3. VS Code: not a first-class path from this repository until a thin extension exists.
+
+Fallback single-server mode:
+
+If your editor setup cannot comfortably run `einf-lsp` alongside a separate
+Python language server, you can ask `einf-lsp` to invoke external checkers on
+save by passing `checkers` in `initialize` options.
+
+```json
+{
+  "parser": "ast",
+  "checkers": ["basedpyright", "pyrefly"]
+}
+```
 
 External checker diagnostics refresh on save boundaries. Unsaved document changes continue to receive fresh `einf` semantic diagnostics and semantic tokens, but stale checker diagnostics are not retained as if they were current.
 
