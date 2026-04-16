@@ -28,6 +28,11 @@ lsp = [
   "lsprotocol>=2023.0.0",
   "pygls>=1.3",
 ]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.24",
+]
 
 [project.scripts]
 einf-validate = "einf.analysis.validator.cli:main"

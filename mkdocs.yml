@@ -1,0 +1,83 @@
+site_name: einf
+site_description: Tensor DSL with axis signatures and first-class TensorOp transforms
+repo_url: https://github.com/isty2e/einf
+docs_dir: docs
+
+exclude_docs: |
+  benchmarks/
+  spec/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+    - search.suggest
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            docstring_style: google
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Install: getting-started/install.md
+      - First ops: getting-started/first-ops.md
+      - Attention, progressively: getting-started/attention-progressive.md
+  - Concepts:
+      - Axis signatures: concepts/axis-signatures.md
+      - TensorOp as a value: concepts/tensorop-as-value.md
+      - Shapes and broadcasting: concepts/shapes-and-broadcasting.md
+  - Cookbook:
+      - Attention: cookbook/attention.md
+      - LayerNorm: cookbook/layernorm.md
+      - Conv / pool: cookbook/conv-pool.md
+      - Batched gather: cookbook/batched-gather.md
+  - Guides:
+      - Editors:
+          - Overview: guides/editors/index.md
+          - Helix: guides/editors/helix.md
+          - VS Code: guides/editors/vscode.md
+          - Zed: guides/editors/zed.md
+      - Validator CLI: guides/validator-cli.md
+      - LSP sidecar: guides/lsp-sidecar.md
+  - Reference:
+      - API: reference/api/index.md
+  - Internals:
+      - Architecture: internals/architecture.md
+      - Design rationale: internals/design-rationale.md
+      - Module map: internals/module-map.md
+      - Benchmarking: internals/benchmarking.md
