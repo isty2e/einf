@@ -60,3 +60,15 @@ version-file = "src/einf/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = [
+  "src/einf/analysis/lsp/cli.py",
+  "src/einf/analysis/lsp/hover.py",
+  "src/einf/analysis/lsp/inlay_hints.py",
+  "src/einf/analysis/lsp/server.py",
+  "tests/test_analysis_lsp_server.py",
+  "tests/test_conformance_analysis.py",
+]
+typeCheckingMode = "standard"
