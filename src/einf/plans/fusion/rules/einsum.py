@@ -1,18 +1,18 @@
 from collections.abc import Callable
 
-import opt_einsum
-
 from einf.steps.axis_slice import AxisSliceRuntimeStep
 from einf.steps.einsum import EinsumRuntimeStep
 from einf.steps.einsum.native import try_native_contract_einsum
 from einf.steps.einsum.step import (
+    _cached_contract_expression,
     _EinsumEquationExecutor,
     _is_binary_matmul_equation,
+    _operand_shapes_key,
     _prefer_native_matmul,
 )
 from einf.tensor_types import TensorLike
 
-from ..types import RuntimeSteps, TupleFusionRule, TupleRunner
+from ..types import RuntimeStepFusionRule, RuntimeSteps, TupleRunner
 
 
 def _slice_tensor_by_sizes_unchecked(
@@ -43,23 +43,6 @@ def _slice_tensor_by_sizes_unchecked(
         outputs.append(tensor[prefix + (slice(offset, next_offset),) + suffix])
         offset = next_offset
     return tuple(outputs)
-
-
-def _binary_expression_key(
-    lhs: TensorLike,
-    rhs: TensorLike,
-    /,
-) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
-    """Build hashable binary operand shape key for contract expression cache."""
-    lhs_shape = getattr(lhs, "shape", None)
-    rhs_shape = getattr(rhs, "shape", None)
-    if not isinstance(lhs_shape, tuple) or not isinstance(rhs_shape, tuple):
-        return None
-    if any(type(dim) is not int for dim in lhs_shape):
-        return None
-    if any(type(dim) is not int for dim in rhs_shape):
-        return None
-    return lhs_shape, rhs_shape
 
 
 def _resolve_binary_order(
@@ -172,17 +155,12 @@ def build_einsum_binary_tuple_runner(window: RuntimeSteps, /) -> TupleRunner | N
 
         return run_binary
 
-    expression_cache: dict[
-        tuple[tuple[int, ...], tuple[int, ...]],
-        Callable[..., TensorLike],
-    ] = {}
-
     def run_binary(
         runtime_tensors: tuple[TensorLike, ...], /
     ) -> tuple[TensorLike, ...]:
         lhs_tensor = runtime_tensors[lhs_index]
         rhs_tensor = runtime_tensors[rhs_index]
-        expression_key = _binary_expression_key(lhs_tensor, rhs_tensor)
+        expression_key = _operand_shapes_key((lhs_tensor, rhs_tensor))
         if expression_key is None:
             return (
                 executor.run(
@@ -192,15 +170,7 @@ def build_einsum_binary_tuple_runner(window: RuntimeSteps, /) -> TupleRunner | N
                     False,
                 ),
             )
-        expression = expression_cache.get(expression_key)
-        if expression is None:
-            expression = opt_einsum.contract_expression(
-                equation,
-                expression_key[0],
-                expression_key[1],
-                optimize="auto",
-            )
-            expression_cache[expression_key] = expression
+        expression = _cached_contract_expression(equation, expression_key)
         return (expression(lhs_tensor, rhs_tensor),)
 
     return run_binary
@@ -264,17 +234,12 @@ def build_einsum_axis_slice_tuple_runner(
 
         return run_fused_binary_split
 
-    expression_cache: dict[
-        tuple[tuple[int, ...], tuple[int, ...]],
-        Callable[..., TensorLike],
-    ] = {}
-
     def run_fused_binary_split(
         runtime_tensors: tuple[TensorLike, ...], /
     ) -> tuple[TensorLike, ...]:
         lhs_tensor = runtime_tensors[lhs_index]
         rhs_tensor = runtime_tensors[rhs_index]
-        expression_key = _binary_expression_key(lhs_tensor, rhs_tensor)
+        expression_key = _operand_shapes_key((lhs_tensor, rhs_tensor))
         if expression_key is None:
             intermediate = executor.run(
                 equation,
@@ -283,15 +248,7 @@ def build_einsum_axis_slice_tuple_runner(
                 allow_native_matmul,
             )
         else:
-            expression = expression_cache.get(expression_key)
-            if expression is None:
-                expression = opt_einsum.contract_expression(
-                    equation,
-                    expression_key[0],
-                    expression_key[1],
-                    optimize="auto",
-                )
-                expression_cache[expression_key] = expression
+            expression = _cached_contract_expression(equation, expression_key)
             intermediate = expression(lhs_tensor, rhs_tensor)
         return _slice_tensor_by_sizes_unchecked(
             tensor=intermediate,
@@ -302,16 +259,16 @@ def build_einsum_axis_slice_tuple_runner(
     return run_fused_binary_split
 
 
-EINSUM_AXIS_SLICE_RULE = TupleFusionRule(
+EINSUM_AXIS_SLICE_RULE = RuntimeStepFusionRule(
     name="einsum_axis_slice",
     window_size=2,
-    build_runner=build_einsum_axis_slice_tuple_runner,
+    build_tuple_runner=build_einsum_axis_slice_tuple_runner,
 )
 
-EINSUM_BINARY_RULE = TupleFusionRule(
+EINSUM_BINARY_RULE = RuntimeStepFusionRule(
     name="einsum_binary",
     window_size=1,
-    build_runner=build_einsum_binary_tuple_runner,
+    build_tuple_runner=build_einsum_binary_tuple_runner,
 )
 
 

@@ -5,11 +5,12 @@ import numpy as np
 import pytest
 
 from einf import ax, axes
-from einf.axis import AxisSide
-from einf.backend import BACKEND_RESOLVER
+from einf.axis import AxisSide, AxisTerms
+from einf.backend import BACKEND_RESOLVER, BackendProfile
 from einf.lowering import DefaultLoweringProgram, StaticLoweringProgram
 from einf.plans.abstract import AbstractPlan
 from einf.plans.context import PlanSelectionContext
+from einf.plans.runners import RouteRunnerKernel, StepChainRunnerKernel
 from einf.plans.scoring import SymbolicPlanScore
 from einf.plans.symbolic import SymbolicPlan
 from einf.steps.axis_slice import AxisSliceSymbolicStep
@@ -38,6 +39,14 @@ from einf.steps.permute import (
     build_axis_permute_symbolic_program,
 )
 from einf.steps.reduce import ReduceSymbolicStep
+from einf.steps.reduce.step import (
+    DirectMethodReduceRuntimeProgram,
+    DynamicReduceRuntimeProgram,
+    NamespaceReduceRuntimeProgram,
+    ReduceRuntimeProgram,
+    ReduceRuntimeStep,
+    build_reduce_symbolic_program,
+)
 from einf.steps.reshape import ReshapeSymbolicStep
 from einf.tensor_types import TensorLike
 
@@ -501,6 +510,31 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     )
     assert len(contract_outputs) == 1
 
+    contract_ir = lowering.ir_program(
+        op_name="contract",
+        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
+        rhs=AxisSide.from_spec(ax[b, n, j], side_name="rhs"),
+        explicit_sizes_items=(),
+    )
+    contract_plan = lowering.symbolic_candidates(
+        ir_program=contract_ir,
+        explicit_sizes_items=(),
+    )[0]
+    assert contract_plan.kind == "contract"
+    assert einop_contract_plan.kind == "contract"
+    assert len(contract_plan.steps) == 1
+    assert len(einop_contract_plan.steps) == 1
+
+    contract_step = contract_plan.steps[0]
+    einop_contract_step = einop_contract_plan.steps[0]
+    assert isinstance(contract_step, EinsumSymbolicStep)
+    assert isinstance(einop_contract_step, EinsumSymbolicStep)
+    assert contract_step.program == einop_contract_step.program
+    assert contract_step.preview_equations() == ("abc,cd->abd",)
+    assert einop_contract_step.preview_equations() == ("abc,cd->abd",)
+    assert contract_step.program.allow_native_matmul
+    assert einop_contract_step.program.allow_native_matmul
+
     route_abstract_plan = AbstractPlan(
         op_name="rearrange",
         lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
@@ -520,6 +554,64 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     )
     assert routed_outputs[0].shape == (4, 5)
     assert routed_outputs[1].shape == (2, 3, 4)
+
+
+def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy() -> None:
+    b, h, w, d = axes("b", "h", "w", "d")
+    sum_step = ReduceSymbolicStep(
+        lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
+        rhs=AxisSide.from_spec(ax[b, d], side_name="rhs"),
+        program=build_reduce_symbolic_program(
+            lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
+            rhs=AxisSide.from_spec(ax[b, d], side_name="rhs"),
+            reducer="sum",
+            reduce_axes=AxisTerms.from_spec((h, w)),
+            is_default_reducer=True,
+        ),
+    )
+    tensor = np.zeros((2, 3, 4, 5), dtype=np.float32)
+    numpy_profile = BACKEND_RESOLVER.resolve(tensor, op_name="reduce")
+    runtime_context = RuntimeSpecializationContext(
+        input_shapes=(tensor.shape,),
+        backend_profile=numpy_profile,
+    )
+    sum_runtime = sum_step.specialize(runtime_context)
+    assert isinstance(sum_runtime, ReduceRuntimeStep)
+    assert isinstance(sum_runtime.program, ReduceRuntimeProgram)
+    assert isinstance(sum_runtime.program, DirectMethodReduceRuntimeProgram)
+
+    namespace_profile = BackendProfile(
+        namespace=numpy_profile.namespace,
+        namespace_id=numpy_profile.namespace_id,
+        backend_family=None,
+        supports_contract_einsum=numpy_profile.supports_contract_einsum,
+        supports_strict_view=numpy_profile.supports_strict_view,
+    )
+    namespace_runtime = sum_step.specialize(
+        RuntimeSpecializationContext(
+            input_shapes=(tensor.shape,),
+            backend_profile=namespace_profile,
+        )
+    )
+    assert isinstance(namespace_runtime, ReduceRuntimeStep)
+    assert isinstance(namespace_runtime.program, ReduceRuntimeProgram)
+    assert isinstance(namespace_runtime.program, NamespaceReduceRuntimeProgram)
+
+    callable_step = ReduceSymbolicStep(
+        lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
+        rhs=AxisSide.from_spec(ax[b, d], side_name="rhs"),
+        program=build_reduce_symbolic_program(
+            lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
+            rhs=AxisSide.from_spec(ax[b, d], side_name="rhs"),
+            reducer=lambda value, axis: np.sum(value, axis=axis),
+            reduce_axes=AxisTerms.from_spec((h, w)),
+            is_default_reducer=False,
+        ),
+    )
+    callable_runtime = callable_step.specialize(runtime_context)
+    assert isinstance(callable_runtime, ReduceRuntimeStep)
+    assert isinstance(callable_runtime.program, ReduceRuntimeProgram)
+    assert isinstance(callable_runtime.program, DynamicReduceRuntimeProgram)
 
 
 def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> None:
@@ -813,3 +905,73 @@ def test_abstract_plan_execute_einop_contract_runs_real_runtime_step() -> None:
     assert len(outputs) == 1
     expected = np.einsum("bnd,dj->bnj", left, right)
     np.testing.assert_allclose(np.asarray(outputs[0]), expected)
+
+
+def test_abstract_plan_builds_route_runner_kernel() -> None:
+    b, n, d, j = axes("b", "n", "d", "j")
+    abstract = AbstractPlan(
+        op_name="rearrange",
+        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
+        rhs=AxisSide.from_spec((ax[d, j], ax[b, n, d]), side_name="rhs"),
+        explicit_sizes_items=(),
+        lowering=DefaultLoweringProgram(),
+    )
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3, 4), (4, 5)),
+        backend_profile=None,
+    )
+    tensors = (
+        np.zeros((2, 3, 4), dtype=np.float32),
+        np.zeros((4, 5), dtype=np.float32),
+    )
+
+    symbolic_plan = abstract._select_runtime_symbolic_plan(context=context)
+    runner_kernel = abstract._build_runner_kernel(
+        symbolic_plan=symbolic_plan,
+        context=context,
+        tensors=tensors,
+    )
+
+    assert isinstance(runner_kernel, RouteRunnerKernel)
+    assert runner_kernel.input_arity == 2
+    assert runner_kernel.output_indices == (1, 0)
+
+
+def test_abstract_plan_builds_step_chain_runner_kernel() -> None:
+    lhs, rhs = _unary_side()
+    symbolic = SymbolicPlan(
+        kind="identity",
+        input_arity=1,
+        output_arity=1,
+        steps=(
+            _IdentitySymbolicStep(
+                name="identity",
+                input_arity=1,
+                output_arity=1,
+            ),
+        ),
+    )
+    abstract = AbstractPlan(
+        op_name="rearrange",
+        lhs=lhs,
+        rhs=rhs,
+        explicit_sizes_items=(),
+        lowering=StaticLoweringProgram(candidates=(symbolic,)),
+    )
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3),),
+        backend_profile=None,
+    )
+    tensor = np.arange(6).reshape(2, 3)
+
+    symbolic_plan = abstract._select_runtime_symbolic_plan(context=context)
+    runner_kernel = abstract._build_runner_kernel(
+        symbolic_plan=symbolic_plan,
+        context=context,
+        tensors=(tensor,),
+    )
+
+    assert isinstance(runner_kernel, StepChainRunnerKernel)
+    assert runner_kernel.input_arity == 1
+    assert runner_kernel.output_arity == 1
+    assert len(runner_kernel.runtime_steps) == 1

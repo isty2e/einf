@@ -1,10 +1,10 @@
-from einf.backend import (
-    BackendProfile,
-    is_namespace_family,
+from einf.backend import BackendProfile
+from einf.backend.memory_alias import (
     numpy_shares_memory,
     tensor_numel,
     torch_storage_ptr,
 )
+from einf.backend.namespace import is_namespace_family
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.tensor_types import TensorLike
 

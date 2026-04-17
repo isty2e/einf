@@ -2,10 +2,10 @@ from dataclasses import dataclass
 
 from einf.backend import (
     ArrayNamespace,
-    ArrayNamespaceBinding,
     BackendArrayOps,
     get_backend_array_ops,
 )
+from einf.backend.runtime import ArrayNamespaceBinding
 from einf.steps.base import RuntimeSpecializationContext
 from einf.tensor_types import TensorLike
 

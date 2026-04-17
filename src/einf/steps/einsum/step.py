@@ -5,7 +5,8 @@ from functools import lru_cache
 import opt_einsum
 
 from einf.axis import AxisSide, ScalarAxisTerms
-from einf.backend import BackendProfile, load_backend_module
+from einf.backend import BackendProfile
+from einf.backend.runtime import load_backend_module
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.plans.context import PlanSelectionContext, build_runtime_execution_context
 from einf.plans.scoring import einsum_output_shape, einsum_peak_numel
@@ -24,6 +25,7 @@ from .equation import build_contract_equation
 from .native import try_native_contract_einsum
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
 
 
 def _parse_binary_einsum_equation(
@@ -69,7 +71,7 @@ def _operand_shapes_key(
     return tuple(shape_key)
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=_CONTRACT_EXPRESSION_CACHE_MAXSIZE)
 def _cached_contract_expression(
     equation: str,
     operand_shapes: tuple[tuple[int, ...], ...],

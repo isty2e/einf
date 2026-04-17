@@ -39,6 +39,23 @@ class RuntimeProgram(StepProgram):
         raise NotImplementedError
 
 
+class UnaryRuntimeProgram(RuntimeProgram):
+    """Runtime program that maps one tensor to one tensor."""
+
+    @abstractmethod
+    def run_unary(self, tensor: TensorLike, /) -> TensorLike:
+        """Run this unary runtime program."""
+        raise NotImplementedError
+
+    def __call__(self, tensors: tuple[TensorLike, ...], /) -> tuple[TensorLike, ...]:
+        """Run this unary runtime program against one tensor input."""
+        if len(tensors) != 1:
+            raise ValueError(
+                f"unary runtime program input arity mismatch: expected 1, got {len(tensors)}"
+            )
+        return (self.run_unary(tensors[0]),)
+
+
 class SymbolicProgram(StepProgram):
     """Symbolic callable mapping runtime context to runtime program."""
 
@@ -184,4 +201,5 @@ __all__ = [
     "SymbolicProgram",
     "SymbolicStepScore",
     "SymbolicStep",
+    "UnaryRuntimeProgram",
 ]

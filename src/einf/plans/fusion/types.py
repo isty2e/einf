@@ -21,26 +21,26 @@ class RuntimeStepFusion(Generic[RunnerT]):
     stop: int
     input_arity: int
     output_arity: int
-    runner: RunnerT
+    tuple_runner: TupleRunner
 
 
 RuntimeStepFusions: TypeAlias = tuple[RuntimeStepFusion[TupleRunner], ...]
 
 
 @dataclass(frozen=True, slots=True)
-class TupleFusionRule:
-    """One tuple-runner fusion rule for a fixed window size."""
+class RuntimeStepFusionRule:
+    """One runtime-step fusion rule for a fixed consecutive window."""
 
     name: str
     window_size: int
-    build_runner: Callable[[RuntimeSteps], TupleRunner | None]
+    build_tuple_runner: Callable[[RuntimeSteps], TupleRunner | None]
 
 
 __all__ = [
     "RuntimeStepFusion",
+    "RuntimeStepFusionRule",
     "RuntimeStepFusions",
     "RuntimeSteps",
     "SingleOutputRunner",
-    "TupleFusionRule",
     "TupleRunner",
 ]

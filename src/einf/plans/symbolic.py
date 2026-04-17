@@ -13,6 +13,13 @@ from .cache import RuntimeStepSpecializationCache
 from .scoring import SymbolicPlanScore
 
 
+@dataclass(slots=True)
+class SymbolicPlanRuntimeCaches:
+    """Mutable runtime memoization owned by one symbolic plan."""
+
+    runtime_steps: RuntimeStepSpecializationCache
+
+
 @dataclass(frozen=True, slots=True)
 class SymbolicPlan:
     """Symbolic program composed of ordered symbolic steps."""
@@ -21,11 +28,7 @@ class SymbolicPlan:
     input_arity: int
     output_arity: int
     steps: tuple[SymbolicStep[StepProgram], ...]
-    _runtime_step_cache: RuntimeStepSpecializationCache = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
+    _runtime: SymbolicPlanRuntimeCaches = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate symbolic step chain arities."""
@@ -48,10 +51,13 @@ class SymbolicPlan:
             )
         object.__setattr__(
             self,
-            "_runtime_step_cache",
-            RuntimeStepSpecializationCache(
-                depends_on_input_shapes=any(
-                    step.specialization_depends_on_input_shapes() for step in self.steps
+            "_runtime",
+            SymbolicPlanRuntimeCaches(
+                runtime_steps=RuntimeStepSpecializationCache(
+                    depends_on_input_shapes=any(
+                        step.specialization_depends_on_input_shapes()
+                        for step in self.steps
+                    )
                 )
             ),
         )
@@ -62,7 +68,7 @@ class SymbolicPlan:
         /,
     ) -> tuple[RuntimeStep[StepProgram], ...]:
         """Specialize symbolic steps once per runtime cache key."""
-        cached_steps = self._runtime_step_cache.get(context)
+        cached_steps = self._runtime.runtime_steps.get(context)
         if cached_steps is not None:
             return cached_steps
 
@@ -89,7 +95,7 @@ class SymbolicPlan:
                     f"{runtime_step.output_arity} != {symbolic_step.output_arity} "
                     f"for step {symbolic_step.name!r}"
                 )
-        self._runtime_step_cache.set(context=context, steps=runtime_steps)
+        self._runtime.runtime_steps.set(context=context, steps=runtime_steps)
         return runtime_steps
 
     def specialize(

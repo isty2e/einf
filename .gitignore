@@ -124,6 +124,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-*/
 env/
 venv/
 ENV/
@@ -181,8 +182,11 @@ CLAUDE.md
 archived
 .pytest_cache
 .gitattributes
-benchmarks
 docs/benchmarks
 docs/spec
 
 pyrightconfig.json
+.tickets/
+
+# Benchmark raw JSON dumps (summary/report markdown stays tracked)
+artifacts/**/raw/
