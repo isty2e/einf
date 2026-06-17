@@ -17,9 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "basedpyright>=1.31",
+  "build>=1.2",
   "einx",
   "einops",
+  "numpy>=1.26",
   "pytest>=8.0",
+  "ruff>=0.8",
 ]
 analysis = [
   "libcst>=1.0",

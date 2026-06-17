@@ -151,13 +151,9 @@ class LspService:
         source: str,
     ) -> ValidationFileReport:
         if path is None:
-            return ValidationFileReport(
-                path="",
-                diagnostics=(),
-                checker_diagnostics=(),
-                axis_tokens=(),
-                failures=(),
-            )
+            return _empty_file_report(path="")
+        if not _source_may_contain_einf_calls(source):
+            return _empty_file_report(path=str(path))
         return analyze_source(
             source=source,
             path=path,
@@ -187,6 +183,21 @@ def path_from_uri(uri: str) -> Path | None:
     if parsed.netloc and parsed.netloc != "localhost":
         path_text = f"//{parsed.netloc}{path_text}"
     return Path(path_text).resolve(strict=False)
+
+
+def _source_may_contain_einf_calls(source: str) -> bool:
+    """Return whether source has the lexical marker used by supported syntax."""
+    return "einf" in source
+
+
+def _empty_file_report(*, path: str) -> ValidationFileReport:
+    return ValidationFileReport(
+        path=path,
+        diagnostics=(),
+        checker_diagnostics=(),
+        axis_tokens=(),
+        failures=(),
+    )
 
 
 __all__ = ["LspDocumentState", "LspService", "path_from_uri"]

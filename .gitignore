@@ -177,6 +177,7 @@ src/*/_version.py
 # Local git worktrees
 .worktrees/
 .beads
+.codegraph/
 AGENTS.md
 CLAUDE.md
 archived

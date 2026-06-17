@@ -5,11 +5,14 @@ from einf.analysis.checkers import CheckerFailure
 from einf.analysis.model import DiagnosticSeverity, TextPosition, TextSpan
 from einf.analysis.validator.model import ValidationFileReport
 
+from .change_debounce import LspChangeDebouncer, PendingDocumentChange
 from .config import InitializeOptions, LspConfig
 from .hover import build_hover
 from .inlay_hints import build_inlay_hints
 from .semantic_tokens import TOKEN_MODIFIERS, TOKEN_TYPES, encode_semantic_tokens
 from .service import LspDocumentState, LspService
+
+DEFAULT_CHANGE_DEBOUNCE_SECONDS = 0.15
 
 
 class EinfLanguageServer(LanguageServer):
@@ -22,6 +25,9 @@ class EinfLanguageServer(LanguageServer):
             text_document_sync_kind=lsp.TextDocumentSyncKind.Incremental,
         )
         self.einf_service = LspService(LspConfig())
+        self.einf_change_debouncer = LspChangeDebouncer(
+            delay_seconds=DEFAULT_CHANGE_DEBOUNCE_SECONDS
+        )
 
 
 SEMANTIC_TOKENS_LEGEND = lsp.SemanticTokensLegend(
@@ -50,20 +56,26 @@ def build_server() -> EinfLanguageServer:
         _publish_document_state(ls, state)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_CHANGE)
-    def did_change(
+    async def did_change(
         ls: EinfLanguageServer, params: lsp.DidChangeTextDocumentParams
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
-        state = ls.einf_service.change_document(
+        change = PendingDocumentChange(
             uri=text_document.uri,
             source=text_document.source,
             version=text_document.version,
         )
-        _publish_document_state(ls, state)
+
+        async def analyze(pending_change: PendingDocumentChange) -> None:
+            state = _apply_document_change(ls, pending_change)
+            _publish_document_state(ls, state)
+
+        ls.einf_change_debouncer.schedule(change, analyze=analyze)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
     def did_save(ls: EinfLanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
+        ls.einf_change_debouncer.cancel(text_document.uri)
         state = ls.einf_service.save_document(
             uri=text_document.uri,
             source=text_document.source,
@@ -76,6 +88,7 @@ def build_server() -> EinfLanguageServer:
     def did_close(
         ls: EinfLanguageServer, params: lsp.DidCloseTextDocumentParams
     ) -> None:
+        ls.einf_change_debouncer.cancel(params.text_document.uri)
         ls.einf_service.close_document(uri=params.text_document.uri)
         ls.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(
@@ -85,21 +98,21 @@ def build_server() -> EinfLanguageServer:
         )
 
     @server.feature(lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_LEGEND)
-    def semantic_tokens_full(
+    async def semantic_tokens_full(
         ls: EinfLanguageServer,
         params: lsp.SemanticTokensParams,
     ) -> lsp.SemanticTokens:
-        state = _get_or_open_document_state(ls, uri=params.text_document.uri)
+        state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return lsp.SemanticTokens(data=[])
         return lsp.SemanticTokens(data=encode_semantic_tokens(state.report.axis_tokens))
 
     @server.feature(lsp.TEXT_DOCUMENT_INLAY_HINT)
-    def inlay_hint(
+    async def inlay_hint(
         ls: EinfLanguageServer,
         params: lsp.InlayHintParams,
     ) -> list[lsp.InlayHint]:
-        state = _get_or_open_document_state(ls, uri=params.text_document.uri)
+        state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return []
         return build_inlay_hints(
@@ -108,11 +121,11 @@ def build_server() -> EinfLanguageServer:
         )
 
     @server.feature(lsp.TEXT_DOCUMENT_HOVER)
-    def hover(
+    async def hover(
         ls: EinfLanguageServer,
         params: lsp.HoverParams,
     ) -> lsp.Hover | None:
-        state = _get_or_open_document_state(ls, uri=params.text_document.uri)
+        state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return None
         return build_hover(
@@ -159,11 +172,28 @@ def _publish_document_state(
     )
 
 
-def _get_or_open_document_state(
+def _apply_document_change(
+    ls: EinfLanguageServer,
+    change: PendingDocumentChange,
+) -> LspDocumentState:
+    return ls.einf_service.change_document(
+        uri=change.uri,
+        source=change.source,
+        version=change.version,
+    )
+
+
+async def _get_or_open_document_state(
     ls: EinfLanguageServer,
     *,
     uri: str,
 ) -> LspDocumentState | None:
+    pending_change = ls.einf_change_debouncer.take_pending(uri=uri)
+    if pending_change is not None:
+        state = _apply_document_change(ls, pending_change)
+        _publish_document_state(ls, state)
+        return state
+
     state = ls.einf_service.get_document_state(uri=uri)
     if state is not None:
         return state

@@ -168,6 +168,29 @@ python benchmarks/profile/warm_calltree.py \
   --raw-output artifacts/bench/raw/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.json
 ```
 
+## LSP Latency Smoke
+
+Use `benchmarks.profile.lsp_latency` to measure the editor-facing semantic
+analysis path separately from cached hover, inlay-hint, and semantic-token
+serving. Run it as a module from the repository root:
+
+```bash
+python -m benchmarks.profile.lsp_latency \
+  --repeats 30 \
+  --output artifacts/bench/lsp-latency.md \
+  --json-output artifacts/bench/raw/lsp-latency.json
+```
+
+By default this does not invoke external checkers. Add `--checker` only when
+you explicitly want to measure fallback save-boundary checker overhead:
+
+```bash
+python -m benchmarks.profile.lsp_latency \
+  --repeats 3 \
+  --checker basedpyright \
+  --output artifacts/bench/lsp-latency-checker.md
+```
+
 ## Guardrail Checks
 
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
