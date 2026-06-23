@@ -55,7 +55,10 @@ Run this from the repository root after the migration:
 ```bash
 python -m pytest \
   tests/package/test_package_import_boundaries.py \
-  tests/integration/test_array_api_execution.py \
+  tests/integration/test_array_api_contract_einop_execution.py \
+  tests/integration/test_array_api_rearrange_execution.py \
+  tests/integration/test_array_api_repeat_reduce_execution.py \
+  tests/integration/test_array_api_view_execution.py \
   tests/operations/test_tensorop_contract.py \
   tests/plans/test_plan_hierarchy.py \
   tests/package/test_pipeline_contracts.py \
