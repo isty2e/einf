@@ -19,6 +19,7 @@ from .model import (
 )
 from .syntax import _parse_axis_terms_expression
 
+
 def _analysis_reducer_callable(*_args: TensorLike) -> int:
     """Static placeholder reducer for symbol-only callable references."""
     return 0

@@ -6,6 +6,7 @@ from einf.analysis.source import SourceText
 from .semantics import _parse_call_expression
 from .tokens import _axis_roles, _build_missing_rhs_axis_diagnostics
 
+
 def _parent_map(module: ParsedModule) -> dict[int, int]:
     """Build node-id parent index for one parsed module."""
     parent_by_child: dict[int, int] = {}

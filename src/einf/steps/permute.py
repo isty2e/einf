@@ -7,7 +7,6 @@ from einf.backend import (
     BackendArrayOps,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -16,6 +15,7 @@ from einf.steps.base import (
     SymbolicStep,
     SymbolicStepScore,
 )
+from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
 from einf.tensor_types import TensorLike
 
 from .base import AxisSideSymbolicStep

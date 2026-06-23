@@ -8,13 +8,13 @@ from einf.backend import (
     BackendProfile,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
     SymbolicStep,
     SymbolicStepScore,
 )
+from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
 from einf.tensor_types import TensorLike
 
 from ..runtime import bind_runtime_backend

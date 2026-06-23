@@ -1,9 +1,8 @@
 import ast
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from importlib.util import resolve_name
 from pathlib import Path
-from typing import Iterable, Mapping
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src"

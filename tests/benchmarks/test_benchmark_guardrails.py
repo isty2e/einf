@@ -1,8 +1,8 @@
 from benchmarks.guardrail.policy import (
     OverheadReportDict,
     collect_case_metrics,
-    compare_overhead_reports,
     compare_overhead_report_trials,
+    compare_overhead_reports,
     render_findings,
     render_trial_findings,
 )

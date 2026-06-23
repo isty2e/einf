@@ -10,6 +10,7 @@ from .diagnostics import (
 )
 from .model import _AxisOccurrence, _CallSide, _SideParseResult, _SnippetContext
 
+
 def _is_ax_subscript(expr: ast.expr) -> bool:
     """Return whether one expression is `ax[...]`."""
     if not isinstance(expr, ast.Subscript):

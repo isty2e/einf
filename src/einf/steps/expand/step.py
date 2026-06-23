@@ -15,11 +15,11 @@ from ..runtime import (
     bind_runtime_backend,
     coerce_step_outputs,
 )
+from .model import ExpandSymbolicProgram
 from .runtime import (
     compile_expand_target_shape_evaluator,
     run_expand_program,
 )
-from .model import ExpandSymbolicProgram
 from .solve import solve_expand_program_from_input_shape
 
 

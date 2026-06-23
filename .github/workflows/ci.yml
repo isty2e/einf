@@ -28,9 +28,9 @@ jobs:
           src/einf/analysis/lsp/service.py
           src/einf/analysis/lsp/change_debounce.py
           benchmarks/profile/lsp_latency.py
-          tests/test_analysis_lsp.py
-          tests/test_analysis_lsp_debounce.py
-          tests/test_benchmark_lsp_latency.py
+          tests/analysis/test_analysis_lsp.py
+          tests/analysis/test_analysis_lsp_debounce.py
+          tests/benchmarks/test_benchmark_lsp_latency.py
       - name: Test
         run: pytest
       - name: Docs
@@ -56,12 +56,12 @@ jobs:
           src/einf/analysis/lsp/server.py
           src/einf/analysis/lsp/hover.py
           src/einf/analysis/lsp/inlay_hints.py
-          tests/test_analysis_lsp_server.py
-          tests/test_conformance_analysis.py
+          tests/analysis/test_analysis_lsp_server.py
+          tests/analysis/test_conformance_analysis.py
       - name: Test optional LSP transport
         run: >-
           pytest
-          tests/test_analysis_lsp.py
-          tests/test_analysis_lsp_debounce.py
-          tests/test_analysis_lsp_server.py
-          tests/test_conformance_analysis.py
+          tests/analysis/test_analysis_lsp.py
+          tests/analysis/test_analysis_lsp_debounce.py
+          tests/analysis/test_analysis_lsp_server.py
+          tests/analysis/test_conformance_analysis.py

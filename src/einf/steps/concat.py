@@ -7,8 +7,6 @@ from einf.axis import (
 )
 from einf.backend import ArrayNamespace, BackendArrayOps
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.steps.context import PlanSelectionContext
-from einf.steps.scoring import numel_from_shape
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -16,6 +14,8 @@ from einf.steps.base import (
     SymbolicProgram,
     SymbolicStepScore,
 )
+from einf.steps.context import PlanSelectionContext
+from einf.steps.scoring import numel_from_shape
 from einf.tensor_types import TensorLike
 
 from .base import AxisSideSymbolicStep

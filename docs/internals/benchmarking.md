@@ -54,13 +54,13 @@ Run this from the repository root after the migration:
 
 ```bash
 python -m pytest \
-  tests/test_package_import_boundaries.py \
-  tests/test_array_api_execution.py \
-  tests/test_tensorop_contract.py \
-  tests/test_plan_hierarchy.py \
-  tests/test_pipeline_contracts.py \
-  tests/test_benchmark_harness.py \
-  tests/test_benchmark_guardrails.py
+  tests/package/test_package_import_boundaries.py \
+  tests/integration/test_array_api_execution.py \
+  tests/operations/test_tensorop_contract.py \
+  tests/plans/test_plan_hierarchy.py \
+  tests/package/test_pipeline_contracts.py \
+  tests/benchmarks/test_benchmark_harness.py \
+  tests/benchmarks/test_benchmark_guardrails.py
 ```
 
 Add narrower tests for the touched package when the ticket changes a specific

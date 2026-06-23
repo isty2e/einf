@@ -8,8 +8,6 @@ from einf.axis import AxisSide, ScalarAxisTerms
 from einf.backend import BackendProfile
 from einf.backend.runtime import load_backend_module
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
-from einf.steps.scoring import einsum_output_shape, einsum_peak_numel
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeProgram,
@@ -19,6 +17,8 @@ from einf.steps.base import (
     SymbolicStep,
     SymbolicStepScore,
 )
+from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
+from einf.steps.scoring import einsum_output_shape, einsum_peak_numel
 from einf.tensor_types import TensorLike
 
 from .equation import build_contract_equation

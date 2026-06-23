@@ -1,12 +1,12 @@
 from dataclasses import dataclass, field
 
-from einf.steps.context import PlanSelectionContext
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
     StepProgram,
     SymbolicStep,
 )
+from einf.steps.context import PlanSelectionContext
 from einf.tensor_types import TensorLike
 
 from .cache import RuntimeStepSpecializationCache

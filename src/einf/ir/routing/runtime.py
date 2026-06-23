@@ -2,8 +2,8 @@ from einf.axis import AxisSide, expand_products_for_terms
 from einf.axis.matching import scalar_terms_to_atomic_tokens
 from einf.backend import bind_array_namespace
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.steps.context import build_runtime_execution_context
 from einf.signature import Signature
+from einf.steps.context import build_runtime_execution_context
 from einf.tensor_types import TensorLike
 
 from .solve import resolve_route_token_indices

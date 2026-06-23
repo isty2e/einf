@@ -12,6 +12,7 @@ from einf.shape import (
     compile_shape_eval_fn,
     compile_shape_node,
 )
+
 from .model import ExpandCompiledProgram, ExpandSymbolicProgram
 
 

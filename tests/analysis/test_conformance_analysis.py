@@ -7,7 +7,7 @@ from einf.analysis.lsp.hover import build_hover
 from einf.analysis.lsp.inlay_hints import build_inlay_hints
 from einf.analysis.model import TextPosition
 from einf.analysis.validator.run import build_parser_backend, run_validation
-from tests.conformance_analysis_cases import LSP_CASES, VALIDATOR_CASES
+from tests.analysis.conformance_analysis_cases import LSP_CASES, VALIDATOR_CASES
 
 
 @pytest.mark.parametrize("case", VALIDATOR_CASES, ids=lambda case: case.name)
