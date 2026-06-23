@@ -137,11 +137,6 @@ KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
         "plans-must-not-import-concrete-lowering",
     ): "td-fgax: separate lowering protocol seam from concrete lowering",
     (
-        "src/einf/plans/entrypoint.py",
-        "einf.operations.policy",
-        "plans-must-not-import-operations",
-    ): "td-jy33: move TensorOp call execution glue into operations",
-    (
         "src/einf/steps/axis_slice/step.py",
         "einf.plans.context",
         "steps-must-not-import-plans",

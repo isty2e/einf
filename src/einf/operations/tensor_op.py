@@ -15,12 +15,12 @@ from ..diagnostics import ErrorCode, ValidationError
 from ..lowering import DefaultLoweringProgram
 from ..output_normalization import normalize_runtime_outputs
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
-from ..plans.entrypoint import execute_tensor_op_call, extract_input_shapes
 from ..plans.render import PlanDict, build_plan_dict, render_plan_text
 from ..reduction.plan import ReducerPlanParser
 from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
 from ..signature import Signature
 from ..tensor_types import TensorLike
+from .execution import execute_tensor_op_call, extract_input_shapes
 from .policy import OpPolicy, resolve_op_policy
 
 RuntimeTypeKey = tuple[type, ...]

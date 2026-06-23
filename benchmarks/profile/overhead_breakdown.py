@@ -64,8 +64,8 @@ STAGES = (
 
 STAGE_TARGETS: dict[str, tuple[str, ...]] = {
     "input_shape": (
-        "einf.plans.entrypoint.extract_input_shapes",
-        "einf.plans.entrypoint._extract_input_shape",
+        "einf.operations.execution.extract_input_shapes",
+        "einf.operations.execution._extract_input_shape",
     ),
     "solve": (
         "einf.solver.api.solve_dimensions",
@@ -124,7 +124,7 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
         "einf.plans.fusion.engine.discover_step_fusions",
     ),
     "step_run": (
-        "einf.plans.entrypoint._execute_abstract_plan",
+        "einf.operations.execution._execute_abstract_plan",
         "einf.plans.abstract.AbstractPlan.execute",
         "einf.plans.symbolic.SymbolicPlan.execute",
         "einf.plans.symbolic.SymbolicPlan._run_runtime_steps",

@@ -1,12 +1,10 @@
 from functools import lru_cache
 
-from einf.diagnostics import ErrorCode, ValidationError
-from einf.operations.policy import OpPolicy
-from einf.output_normalization import normalize_runtime_outputs
-from einf.steps.base import RuntimeSpecializationContext
-from einf.tensor_types import TensorLike
-
-from .abstract import AbstractPlan
+from ..diagnostics import ErrorCode, ValidationError
+from ..output_normalization import normalize_runtime_outputs
+from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
+from ..tensor_types import TensorLike
+from .policy import OpPolicy
 
 
 def execute_tensor_op_call(
