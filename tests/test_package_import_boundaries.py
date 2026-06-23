@@ -117,20 +117,10 @@ BOUNDARY_RULES = (
 
 KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
     (
-        "src/einf/analysis/passes/einf_calls.py",
-        "einf.steps.einsum",
-        "analysis-must-not-import-concrete-steps",
-    ): "td-nw7p: split static einf-call analysis away from concrete step validation",
-    (
         "src/einf/ir/routing/runtime.py",
         "einf.plans.context",
         "ir-must-not-import-plans",
     ): "td-e8uw: move runtime context construction out of plans",
-    (
-        "src/einf/operations/api.py",
-        "einf.steps.einsum",
-        "operations-must-not-import-concrete-steps",
-    ): "td-esj6: move contract constructor validation out of steps.einsum",
     (
         "src/einf/plans/abstract.py",
         "einf.lowering",

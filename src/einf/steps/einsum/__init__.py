@@ -1,7 +1,5 @@
 from .equation import (
     build_contract_equation,
-    validate_contract_atomic,
-    validate_contract_atomic_terms,
 )
 from .native import try_native_contract_einsum
 from .step import (
@@ -24,6 +22,4 @@ __all__ = [
     "EinsumSymbolicStep",
     "opt_einsum",
     "try_native_contract_einsum",
-    "validate_contract_atomic",
-    "validate_contract_atomic_terms",
 ]

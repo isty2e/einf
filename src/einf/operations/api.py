@@ -1,7 +1,7 @@
 from ..axis import AxisSide, AxisTerms
 from ..signature import Signature
-from ..steps.einsum import validate_contract_atomic_terms
 from .tensor_op import TensorOp
+from .validation import validate_contract_atomic_terms
 
 
 def view(

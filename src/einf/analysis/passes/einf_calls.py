@@ -19,9 +19,9 @@ from einf.analysis.source import SourceText
 from einf.axis import Axis, AxisExpr, AxisPack, AxisSide, AxisTerms, ScalarAxisTermBase
 from einf.diagnostics import ValidationError
 from einf.operations import TensorOp, contract, einop, rearrange, reduce, repeat, view
+from einf.operations.validation import validate_contract_atomic_terms
 from einf.reduction.schema import Reducer
 from einf.signature import Signature
-from einf.steps.einsum import validate_contract_atomic_terms
 from einf.tensor_types import TensorLike
 
 _VALIDATE_RHS_SUBSET_OPS = frozenset({"contract", "einop", "reduce"})
