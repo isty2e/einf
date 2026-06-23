@@ -6,7 +6,7 @@ from einf.diagnostics import ErrorCode, ValidationError
 from einf.ir import IRProgram
 from einf.ir.routing.runtime import resolve_route_output_indices
 from einf.ir.routing.static import precompute_route_output_indices
-from einf.plans.context import PlanSelectionContext
+from einf.steps.context import PlanSelectionContext
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
 from einf.tensor_types import TensorLike
 

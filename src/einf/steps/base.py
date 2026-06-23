@@ -5,7 +5,7 @@ from typing import Generic, TypeVar
 
 from einf.axis import AxisSide
 from einf.backend import BackendProfile
-from einf.plans.context import PlanSelectionContext
+from einf.steps.context import PlanSelectionContext
 from einf.tensor_types import TensorLike
 
 

@@ -7,7 +7,7 @@ from einf.backend import (
     get_backend_array_ops,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import build_runtime_execution_context
+from einf.steps.context import build_runtime_execution_context
 from einf.reduction.plan import infer_unary_reduced_terms
 from einf.reduction.schema import STRING_REDUCERS, Reducer
 from einf.signature import Signature

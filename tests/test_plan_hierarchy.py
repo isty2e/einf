@@ -9,7 +9,7 @@ from einf.axis import AxisSide, AxisTerms
 from einf.backend import BACKEND_RESOLVER, BackendProfile
 from einf.lowering import DefaultLoweringProgram, StaticLoweringProgram
 from einf.plans.abstract import AbstractPlan
-from einf.plans.context import PlanSelectionContext
+from einf.steps.context import PlanSelectionContext
 from einf.plans.runners import RouteRunnerKernel, StepChainRunnerKernel
 from einf.plans.scoring import SymbolicPlanScore
 from einf.plans.symbolic import SymbolicPlan

@@ -7,8 +7,8 @@ from einf.axis import (
 )
 from einf.backend import ArrayNamespace, BackendArrayOps
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import PlanSelectionContext
-from einf.plans.scoring import numel_from_shape
+from einf.steps.context import PlanSelectionContext
+from einf.steps.scoring import numel_from_shape
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,

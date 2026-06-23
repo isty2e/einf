@@ -11,7 +11,7 @@ from einf.backend import (
 )
 from einf.backend.namespace import derive_namespace_id
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import expand_pack_terms
+from einf.steps.context import expand_pack_terms
 from einf.reduction.schema import Reducer
 from einf.tensor_types import TensorLike
 

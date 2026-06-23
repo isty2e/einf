@@ -70,12 +70,12 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
     "solve": (
         "einf.solver.api.solve_dimensions",
         "einf.solver.solve_dimensions",
-        "einf.plans.context.solve_dimensions",
+        "einf.steps.context.solve_dimensions",
         "einf.steps.expand.solve.solve_dimensions",
     ),
     "normalize_context": (
-        "einf.plans.context.build_runtime_execution_context",
-        "einf.plans.context.expand_pack_terms",
+        "einf.steps.context.build_runtime_execution_context",
+        "einf.steps.context.expand_pack_terms",
     ),
     "backend_checks": (
         "einf.plans.abstract.AbstractPlan.resolve_backend_profile",

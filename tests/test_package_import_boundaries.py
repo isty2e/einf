@@ -117,45 +117,10 @@ BOUNDARY_RULES = (
 
 KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
     (
-        "src/einf/ir/routing/runtime.py",
-        "einf.plans.context",
-        "ir-must-not-import-plans",
-    ): "td-e8uw: move runtime context construction out of plans",
-    (
         "src/einf/plans/abstract.py",
         "einf.lowering",
         "plans-must-not-import-concrete-lowering",
     ): "td-fgax: separate lowering protocol seam from concrete lowering",
-    (
-        "src/einf/steps/axis_slice/step.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step-consumed runtime context helpers out of plans",
-    (
-        "src/einf/steps/base.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step planning context contract out of plans",
-    (
-        "src/einf/steps/concat.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step planning context contract out of plans",
-    (
-        "src/einf/steps/concat.py",
-        "einf.plans.scoring",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step-consumed scoring helpers out of plans",
-    (
-        "src/einf/steps/einsum/step.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step planning/runtime context helpers out of plans",
-    (
-        "src/einf/steps/einsum/step.py",
-        "einf.plans.scoring",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step-consumed scoring helpers out of plans",
     (
         "src/einf/steps/expand/__init__.py",
         "einf.lowering.expand",
@@ -176,26 +141,6 @@ KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
         "einf.lowering.expand",
         "steps-must-not-import-lowering",
     ): "td-mfui: move expand program artifacts to steps.expand",
-    (
-        "src/einf/steps/permute.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step planning/runtime context helpers out of plans",
-    (
-        "src/einf/steps/reduce/build.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move expand-pack helper or context ownership out of plans",
-    (
-        "src/einf/steps/reduce/step.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step runtime context helpers out of plans",
-    (
-        "src/einf/steps/reshape/step.py",
-        "einf.plans.context",
-        "steps-must-not-import-plans",
-    ): "td-e8uw: move step planning/runtime context helpers out of plans",
 }
 
 
@@ -226,14 +171,17 @@ def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
 
 
 def test_import_boundary_scanner_normalizes_relative_imports() -> None:
-    tree = ast.parse("from ..lowering import LoweringProgram\nfrom . import context\n")
+    tree = ast.parse(
+        "from ..lowering import LoweringProgram\n"
+        "from ..steps.context import PlanSelectionContext\n"
+    )
     references = {
         reference.module
         for reference in _import_references(tree=tree, module_name="einf.plans.abstract", path=Path("abstract.py"))
     }
 
     assert "einf.lowering" in references
-    assert "einf.plans.context" in references
+    assert "einf.steps.context" in references
 
 
 def _find_boundary_violations() -> tuple[BoundaryViolation, ...]:

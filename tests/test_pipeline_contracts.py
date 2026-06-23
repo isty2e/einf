@@ -81,7 +81,7 @@ def test_pipeline_contract_abstract_plan_imports_only_step_contracts() -> None:
     abstract_path = Path("src/einf/plans/abstract.py")
     modules = _import_modules(abstract_path)
     step_modules = {module for module in modules if ".steps" in module}
-    assert step_modules <= {"einf.steps.base"}
+    assert step_modules <= {"einf.steps.base", "einf.steps.context"}
     assert all("lowering.builders" not in module for module in modules)
 
 

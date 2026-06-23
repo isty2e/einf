@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from einf.plans.context import PlanSelectionContext
+from einf.steps.context import PlanSelectionContext
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
