@@ -239,13 +239,18 @@ is evidence to inspect or rerun, not a ticket-closing blocker by itself.
 Close a non-LSP taxonomy migration only when all of these are true:
 
 - focused correctness tests pass,
-- both overhead guardrail commands exit 0,
-- candidate compare reports do not show a new `einf` slowdown that contradicts
-  the overhead guardrail,
+- both repeated-trial overhead guardrail commands exit 0,
+- candidate compare reports do not show a new `einf` slowdown pattern that
+  contradicts the repeated-trial overhead result,
 - dynamic compare aggregate medians are read together with round median summaries,
-- any observed 5-10 % slowdown is rerun or explained with case-level evidence,
-- any slowdown above 10 % blocks the ticket unless the user explicitly accepts
-  the regression.
+- any repeated-trial overhead slowdown in the 5-10 % range is rerun or explained
+  with case-level evidence,
+- any repeated-trial overhead slowdown above 10 % blocks the ticket unless the
+  user explicitly accepts the regression.
+
+Single-run compare deltas are diagnostic when comparing one git ref to another.
+They should trigger inspection or reruns when they contradict the overhead gate,
+but they do not override a clean repeated-trial overhead result by themselves.
 
 For dynamic compare reports, compare libraries within the same round before
 reading across rounds. The harness pairs libraries on the same logical batch
