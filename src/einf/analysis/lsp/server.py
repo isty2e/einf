@@ -67,7 +67,11 @@ def build_server() -> EinfLanguageServer:
         )
 
         async def analyze(pending_change: PendingDocumentChange) -> None:
-            state = _apply_document_change(ls, pending_change)
+            state = ls.einf_service.change_document(
+                uri=pending_change.uri,
+                source=pending_change.source,
+                version=pending_change.version,
+            )
             _publish_document_state(ls, state)
 
         ls.einf_change_debouncer.schedule(change, analyze=analyze)
@@ -172,17 +176,6 @@ def _publish_document_state(
     )
 
 
-def _apply_document_change(
-    ls: EinfLanguageServer,
-    change: PendingDocumentChange,
-) -> LspDocumentState:
-    return ls.einf_service.change_document(
-        uri=change.uri,
-        source=change.source,
-        version=change.version,
-    )
-
-
 async def _get_or_open_document_state(
     ls: EinfLanguageServer,
     *,
@@ -190,7 +183,11 @@ async def _get_or_open_document_state(
 ) -> LspDocumentState | None:
     pending_change = ls.einf_change_debouncer.take_pending(uri=uri)
     if pending_change is not None:
-        state = _apply_document_change(ls, pending_change)
+        state = ls.einf_service.change_document(
+            uri=pending_change.uri,
+            source=pending_change.source,
+            version=pending_change.version,
+        )
         _publish_document_state(ls, state)
         return state
 
