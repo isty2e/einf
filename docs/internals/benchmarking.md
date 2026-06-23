@@ -79,12 +79,12 @@ BENCH_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BENCH_DIR="artifacts/bench/taxonomy-${BENCH_STAMP}"
 mkdir -p "$BENCH_DIR/raw"
 
-python benchmarks/profile/overhead_breakdown.py \
+python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
   --output "$BENCH_DIR/baseline-overhead-torch.md" \
   --raw-output "$BENCH_DIR/raw/baseline-overhead-torch.json"
 
-python benchmarks/compare/einf_einops_einx.py \
+python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
   --scale large \
   --rounds 6 \
@@ -94,7 +94,7 @@ python benchmarks/compare/einf_einops_einx.py \
   --warm-iterations 60 \
   --output "$BENCH_DIR/baseline-fixed-large-torch.md"
 
-python benchmarks/compare/einf_einops_einx_dynamic.py \
+python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
   --scale large \
   --batches 64 \
@@ -118,12 +118,12 @@ Run the same commands after the migration, writing candidate artifacts into the
 same `BENCH_DIR`:
 
 ```bash
-python benchmarks/profile/overhead_breakdown.py \
+python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
   --output "$BENCH_DIR/candidate-overhead-torch.md" \
   --raw-output "$BENCH_DIR/raw/candidate-overhead-torch.json"
 
-python benchmarks/compare/einf_einops_einx.py \
+python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
   --scale large \
   --rounds 6 \
@@ -133,7 +133,7 @@ python benchmarks/compare/einf_einops_einx.py \
   --warm-iterations 60 \
   --output "$BENCH_DIR/candidate-fixed-large-torch.md"
 
-python benchmarks/compare/einf_einops_einx_dynamic.py \
+python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
   --scale large \
   --batches 64 \
@@ -157,13 +157,13 @@ The overhead profile covers the core TensorOp hot path in fixed and dynamic,
 medium and large scenarios. Run both metrics:
 
 ```bash
-python benchmarks/guardrail/check_overhead.py \
+python -m benchmarks.guardrail.check_overhead \
   --baseline "$BENCH_DIR/raw/baseline-overhead-torch.json" \
   --candidate "$BENCH_DIR/raw/candidate-overhead-torch.json" \
   --metric instrumented_call_ms \
   --max-regression-ratio 0.10
 
-python benchmarks/guardrail/check_overhead.py \
+python -m benchmarks.guardrail.check_overhead \
   --baseline "$BENCH_DIR/raw/baseline-overhead-torch.json" \
   --candidate "$BENCH_DIR/raw/candidate-overhead-torch.json" \
   --metric unpatched_call_ms \
@@ -194,7 +194,7 @@ streams.
 If a guardrail fails, collect a call tree before changing benchmark policy:
 
 ```bash
-python benchmarks/profile/warm_calltree.py \
+python -m benchmarks.profile.warm_calltree \
   --backend torch \
   --mode dynamic \
   --scale large \
@@ -217,7 +217,7 @@ Use `benchmarks/compare/einf_einops_einx.py` for cold and warm fixed-shape compa
 Example:
 
 ```bash
-python benchmarks/compare/einf_einops_einx.py \
+python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
   --scale large \
   --rounds 6 \
@@ -242,7 +242,7 @@ Use `benchmarks/compare/einf_einops_einx_dynamic.py` when batch shapes vary.
 Example:
 
 ```bash
-python benchmarks/compare/einf_einops_einx_dynamic.py \
+python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
   --scale large \
   --batches 64 \
@@ -266,7 +266,7 @@ Use `benchmarks/compare/expression_parity.py` when a gap case needs a more focus
 Example:
 
 ```bash
-python benchmarks/compare/expression_parity.py \
+python -m benchmarks.compare.expression_parity \
   --scale large \
   --case einop_contract_split_dynamic \
   --batches 64 \
@@ -294,7 +294,7 @@ Use `benchmarks/audit/expression_layout.py` when parity results alone do not exp
 Example:
 
 ```bash
-python benchmarks/audit/expression_layout.py \
+python -m benchmarks.audit.expression_layout \
   --scale large \
   --case einop_contract_split_dynamic \
   --seed 20260215 \
@@ -318,7 +318,7 @@ Use `benchmarks/profile/overhead_breakdown.py` to decompose internal `einf` over
 Example:
 
 ```bash
-python benchmarks/profile/overhead_breakdown.py \
+python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
   --output artifacts/bench/2026-02-15-overhead-breakdown-torch.md \
   --raw-output artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json
@@ -333,7 +333,7 @@ Use `benchmarks/profile/warm_calltree.py` when you need a Python call-tree for a
 Example:
 
 ```bash
-python benchmarks/profile/warm_calltree.py \
+python -m benchmarks.profile.warm_calltree \
   --backend torch \
   --mode dynamic \
   --scale large \
@@ -376,7 +376,7 @@ Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outp
 Example:
 
 ```bash
-python benchmarks/guardrail/check_overhead.py \
+python -m benchmarks.guardrail.check_overhead \
   --baseline artifacts/bench/raw/2026-02-15-overhead-breakdown-post-6pv-10-torch.json \
   --candidate artifacts/bench/raw/2026-02-16-overhead-breakdown-torch.json \
   --metric instrumented_call_ms \

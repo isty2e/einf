@@ -974,7 +974,7 @@ def _to_markdown(
         "## Repro",
         "",
         "```bash",
-        "PYTHONPATH=src python benchmarks/profile/overhead_breakdown.py \\",
+        "python -m benchmarks.profile.overhead_breakdown \\",
         f"  --backend {backend} \\",
         "  --output docs/benchmarks/2026-02-18-overhead-breakdown.md \\",
         f"  --raw-output {raw_output}",

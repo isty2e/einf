@@ -225,7 +225,7 @@ def _to_markdown(report: WarmCallTreeReport, /) -> str:
         "## Repro",
         "",
         "```bash",
-        "PYTHONPATH=src python benchmarks/profile/warm_calltree.py \\",
+        "python -m benchmarks.profile.warm_calltree \\",
         f"  --backend {report.backend} \\",
         f"  --mode {report.mode} \\",
         f"  --scale {report.scale} \\",
