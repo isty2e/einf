@@ -2,7 +2,9 @@ from benchmarks.guardrail.policy import (
     OverheadReportDict,
     collect_case_metrics,
     compare_overhead_reports,
+    compare_overhead_report_trials,
     render_findings,
+    render_trial_findings,
 )
 
 
@@ -100,4 +102,67 @@ def test_compare_overhead_reports_flags_missing_cases() -> None:
     assert not regressions
     assert missing_keys == [("fixed_medium", "fixed", "medium", "rearrange_flatten")]
     text = render_findings(regressions=regressions, missing_keys=missing_keys)
+    assert "Missing cases:" in text
+
+
+def test_compare_overhead_report_trials_requires_repeated_regressions() -> None:
+    first_baseline = _report(call_ms=1.0)
+    first_candidate = _report(call_ms=1.2)
+    second_baseline = _report(call_ms=1.0)
+    second_candidate = _report(call_ms=1.03)
+
+    regressions, missing_keys = compare_overhead_report_trials(
+        report_pairs=((first_baseline, first_candidate), (second_baseline, second_candidate)),
+        metric="instrumented_call_ms",
+        max_regression_ratio=0.10,
+        min_regression_count=2,
+        fail_on_missing_cases=True,
+    )
+
+    assert not regressions
+    assert not missing_keys
+
+
+def test_compare_overhead_report_trials_flags_repeated_regressions() -> None:
+    regressions, missing_keys = compare_overhead_report_trials(
+        report_pairs=(
+            (_report(call_ms=1.0), _report(call_ms=1.2)),
+            (_report(call_ms=2.0), _report(call_ms=2.4)),
+        ),
+        metric="instrumented_call_ms",
+        max_regression_ratio=0.10,
+        min_regression_count=2,
+        fail_on_missing_cases=True,
+    )
+
+    assert len(regressions) == 1
+    assert not missing_keys
+    assert regressions[0].key == (
+        "fixed_medium",
+        "fixed",
+        "medium",
+        "rearrange_flatten",
+    )
+    text = render_trial_findings(regressions=regressions, missing_keys=missing_keys)
+    assert "Repeated regressions:" in text
+    assert "failed 2/2 required trials" in text
+
+
+def test_compare_overhead_report_trials_flags_missing_cases() -> None:
+    empty_candidate: OverheadReportDict = {
+        "meta": _report(call_ms=1.0)["meta"],
+        "scenarios": [],
+    }
+
+    regressions, missing_keys = compare_overhead_report_trials(
+        report_pairs=((_report(call_ms=1.0), empty_candidate),),
+        metric="instrumented_call_ms",
+        max_regression_ratio=0.10,
+        min_regression_count=1,
+        fail_on_missing_cases=True,
+    )
+
+    assert not regressions
+    assert missing_keys == [("fixed_medium", "fixed", "medium", "rearrange_flatten")]
+    text = render_trial_findings(regressions=regressions, missing_keys=missing_keys)
     assert "Missing cases:" in text

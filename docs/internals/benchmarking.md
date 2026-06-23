@@ -67,61 +67,97 @@ Add narrower tests for the touched package when the ticket changes a specific
 contract. Keep the import-boundary guard in the command so a migration cannot
 close while adding a new forbidden package edge.
 
-### Baseline Capture
+### Baseline Reference
 
-Capture the baseline before applying the non-LSP migration. Use the same machine,
-same dependency versions, and same shell environment for baseline and candidate.
+Record the baseline git ref before applying the non-LSP migration. Use the same
+machine, dependency versions, and shell environment for baseline and candidate.
 If the machine was busy, slept, thermally throttled, or dependency versions
 changed, discard the artifacts and rerun both sides.
 
 ```bash
+BASE_REF=$(git rev-parse HEAD)
 BENCH_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BENCH_DIR="artifacts/bench/taxonomy-${BENCH_STAMP}"
+BASE_WORKTREE="/tmp/einf-overhead-baseline-${BENCH_STAMP}"
+REPO_ROOT=$(pwd)
 mkdir -p "$BENCH_DIR/raw"
+git worktree add --detach "$BASE_WORKTREE" "$BASE_REF"
+```
+
+When the migration is complete, keep using the same `BENCH_DIR`,
+`BASE_WORKTREE`, and `REPO_ROOT` values for the commands below.
+
+### Debiased Overhead Capture
+
+Run the overhead profile in both execution orders. This keeps the current
+single-report guardrail available for diagnostics, but the taxonomy migration
+gate uses repeated-trial comparison so one order-biased report does not decide
+the ticket.
+
+Order A, baseline first:
+
+```bash
+(
+  cd "$BASE_WORKTREE"
+  python -m benchmarks.profile.overhead_breakdown \
+    --backend torch \
+    --output "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-a-torch.md" \
+    --raw-output "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-a-torch.json"
+)
 
 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
-  --output "$BENCH_DIR/baseline-overhead-torch.md" \
-  --raw-output "$BENCH_DIR/raw/baseline-overhead-torch.json"
-
-python -m benchmarks.compare.einf_einops_einx \
-  --backend torch \
-  --scale large \
-  --rounds 6 \
-  --cold-repeats 3 \
-  --warmup 4 \
-  --warm-repeats 5 \
-  --warm-iterations 60 \
-  --output "$BENCH_DIR/baseline-fixed-large-torch.md"
-
-python -m benchmarks.compare.einf_einops_einx_dynamic \
-  --backend torch \
-  --scale large \
-  --batches 64 \
-  --warmup-batches 8 \
-  --repeats 6 \
-  --rounds 3 \
-  --parity-checks 8 \
-  --output "$BENCH_DIR/baseline-dynamic-large-torch.md"
+  --output "$BENCH_DIR/candidate-overhead-order-a-torch.md" \
+  --raw-output "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json"
 ```
 
-Expected baseline artifacts:
-
-- `$BENCH_DIR/baseline-overhead-torch.md`
-- `$BENCH_DIR/raw/baseline-overhead-torch.json`
-- `$BENCH_DIR/baseline-fixed-large-torch.md`
-- `$BENCH_DIR/baseline-dynamic-large-torch.md`
-
-### Candidate Capture
-
-Run the same commands after the migration, writing candidate artifacts into the
-same `BENCH_DIR`:
+Order B, candidate first:
 
 ```bash
 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
-  --output "$BENCH_DIR/candidate-overhead-torch.md" \
-  --raw-output "$BENCH_DIR/raw/candidate-overhead-torch.json"
+  --output "$BENCH_DIR/candidate-overhead-order-b-torch.md" \
+  --raw-output "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json"
+
+(
+  cd "$BASE_WORKTREE"
+  python -m benchmarks.profile.overhead_breakdown \
+    --backend torch \
+    --output "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-b-torch.md" \
+    --raw-output "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-b-torch.json"
+)
+```
+
+Expected overhead artifacts:
+
+- `$BENCH_DIR/baseline-overhead-order-a-torch.md`
+- `$BENCH_DIR/raw/baseline-overhead-order-a-torch.json`
+- `$BENCH_DIR/candidate-overhead-order-a-torch.md`
+- `$BENCH_DIR/raw/candidate-overhead-order-a-torch.json`
+- `$BENCH_DIR/candidate-overhead-order-b-torch.md`
+- `$BENCH_DIR/raw/candidate-overhead-order-b-torch.json`
+- `$BENCH_DIR/baseline-overhead-order-b-torch.md`
+- `$BENCH_DIR/raw/baseline-overhead-order-b-torch.json`
+
+### Library Compare Capture
+
+Capture baseline and candidate library comparison reports. These reports are
+library-facing timing evidence, not the primary current-vs-baseline overhead
+guardrail.
+
+```bash
+(
+  cd "$BASE_WORKTREE"
+  python -m benchmarks.compare.einf_einops_einx \
+    --backend torch \
+    --scale large \
+    --rounds 6 \
+    --cold-repeats 3 \
+    --warmup 4 \
+    --warm-repeats 5 \
+    --warm-iterations 60 \
+    --output "$REPO_ROOT/$BENCH_DIR/baseline-fixed-large-torch.md"
+)
 
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
@@ -132,6 +168,19 @@ python -m benchmarks.compare.einf_einops_einx \
   --warm-repeats 5 \
   --warm-iterations 60 \
   --output "$BENCH_DIR/candidate-fixed-large-torch.md"
+
+(
+  cd "$BASE_WORKTREE"
+  python -m benchmarks.compare.einf_einops_einx_dynamic \
+    --backend torch \
+    --scale large \
+    --batches 64 \
+    --warmup-batches 8 \
+    --repeats 6 \
+    --rounds 3 \
+    --parity-checks 8 \
+    --output "$REPO_ROOT/$BENCH_DIR/baseline-dynamic-large-torch.md"
+)
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
@@ -144,34 +193,46 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --output "$BENCH_DIR/candidate-dynamic-large-torch.md"
 ```
 
-Expected candidate artifacts:
+Expected compare artifacts:
 
-- `$BENCH_DIR/candidate-overhead-torch.md`
-- `$BENCH_DIR/raw/candidate-overhead-torch.json`
+- `$BENCH_DIR/baseline-fixed-large-torch.md`
+- `$BENCH_DIR/baseline-dynamic-large-torch.md`
 - `$BENCH_DIR/candidate-fixed-large-torch.md`
 - `$BENCH_DIR/candidate-dynamic-large-torch.md`
 
 ### Guardrail Checks
 
 The overhead profile covers the core TensorOp hot path in fixed and dynamic,
-medium and large scenarios. Run both metrics:
+medium and large scenarios. Run repeated-trial checks for both metrics:
 
 ```bash
-python -m benchmarks.guardrail.check_overhead \
-  --baseline "$BENCH_DIR/raw/baseline-overhead-torch.json" \
-  --candidate "$BENCH_DIR/raw/candidate-overhead-torch.json" \
+python -m benchmarks.guardrail.check_overhead_trials \
+  --pair \
+    "$BENCH_DIR/raw/baseline-overhead-order-a-torch.json" \
+    "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json" \
+  --pair \
+    "$BENCH_DIR/raw/baseline-overhead-order-b-torch.json" \
+    "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json" \
   --metric instrumented_call_ms \
   --max-regression-ratio 0.10
 
-python -m benchmarks.guardrail.check_overhead \
-  --baseline "$BENCH_DIR/raw/baseline-overhead-torch.json" \
-  --candidate "$BENCH_DIR/raw/candidate-overhead-torch.json" \
+python -m benchmarks.guardrail.check_overhead_trials \
+  --pair \
+    "$BENCH_DIR/raw/baseline-overhead-order-a-torch.json" \
+    "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json" \
+  --pair \
+    "$BENCH_DIR/raw/baseline-overhead-order-b-torch.json" \
+    "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json" \
   --metric unpatched_call_ms \
   --max-regression-ratio 0.10
 ```
 
 Do not use `--allow-missing-cases` for this gate. Missing baseline cases are a
 gate failure because they make regression status unknowable.
+
+By default, `check_overhead_trials` requires the same case to exceed the
+threshold in every supplied pair. For a two-order gate, a one-order regression
+is evidence to inspect or rerun, not a ticket-closing blocker by itself.
 
 ### Interpretation Rules
 
