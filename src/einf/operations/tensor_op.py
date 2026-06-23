@@ -1,9 +1,7 @@
-from collections import OrderedDict
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from threading import RLock
-from typing import Generic, TypeVar, final, overload
+from typing import final, overload
 
 try:
     from typing import Self
@@ -20,6 +18,12 @@ from ..reduction.plan import ReducerPlanParser
 from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
 from ..signature import Signature
 from ..tensor_types import TensorLike
+from .cache import (
+    BaseOpCacheKey,
+    ConfiguredOpCacheKey,
+    TensorOpFactory,
+    reducer_plan_to_cache_key,
+)
 from .execution import execute_tensor_op_call, extract_input_shapes
 from .policy import OpPolicy, resolve_op_policy
 
@@ -35,50 +39,6 @@ class _CallMode(Enum):
     GENERAL = auto()
     SHAPE_FREE_SINGLE = auto()
     SHAPE_FREE_TUPLE = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class _BaseOpCacheKey:
-    """Deterministic cache key for one base TensorOp instance."""
-
-    name: str
-    lhs: AxisSide
-    rhs: AxisSide
-    supports_reducer: bool
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class _ReducerCallableToken:
-    """Identity token for callable reducers in configured-op cache keys."""
-
-    reducer: ReducerCallable
-
-    def __hash__(self) -> int:
-        """Hash by callable identity to keep key stable while object is alive."""
-        return id(self.reducer)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare callable reducer tokens by identity."""
-        if not isinstance(other, _ReducerCallableToken):
-            return False
-        return self.reducer is other.reducer
-
-
-_ReducerToken = str | _ReducerCallableToken
-_ReducerPlanKey = tuple[tuple[AxisTerms, _ReducerToken], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ConfiguredOpCacheKey:
-    """Deterministic cache key for one configured TensorOp instance."""
-
-    base: _BaseOpCacheKey
-    sizes_items: tuple[tuple[str, int], ...]
-    reducer_plan_key: _ReducerPlanKey | None
-
-
-KeyT = TypeVar("KeyT", bound=Hashable)
-ValueT = TypeVar("ValueT")
 
 
 def _normalize_sizes_items(
@@ -101,31 +61,6 @@ def _normalize_sizes_items(
             )
         merged[key] = value
     return tuple(sorted(merged.items()))
-
-
-def _reducer_to_cache_token(reducer: Reducer, /) -> _ReducerToken:
-    """Build stable configured-cache token for one reducer."""
-    if isinstance(reducer, str):
-        return reducer
-    return _ReducerCallableToken(reducer)
-
-
-def _reducer_plan_to_cache_key(
-    reducer_plan: ReducerPlan | None,
-    /,
-) -> _ReducerPlanKey | None:
-    """Build deterministic configured-cache key for one reducer plan."""
-    if reducer_plan is None:
-        return None
-    phases: list[tuple[AxisTerms, _ReducerToken]] = []
-    for phase in reducer_plan:
-        phases.append(
-            (
-                AxisTerms.from_spec(phase.axes),
-                _reducer_to_cache_token(phase.reducer),
-            )
-        )
-    return tuple(phases)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,21 +108,21 @@ class TensorOpContract:
         object.__setattr__(self, "op_policy", op_policy)
         object.__setattr__(self, "abstract_plan", abstract_plan)
 
-    def base_cache_key(self) -> _BaseOpCacheKey:
+    def base_cache_key(self) -> BaseOpCacheKey:
         """Build the deterministic base-op cache key for this contract."""
-        return _BaseOpCacheKey(
+        return BaseOpCacheKey(
             name=self.name,
             lhs=self.lhs,
             rhs=self.rhs,
             supports_reducer=self.supports_reducer,
         )
 
-    def configured_cache_key(self) -> _ConfiguredOpCacheKey:
+    def configured_cache_key(self) -> ConfiguredOpCacheKey:
         """Build the deterministic configured-op cache key for this contract."""
-        return _ConfiguredOpCacheKey(
+        return ConfiguredOpCacheKey(
             base=self.base_cache_key(),
             sizes_items=self.sizes_items,
-            reducer_plan_key=_reducer_plan_to_cache_key(self.reducer_plan),
+            reducer_plan_key=reducer_plan_to_cache_key(self.reducer_plan),
         )
 
     def with_sizes_items(
@@ -563,79 +498,7 @@ class TensorOp:
         )
 
 
-class _BoundedTensorOpCache(Generic[KeyT, ValueT]):
-    """Thread-safe bounded LRU cache for TensorOp instances."""
-
-    def __init__(self, *, max_size: int) -> None:
-        self._max_size = max_size
-        self._lock = RLock()
-        self._entries: OrderedDict[KeyT, ValueT] = OrderedDict()
-
-    def get_or_create(
-        self,
-        *,
-        key: KeyT,
-        builder: Callable[[], ValueT],
-    ) -> ValueT:
-        """Return cached TensorOp or create-and-cache one under one key."""
-        with self._lock:
-            existing = self._entries.get(key)
-            if existing is not None:
-                self._entries.move_to_end(key)
-                return existing
-
-        created = builder()
-
-        with self._lock:
-            existing = self._entries.get(key)
-            if existing is not None:
-                self._entries.move_to_end(key)
-                return existing
-
-            self._entries[key] = created
-            self._entries.move_to_end(key)
-            if len(self._entries) > self._max_size:
-                self._entries.popitem(last=False)
-        return created
-
-
-@dataclass(slots=True)
-class _TensorOpFactory:
-    """Two-level TensorOp object factory cache (base + configured)."""
-
-    base_max_size: int
-    configured_max_size: int
-    _base_cache: _BoundedTensorOpCache[_BaseOpCacheKey, TensorOp] = field(init=False)
-    _configured_cache: _BoundedTensorOpCache[_ConfiguredOpCacheKey, TensorOp] = field(
-        init=False
-    )
-
-    def __post_init__(self) -> None:
-        self._base_cache = _BoundedTensorOpCache(max_size=self.base_max_size)
-        self._configured_cache = _BoundedTensorOpCache(
-            max_size=self.configured_max_size
-        )
-
-    def get_base(
-        self,
-        *,
-        key: _BaseOpCacheKey,
-        builder: Callable[[], TensorOp],
-    ) -> TensorOp:
-        """Resolve one base TensorOp through bounded base-op cache."""
-        return self._base_cache.get_or_create(key=key, builder=builder)
-
-    def get_configured(
-        self,
-        *,
-        key: _ConfiguredOpCacheKey,
-        builder: Callable[[], TensorOp],
-    ) -> TensorOp:
-        """Resolve one configured TensorOp through bounded configured-op cache."""
-        return self._configured_cache.get_or_create(key=key, builder=builder)
-
-
-_TENSOR_OP_FACTORY = _TensorOpFactory(
+_TENSOR_OP_FACTORY: TensorOpFactory[TensorOp] = TensorOpFactory(
     base_max_size=_BASE_OP_CACHE_MAX_SIZE,
     configured_max_size=_CONFIGURED_OP_CACHE_MAX_SIZE,
 )
