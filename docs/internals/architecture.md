@@ -6,137 +6,169 @@ Status: Non-normative architecture note
 
 Define the internal execution hierarchy for `TensorOp`:
 
-1. `AbstractPlan`: ingress-normalized operation definition.
-2. `SymbolicPlan`: symbolic execution program as ordered symbolic steps.
-3. `RuntimeStep` chain: specialized executable steps assembled per call.
+1. `TensorOp`: public operation value and call boundary.
+2. `AbstractPlan`: ingress-normalized operation definition plus a lowering protocol.
+3. `SymbolicPlan`: ordered symbolic primitive steps with deterministic scoring.
+4. `RuntimeStep` chain: executable primitive steps specialized for one call shape/backend.
 
-This keeps `TensorOp` ergonomic while moving execution complexity into a strict internal model.
+The design keeps flexibility at API ingress and keeps the internal pipeline canonical:
+
+```text
+TensorOp ingress -> AbstractPlan -> SymbolicPlan -> RuntimeStep chain -> execution
+```
 
 ## Design Principles
 
-1. Accept flexibility only at API boundaries.
-2. Keep internal state canonical and strongly typed.
-3. Keep data flow one-way:
-   `TensorOp ingress -> AbstractPlan -> SymbolicPlan -> RuntimeStep chain -> execution`.
-4. Treat optimizations as plan forms, not ad hoc fastpath conditionals.
-5. Keep chain/einsum search in lowering, never in symbolic step specialization.
-6. Keep symbolic steps primitive with explicit arity contracts.
+1. Accept flexible inputs only at API boundaries.
+2. Normalize once, then keep internal state canonical and strongly typed.
+3. Keep lowering/search in `lowering`, plan selection/caching in `plans`, and primitive specialization in `steps`.
+4. Treat optimizations as plan forms, not ad hoc call-site branches.
+5. Keep symbolic steps primitive with explicit arity contracts.
+6. Keep static analysis read-only and outside the runtime dependency graph.
 
 ## Core Entities
 
+### TensorOp
+
+`TensorOp` lives in `operations/tensor_op.py` and is the public operation value.
+It owns the user-facing operation state and delegates call-time execution to
+`operations/execution.py`.
+
+Constructor-time validation that is not owned by a concrete primitive step lives in
+`operations/validation.py`.
+
 ### AbstractPlan
 
-`AbstractPlan` contains only operation definition and lowering policy.
+`AbstractPlan` lives in `plans/abstract.py`. It contains the normalized operation
+shape and the plan-owned lowering protocol seam:
 
 - `op_name: str`
 - `lhs: AxisSide`
 - `rhs: AxisSide`
+- `explicit_sizes_items: tuple[tuple[str, int], ...]`
 - `lowering: LoweringProgram`
 
-`AbstractPlan` does not own runtime information:
+During initialization it lowers once into:
 
-- no `explicit_sizes`
-- no `backend_profile`
-- no `supports_reducer`
-- no duplicated `Signature` field
+- `ir_program: IRProgram`
+- `symbolic_candidates: tuple[SymbolicPlan, ...]`
 
-Those are call-site concerns handled during symbolic selection or specialization.
+`AbstractPlan` owns plan selection, candidate caches, route-runner caches, backend
+profile caches, and runner fusion integration. It does not own concrete tensor
+execution glue; that remains in `operations/execution.py`.
+
+### LoweringProgram
+
+`LoweringProgram` lives in `plans/lowering_protocol.py` because `AbstractPlan`
+consumes the protocol. Concrete implementations live in `lowering/`:
+
+- `DefaultLoweringProgram`
+- `StaticLoweringProgram`
+- `EmptyLoweringProgram`
+
+`einf.lowering.LoweringProgram` remains a re-export of the plan-owned protocol for
+convenient imports, but the canonical owner is `plans/lowering_protocol.py`.
 
 ### SymbolicPlan
 
-`SymbolicPlan` is an ordered tuple of symbolic steps.
+`SymbolicPlan` lives in `plans/symbolic.py`. It is an ordered tuple of symbolic
+steps:
 
 - `kind: str`
 - `input_arity: int`
 - `output_arity: int`
 - `steps: tuple[SymbolicStep, ...]`
 
-`SymbolicPlan` does not reference `AbstractPlan`.
+It validates step arity continuity, specializes symbolic steps into runtime steps,
+executes the runtime chain, and computes deterministic plan scores.
 
 ### SymbolicStep
 
-`SymbolicStep` is one symbolic instruction and owns specialization.
+`SymbolicStep` lives in `steps/base.py`. It is one primitive symbolic instruction:
 
 - `name: str`
 - `input_arity: int`
 - `output_arity: int`
-- `specialize(context) -> RuntimeStep`
-- `score(context) -> StepScore`
+- `score(context: PlanSelectionContext) -> SymbolicStepScore`
+- `specialize(context: RuntimeSpecializationContext) -> RuntimeStep`
 
-Primitive arity contracts:
+Step-consumed context and scoring helpers live under `steps/`:
 
-- `einsum`: `N -> 1`
-- `contract`: `N -> 1`
-- `concat`: `N -> 1` (`N >= 2`)
-- `split`: `1 -> N` (`N >= 2`)
-- `reduce`: `1 -> 1`
-- `expand`: `1 -> 1`
-- `view`: `1 -> 1`
-- `permute`: `1 -> 1`
-- `reshape`: `1 -> 1`
-- `reindex` (generic structural fallback): `N -> M` (`N >= 1`, `M >= 1`)
+- `steps/context.py`: `PlanSelectionContext`, `RuntimeExecutionContext`, pack expansion, runtime context normalization.
+- `steps/scoring.py`: primitive shape/scoring helpers used by concrete steps.
+- `plans/scoring.py`: plan-level `SymbolicPlanScore` only.
 
 ### RuntimeStep
 
-`RuntimeStep` is one executable instruction.
+`RuntimeStep` lives in `steps/base.py` and concrete step packages. It is one
+executable primitive instruction:
 
 - `name: str`
 - `input_arity: int`
 - `output_arity: int`
 - `run(tensors) -> tuple[TensorLike, ...]`
 
-## Context Object
+Concrete primitive owners:
 
-Specialization requires call-time context:
+- `steps/einsum/`
+- `steps/reduce/`
+- `steps/reshape/`
+- `steps/expand/`
+- `steps/axis_slice/`
+- `steps/concat.py`
+- `steps/permute.py`
 
-- input shapes
-- backend profile
-
-This is represented as `SpecializationContext` and passed to each `SymbolicStep.specialize`.
+Each primitive owns its symbolic program model, compile helpers, specialization,
+runtime execution, and backend-specific fast paths where applicable.
 
 ## Module Boundaries
 
-Create `src/einf/plans/` with:
+Current package ownership:
 
-- `types.py`: protocols and specialization/selection contexts.
-- `abstract.py`: `AbstractPlan` and `LoweringProgram`.
-- `symbolic.py`: `SymbolicPlan`.
-- `steps/`: step modules split by operation kind (`view`, `rearrange`,
-  `expand`, `reduce`, `einsum`) plus shared
-  runtime placeholders.
-- `lowering.py`: concrete lowering policy helpers.
+- `operations/`: public op construction, `TensorOp`, call execution glue, constructor validation.
+- `ir/`: lowering IR nodes and route-solving support.
+- `lowering/`: concrete lowering implementations and IR-to-symbolic-candidate builders.
+- `plans/`: abstract/symbolic plan contracts, plan-owned lowering protocol, selection/cache/fusion/runners/rendering.
+- `steps/`: primitive symbolic/runtime step contracts, models, compilation, specialization, and execution.
+- `analysis/`: parser/checker/LSP/validator sidecar with no runtime importers.
 
-No execution kernels live in this package; this package models planning contracts only.
+Forbidden package dependency directions are enforced by
+`tests/package/test_package_import_boundaries.py`. The current exception list is
+empty.
 
-## Current Scaffolding Status
+## Static Analysis Boundary
 
-Current implementation provides:
+`analysis/passes/einf_calls/` is split by responsibility:
 
-1. concrete default lowering (`DefaultLoweringProgram`) for:
-   - `view`, `rearrange`, `repeat` (lowered to `expand`), `reduce`, `contract`,
-     `einop`
-2. `einop` lowering decomposed into non-`einop` symbolic primitives
-   (`split`, `concat`, `permute`, `reshape`, `expand`, `reduce`, `contract`, `einsum`).
-3. chain search runs in lowering/planning, not inside symbolic runtime specialization.
-4. `SymbolicPlan.score()` aggregates deterministic `SymbolicStep.score()` results.
+- `entrypoint.py`: `ParsedModule` traversal and public `analyze_einf_calls`.
+- `model.py`: internal parse/evaluation records and snippet span mapping.
+- `syntax.py`: AST axis and side parsing.
+- `semantics.py`: base `TensorOp` replay and method-chain dispatch.
+- `reducers.py`: `reduce_by` reducer and phase parsing.
+- `diagnostics.py`: analysis diagnostic codes and validation-error projection.
+- `tokens.py`: axis role and missing-rhs-axis projection.
 
-## Feasibility and Candidate Narrowing
+The analysis tree may read stable runtime boundary/canonical packages such as
+`axis`, `diagnostics`, `operations`, `reduction`, `signature`, and `tensor_types`.
+It must not import concrete `steps`.
 
-Lowering policy:
+## Test Taxonomy
 
-1. Same `AbstractPlan` MAY yield multiple symbolic candidates.
-2. Lowering MUST prune aggressively before runtime:
-   - infeasible candidates are removed,
-   - equivalent candidates are deduplicated,
-   - ordering constraints are enforced (for example: `concat` before `einsum`; no `split` before `einsum`).
-3. Runtime selection only chooses among already-feasible candidates.
+Tests mirror production ownership:
 
-Current `einop` feasibility path:
+- `tests/analysis/`
+- `tests/axis/`
+- `tests/backend/`
+- `tests/benchmarks/`
+- `tests/integration/`
+- `tests/ir/`
+- `tests/operations/`
+- `tests/package/`
+- `tests/plans/`
+- `tests/shape/`
 
-1. direct primitive lowering,
-2. single-einsum carrier plan (`einsum_carrier_then_unary`) when representable,
-3. deterministic exhaustive chain search (`einsum_chain_then_unary`) as fallback,
-4. deterministic validation error when no staged non-view lowering exists.
+Multi-package public flows remain in `tests/integration/`. Package guardrails,
+exports, scaffold, typing surface, and pipeline contracts live in `tests/package/`.
 
 ## Scoring Policy
 
@@ -155,9 +187,12 @@ Rules:
 2. no traversal-order tie-breaking,
 3. ties are resolved deterministically by candidate order.
 
-## Implementation Progress
+## Current Lowering Policy
 
-1. Add plan ADTs and protocol tests.
-2. Build `AbstractPlan` from `TensorOp` configuration.
-3. Replace ad hoc `TensorOp.__call__` branching with plan pipeline.
-4. Re-express current fastpaths as symbolic/runtime plan variants.
+Current concrete lowering provides:
+
+1. default lowering for `view`, `rearrange`, `repeat`, `reduce`, `contract`, and `einop`,
+2. `einop` decomposition into primitive symbolic steps,
+3. single-einsum carrier plans when representable,
+4. deterministic chain search fallback for contraction-bearing `einop`,
+5. deterministic validation errors when no staged lowering exists.
