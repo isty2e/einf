@@ -10,7 +10,6 @@ from einf.steps.context import PlanSelectionContext
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
 from einf.tensor_types import TensorLike
 
-from ..lowering import LoweringProgram
 from .cache import (
     BackendProfileCache,
     RouteOutputIndexCache,
@@ -25,6 +24,7 @@ from .fusion import (
     TupleRunner,
     discover_step_fusions,
 )
+from .lowering_protocol import LoweringProgram
 from .runners import RouteRunnerKernel, RunnerKernel, StepChainRunnerKernel
 from .symbolic import SymbolicPlan
 

@@ -116,11 +116,6 @@ BOUNDARY_RULES = (
 
 
 KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
-    (
-        "src/einf/plans/abstract.py",
-        "einf.lowering",
-        "plans-must-not-import-concrete-lowering",
-    ): "td-fgax: separate lowering protocol seam from concrete lowering",
 }
 
 
@@ -152,7 +147,7 @@ def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
 
 def test_import_boundary_scanner_normalizes_relative_imports() -> None:
     tree = ast.parse(
-        "from ..lowering import LoweringProgram\n"
+        "from .lowering_protocol import LoweringProgram\n"
         "from ..steps.context import PlanSelectionContext\n"
     )
     references = {
@@ -160,7 +155,7 @@ def test_import_boundary_scanner_normalizes_relative_imports() -> None:
         for reference in _import_references(tree=tree, module_name="einf.plans.abstract", path=Path("abstract.py"))
     }
 
-    assert "einf.lowering" in references
+    assert "einf.plans.lowering_protocol" in references
     assert "einf.steps.context" in references
 
 

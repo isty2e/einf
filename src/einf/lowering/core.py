@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 try:
@@ -8,36 +7,11 @@ except ImportError:  # pragma: no cover
 
 from einf.axis import AxisSide
 from einf.ir import IRProgram, build_default_ir_program
+from einf.plans.lowering_protocol import LoweringProgram
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPlan
 
 from .compile import build_symbolic_candidates_from_ir
-
-
-class LoweringProgram(ABC):
-    """Lowering policy that emits symbolic candidates from abstract operation form."""
-
-    @abstractmethod
-    def ir_program(
-        self,
-        *,
-        op_name: str,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
-    ) -> IRProgram:
-        """Return canonical lowering IR program for one abstract operation."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def symbolic_candidates(
-        self,
-        *,
-        ir_program: IRProgram,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
-    ) -> tuple[SymbolicPlan, ...]:
-        """Return ordered symbolic plan candidates."""
-        raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True)
