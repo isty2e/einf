@@ -98,6 +98,20 @@ BOUNDARY_RULES = (
         rationale="IR routing should not depend on plan-layer runtime context helpers",
     ),
     BoundaryRule(
+        name="ir-must-not-import-backend",
+        source_prefixes=("einf.ir",),
+        target_prefix="einf.backend",
+        ticket="td-osrc",
+        rationale="IR should model route intent and static solving; call-time backend namespace validation belongs to plans",
+    ),
+    BoundaryRule(
+        name="ir-must-not-import-steps",
+        source_prefixes=("einf.ir",),
+        target_prefix="einf.steps",
+        ticket="td-osrc",
+        rationale="IR should not depend on step-owned runtime context normalization",
+    ),
+    BoundaryRule(
         name="analysis-must-not-import-concrete-steps",
         source_prefixes=("einf.analysis",),
         target_prefix="einf.steps",
@@ -134,7 +148,9 @@ def test_package_import_boundaries_follow_taxonomy_guardrails() -> None:
 def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
     assert {rule.name for rule in BOUNDARY_RULES} == {
         "analysis-must-not-import-concrete-steps",
+        "ir-must-not-import-backend",
         "ir-must-not-import-plans",
+        "ir-must-not-import-steps",
         "operations-must-not-import-concrete-steps",
         "plans-must-not-import-concrete-lowering",
         "plans-must-not-import-operations",

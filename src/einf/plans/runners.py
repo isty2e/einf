@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from einf.ir.routing.runtime import route_outputs
 from einf.plans.fusion import RuntimeStepFusions, RuntimeSteps, TupleRunner
+from einf.plans.routing import route_outputs
 from einf.steps.base import RuntimeStep, StepProgram
 from einf.tensor_types import TensorLike
 

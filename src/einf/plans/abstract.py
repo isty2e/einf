@@ -4,7 +4,6 @@ from einf.axis import AxisSide
 from einf.backend import BACKEND_RESOLVER, BackendProfile
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.ir import IRProgram
-from einf.ir.routing.runtime import resolve_route_output_indices
 from einf.ir.routing.static import precompute_route_output_indices
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
 from einf.steps.context import PlanSelectionContext
@@ -25,6 +24,7 @@ from .fusion import (
     discover_step_fusions,
 )
 from .lowering_protocol import LoweringProgram
+from .routing import resolve_route_output_indices
 from .runners import RouteRunnerKernel, RunnerKernel, StepChainRunnerKernel
 from .symbolic import SymbolicPlan
 

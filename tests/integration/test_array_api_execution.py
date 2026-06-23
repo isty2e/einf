@@ -6,6 +6,7 @@ import pytest
 from numpy.typing import NDArray
 
 import einf.plans.abstract as abstract_plan_module
+import einf.plans.routing as plan_routing_module
 import einf.plans.runners as runner_module
 import einf.steps.einsum as einsum_step_module
 import einf.steps.einsum.step as einsum_step_impl
@@ -24,7 +25,6 @@ from einf import (
     repeat,
     view,
 )
-from einf.ir.routing import runtime as routing_runtime_module
 from einf.lowering import einop as einop_plan_module
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
@@ -481,7 +481,7 @@ def test_rearrange_route_fastpath_skips_reindex_path(
     op = rearrange((ax[n], ax[m]), (ax[m], ax[n])).with_sizes(n=2, m=3)
 
     monkeypatch.setattr(
-        routing_runtime_module,
+        plan_routing_module,
         "build_runtime_execution_context",
         _explode_native_contract_einsum,
     )

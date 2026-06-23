@@ -74,8 +74,9 @@ the plan runtime. Lowering still owns IR-to-symbolic candidate generation, and
 steps still own primitive specialization/execution.
 
 - **`ir/`** — shared IR node model (`AssembleIR`, `GatherIR`,
-  `RouteIR`, `TransformIR`) and routing tables. Acts as the
-  intermediate representation between op ingress and lowering.
+  `RouteIR`, `TransformIR`) plus pure route solving and static routing
+  tables. Acts as the intermediate representation between op ingress
+  and lowering; call-time route resolution lives in `plans/`.
 - **`lowering/`** — `LoweringProgram` implementations and the
   IR → symbolic-candidates compiler. Chain search, candidate pruning,
   and feasibility enforcement live here, not in runtime specialization.
@@ -83,8 +84,8 @@ steps still own primitive specialization/execution.
   `abstract.py` defines `AbstractPlan`, `symbolic.py` the
   `SymbolicPlan`, `lowering_protocol.py` the `LoweringProgram` seam
   consumed by `AbstractPlan`, and `scoring.py` the plan-level scoring
-  record. `cache.py`, `fusion/`, `runners.py`, and `render.py` own the
-  plan runtime support surfaces.
+  record. `cache.py`, `fusion/`, `routing.py`, `runners.py`, and
+  `render.py` own the plan runtime support surfaces.
 - **`steps/`** — primitive symbolic and runtime step modules
   (`permute`, `reshape`, `reduce`, `expand`, `einsum`, `concat`,
   `axis_slice`, plus shared `base.py`, `context.py`, `scoring.py`, and

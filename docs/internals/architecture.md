@@ -126,9 +126,9 @@ runtime execution, and backend-specific fast paths where applicable.
 Current package ownership:
 
 - `operations/`: public op construction, `TensorOp`, call execution glue, constructor validation.
-- `ir/`: lowering IR nodes and route-solving support.
+- `ir/`: lowering IR nodes, pure route solving, and static route tables.
 - `lowering/`: concrete lowering implementations and IR-to-symbolic-candidate builders.
-- `plans/`: abstract/symbolic plan contracts, plan-owned lowering protocol, selection/cache/fusion/runners/rendering.
+- `plans/`: abstract/symbolic plan contracts, plan-owned lowering protocol, selection/cache/fusion/route runtime/runners/rendering.
 - `steps/`: primitive symbolic/runtime step contracts, models, compilation, specialization, and execution.
 - `analysis/`: parser/checker/LSP/validator sidecar with no runtime importers.
 
