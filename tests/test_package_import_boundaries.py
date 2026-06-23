@@ -121,26 +121,6 @@ KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
         "einf.lowering",
         "plans-must-not-import-concrete-lowering",
     ): "td-fgax: separate lowering protocol seam from concrete lowering",
-    (
-        "src/einf/steps/expand/__init__.py",
-        "einf.lowering.expand",
-        "steps-must-not-import-lowering",
-    ): "td-mfui: move expand program artifacts to steps.expand",
-    (
-        "src/einf/steps/expand/runtime.py",
-        "einf.lowering.expand",
-        "steps-must-not-import-lowering",
-    ): "td-mfui: move expand program artifacts to steps.expand",
-    (
-        "src/einf/steps/expand/solve.py",
-        "einf.lowering.expand",
-        "steps-must-not-import-lowering",
-    ): "td-mfui: move expand program artifacts to steps.expand",
-    (
-        "src/einf/steps/expand/step.py",
-        "einf.lowering.expand",
-        "steps-must-not-import-lowering",
-    ): "td-mfui: move expand program artifacts to steps.expand",
 }
 
 

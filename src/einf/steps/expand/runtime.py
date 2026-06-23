@@ -1,9 +1,10 @@
 from collections.abc import Callable
 
 from einf.backend import ArrayNamespace, BackendArrayOps
-from einf.lowering.expand import ExpandSymbolicProgram
 from einf.shape import compile_fixed_rank_shape_evaluator
 from einf.tensor_types import TensorLike
+
+from .model import ExpandSymbolicProgram
 
 
 def compile_expand_target_shape_evaluator(

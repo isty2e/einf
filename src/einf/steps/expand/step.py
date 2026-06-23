@@ -6,7 +6,6 @@ from einf.backend import (
     BackendArrayOps,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.lowering.expand import ExpandSymbolicProgram
 from einf.signature import Signature
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep
 from einf.tensor_types import TensorLike
@@ -20,6 +19,7 @@ from .runtime import (
     compile_expand_target_shape_evaluator,
     run_expand_program,
 )
+from .model import ExpandSymbolicProgram
 from .solve import solve_expand_program_from_input_shape
 
 

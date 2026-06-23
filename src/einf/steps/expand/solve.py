@@ -7,12 +7,11 @@ from einf.axis import (
     ScalarAxisTerms,
     term_size,
 )
-from einf.lowering.expand import (
-    ExpandSymbolicProgram,
-    build_expand_symbolic_program,
-)
 from einf.signature import Signature
 from einf.solver import solve_dimensions
+
+from .compile import build_expand_symbolic_program
+from .model import ExpandSymbolicProgram
 
 
 @lru_cache(maxsize=1_024)
