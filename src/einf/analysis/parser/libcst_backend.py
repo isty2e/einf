@@ -112,7 +112,7 @@ class LibCstParserBackend:
             )
             return node_id
 
-        root_id = visit(module_node)
+        root_id = visit(wrapper.module)
         return ParsedModule(
             path=path,
             source=source,
