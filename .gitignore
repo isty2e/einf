@@ -191,3 +191,4 @@ pyrightconfig.json
 
 # Benchmark raw JSON dumps (summary/report markdown stays tracked)
 artifacts/**/raw/
+.kata.local.toml
