@@ -5,6 +5,7 @@ from einf.analysis.checkers import CheckerFailure
 from einf.analysis.model import DiagnosticSeverity, TextPosition, TextSpan
 from einf.analysis.validator.model import ValidationFileReport
 
+from .analysis_queue import DocumentAnalysisRequest, LspAnalysisQueue
 from .change_debounce import LspChangeDebouncer, PendingDocumentChange
 from .config import InitializeOptions, LspConfig
 from .hover import build_hover
@@ -12,7 +13,9 @@ from .inlay_hints import build_inlay_hints
 from .semantic_tokens import TOKEN_MODIFIERS, TOKEN_TYPES, encode_semantic_tokens
 from .service import LspDocumentState, LspService
 
-DEFAULT_CHANGE_DEBOUNCE_SECONDS = 0.15
+_DEFAULT_CHANGE_DEBOUNCE_SECONDS = 0.15
+_DEFAULT_ANALYSIS_WORKER_COUNT = 2
+_DEFAULT_ANALYSIS_PENDING_LIMIT = 32
 
 
 class EinfLanguageServer(LanguageServer):
@@ -26,7 +29,11 @@ class EinfLanguageServer(LanguageServer):
         )
         self.einf_service = LspService(LspConfig())
         self.einf_change_debouncer = LspChangeDebouncer(
-            delay_seconds=DEFAULT_CHANGE_DEBOUNCE_SECONDS
+            delay_seconds=_DEFAULT_CHANGE_DEBOUNCE_SECONDS
+        )
+        self.einf_analysis_queue = LspAnalysisQueue(
+            worker_count=_DEFAULT_ANALYSIS_WORKER_COUNT,
+            pending_limit=_DEFAULT_ANALYSIS_PENDING_LIMIT,
         )
 
 
@@ -46,14 +53,20 @@ def build_server() -> EinfLanguageServer:
         ls.einf_service = LspService(LspConfig.from_initialize_options(init_options))
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
-    def did_open(ls: EinfLanguageServer, params: lsp.DidOpenTextDocumentParams) -> None:
+    async def did_open(
+        ls: EinfLanguageServer,
+        params: lsp.DidOpenTextDocumentParams,
+    ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
-        state = ls.einf_service.open_document(
-            uri=text_document.uri,
-            source=text_document.source,
-            version=text_document.version,
+        await _analyze_document_request(
+            ls,
+            request=DocumentAnalysisRequest(
+                uri=text_document.uri,
+                source=text_document.source,
+                version=text_document.version,
+                include_checkers=False,
+            ),
         )
-        _publish_document_state(ls, state)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_CHANGE)
     async def did_change(
@@ -67,32 +80,41 @@ def build_server() -> EinfLanguageServer:
         )
 
         async def analyze(pending_change: PendingDocumentChange) -> None:
-            state = ls.einf_service.change_document(
-                uri=pending_change.uri,
-                source=pending_change.source,
-                version=pending_change.version,
+            await _analyze_document_request(
+                ls,
+                request=DocumentAnalysisRequest(
+                    uri=pending_change.uri,
+                    source=pending_change.source,
+                    version=pending_change.version,
+                    include_checkers=False,
+                ),
             )
-            _publish_document_state(ls, state)
 
         ls.einf_change_debouncer.schedule(change, analyze=analyze)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
-    def did_save(ls: EinfLanguageServer, params: lsp.DidSaveTextDocumentParams) -> None:
+    async def did_save(
+        ls: EinfLanguageServer,
+        params: lsp.DidSaveTextDocumentParams,
+    ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
         ls.einf_change_debouncer.cancel(text_document.uri)
-        state = ls.einf_service.save_document(
-            uri=text_document.uri,
-            source=text_document.source,
-            version=text_document.version,
+        await _analyze_document_request(
+            ls,
+            request=DocumentAnalysisRequest(
+                uri=text_document.uri,
+                source=text_document.source,
+                version=text_document.version,
+                include_checkers=True,
+            ),
         )
-        _publish_document_state(ls, state)
-        _log_checker_failures(ls, state.checker_failures)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
-    def did_close(
+    async def did_close(
         ls: EinfLanguageServer, params: lsp.DidCloseTextDocumentParams
     ) -> None:
         ls.einf_change_debouncer.cancel(params.text_document.uri)
+        await ls.einf_analysis_queue.cancel(uri=params.text_document.uri)
         ls.einf_service.close_document(uri=params.text_document.uri)
         ls.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(
@@ -100,6 +122,11 @@ def build_server() -> EinfLanguageServer:
                 diagnostics=[],
             )
         )
+
+    @server.feature(lsp.SHUTDOWN)
+    async def shutdown(ls: EinfLanguageServer, *args: object) -> None:
+        _ = args
+        await ls.einf_analysis_queue.close()
 
     @server.feature(lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_LEGEND)
     async def semantic_tokens_full(
@@ -183,25 +210,60 @@ async def _get_or_open_document_state(
 ) -> LspDocumentState | None:
     pending_change = ls.einf_change_debouncer.take_pending(uri=uri)
     if pending_change is not None:
-        state = ls.einf_service.change_document(
-            uri=pending_change.uri,
-            source=pending_change.source,
-            version=pending_change.version,
+        return await _analyze_document_request(
+            ls,
+            request=DocumentAnalysisRequest(
+                uri=pending_change.uri,
+                source=pending_change.source,
+                version=pending_change.version,
+                include_checkers=False,
+            ),
         )
-        _publish_document_state(ls, state)
-        return state
+
+    latest_state = await ls.einf_analysis_queue.wait_for_latest(uri=uri)
+    if latest_state is not None:
+        return latest_state
 
     state = ls.einf_service.get_document_state(uri=uri)
     if state is not None:
         return state
-    try:
-        text_document = ls.workspace.get_text_document(uri)
-    except Exception:
-        return None
-    return ls.einf_service.open_document(
-        uri=text_document.uri,
-        source=text_document.source,
-        version=text_document.version,
+    text_document = ls.workspace.get_text_document(uri)
+    return await _analyze_document_request(
+        ls,
+        request=DocumentAnalysisRequest(
+            uri=text_document.uri,
+            source=text_document.source,
+            version=text_document.version,
+            include_checkers=False,
+        ),
+    )
+
+
+async def _analyze_document_request(
+    ls: EinfLanguageServer,
+    *,
+    request: DocumentAnalysisRequest,
+) -> LspDocumentState | None:
+    service = ls.einf_service
+
+    def analyze(analysis_request: DocumentAnalysisRequest) -> LspDocumentState:
+        return service.analyze_document(
+            uri=analysis_request.uri,
+            source=analysis_request.source,
+            version=analysis_request.version,
+            include_checkers=analysis_request.include_checkers,
+        )
+
+    def commit(state: LspDocumentState) -> None:
+        service.commit_document_state(state)
+        _publish_document_state(ls, state)
+        if state.checker_fresh:
+            _log_checker_failures(ls, state.checker_failures)
+
+    return await ls.einf_analysis_queue.analyze(
+        request,
+        analyze=analyze,
+        commit=commit,
     )
 
 
@@ -295,4 +357,4 @@ def _log_checker_failures(
         )
 
 
-__all__ = ["EinfLanguageServer", "SEMANTIC_TOKENS_LEGEND", "build_server"]
+__all__ = ["SEMANTIC_TOKENS_LEGEND", "EinfLanguageServer", "build_server"]

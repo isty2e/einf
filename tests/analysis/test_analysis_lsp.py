@@ -70,6 +70,25 @@ def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) 
     assert service.get_document_state(uri=target.resolve().as_uri()) == changed
 
 
+def test_lsp_service_analysis_requires_explicit_state_commit(tmp_path: Path) -> None:
+    target = tmp_path / "sample.py"
+    uri = target.resolve().as_uri()
+    service = LspService(LspConfig())
+
+    state = service.analyze_document(
+        uri=uri,
+        source=VALID_SOURCE,
+        version=1,
+        include_checkers=False,
+    )
+
+    assert service.get_document_state(uri=uri) is None
+
+    service.commit_document_state(state)
+
+    assert service.get_document_state(uri=uri) == state
+
+
 def test_lsp_service_skips_deep_analysis_for_irrelevant_source(
     monkeypatch,
     tmp_path: Path,

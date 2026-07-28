@@ -67,12 +67,14 @@ class LspService:
         version: int | None,
     ) -> LspDocumentState:
         """Analyze an opened document without running external checkers."""
-        return self._update_document(
+        state = self.analyze_document(
             uri=uri,
             source=source,
             version=version,
-            run_checkers=False,
+            include_checkers=False,
         )
+        self.commit_document_state(state)
+        return state
 
     def change_document(
         self,
@@ -82,12 +84,14 @@ class LspService:
         version: int | None,
     ) -> LspDocumentState:
         """Reanalyze one changed document and clear stale checker state."""
-        return self._update_document(
+        state = self.analyze_document(
             uri=uri,
             source=source,
             version=version,
-            run_checkers=False,
+            include_checkers=False,
         )
+        self.commit_document_state(state)
+        return state
 
     def save_document(
         self,
@@ -97,36 +101,31 @@ class LspService:
         version: int | None,
     ) -> LspDocumentState:
         """Reanalyze one saved document and refresh fallback checker state."""
-        return self._update_document(
+        state = self.analyze_document(
             uri=uri,
             source=source,
             version=version,
-            run_checkers=True,
+            include_checkers=True,
         )
+        self.commit_document_state(state)
+        return state
 
-    def close_document(self, *, uri: str) -> None:
-        """Drop cached state for one closed document."""
-        self._states.pop(uri, None)
-
-    def get_document_state(self, *, uri: str) -> LspDocumentState | None:
-        """Return the cached document state, if available."""
-        return self._states.get(uri)
-
-    def _update_document(
+    def analyze_document(
         self,
         *,
         uri: str,
         source: str,
         version: int | None,
-        run_checkers: bool,
+        include_checkers: bool,
     ) -> LspDocumentState:
+        """Analyze one document without making the result session-visible."""
         path = path_from_uri(uri)
         report = self._analyze_document(path=path, source=source)
         checker_failures: tuple[CheckerFailure, ...] = ()
         checker_diagnostics: tuple[CheckerDiagnostic, ...] = ()
         checker_fresh = False
 
-        if run_checkers and path is not None and self._checker_adapters:
+        if include_checkers and path is not None and self._checker_adapters:
             checker_failures, checker_diagnostics = self._run_document_checkers(
                 path=path
             )
@@ -139,7 +138,7 @@ class LspService:
             axis_tokens=report.axis_tokens,
             failures=report.failures,
         )
-        state = LspDocumentState(
+        return LspDocumentState(
             uri=uri,
             path=path,
             version=version,
@@ -147,8 +146,18 @@ class LspService:
             checker_failures=checker_failures,
             checker_fresh=checker_fresh,
         )
-        self._states[uri] = state
-        return state
+
+    def commit_document_state(self, state: LspDocumentState) -> None:
+        """Make one completed analysis result visible to session readers."""
+        self._states[state.uri] = state
+
+    def close_document(self, *, uri: str) -> None:
+        """Drop cached state for one closed document."""
+        self._states.pop(uri, None)
+
+    def get_document_state(self, *, uri: str) -> LspDocumentState | None:
+        """Return the cached document state, if available."""
+        return self._states.get(uri)
 
     def _analyze_document(
         self,
