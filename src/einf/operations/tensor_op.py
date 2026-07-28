@@ -28,6 +28,7 @@ from .cache import (
     reducer_plan_to_cache_key,
 )
 from .execution import execute_tensor_op_call, extract_input_shapes
+from .kind import OperationKind
 from .policy import OpPolicy, resolve_op_policy
 
 RuntimeTypeKey = tuple[type[object], ...]
@@ -83,10 +84,9 @@ def _normalize_sizes_items(
 class TensorOpContract:
     """Canonical immutable TensorOp contract and its normalized products."""
 
-    name: str
+    kind: OperationKind
     lhs: AxisSide
     rhs: AxisSide
-    supports_reducer: bool = False
     reducer_plan: ReducerPlan | None = None
     sizes_items: tuple[tuple[str, int], ...] = ()
     signature: Signature = field(init=False, repr=False)
@@ -98,7 +98,7 @@ class TensorOpContract:
     def __post_init__(self) -> None:
         """Normalize constructor inputs and derive the canonical execution contract."""
         normalized = Signature(inputs=self.lhs, outputs=self.rhs)
-        op_policy = resolve_op_policy(self.name)
+        op_policy = resolve_op_policy(self.kind)
         op_policy.validate_constructor(
             op_name=self.name,
             lhs=normalized.inputs,
@@ -125,13 +125,17 @@ class TensorOpContract:
         object.__setattr__(self, "op_policy", op_policy)
         object.__setattr__(self, "abstract_plan", abstract_plan)
 
+    @property
+    def name(self) -> str:
+        """Return the string operation name used by execution and diagnostics."""
+        return self.kind.value
+
     def base_cache_key(self) -> BaseOpCacheKey:
         """Build the deterministic base-op cache key for this contract."""
         return BaseOpCacheKey(
-            name=self.name,
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
         )
 
     def configured_cache_key(self) -> ConfiguredOpCacheKey:
@@ -149,10 +153,9 @@ class TensorOpContract:
     ) -> "TensorOpContract":
         """Return one contract with updated explicit size bindings."""
         return TensorOpContract(
-            name=self.name,
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
             reducer_plan=self.reducer_plan,
             sizes_items=sizes_items,
         )
@@ -162,10 +165,9 @@ class TensorOpContract:
     ) -> "TensorOpContract":
         """Return one contract with updated reducer strategy."""
         return TensorOpContract(
-            name=self.name,
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
             reducer_plan=reducer_plan,
             sizes_items=self.sizes_items,
         )
@@ -262,17 +264,15 @@ class TensorOp:
     def from_base_spec(
         cls,
         *,
-        name: str,
+        kind: OperationKind,
         lhs: AxisSide,
         rhs: AxisSide,
-        supports_reducer: bool = False,
     ):
         """Return cached base TensorOp for one normalized constructor spec."""
         contract = TensorOpContract(
-            name=name,
+            kind=kind,
             lhs=lhs,
             rhs=rhs,
-            supports_reducer=supports_reducer,
         )
         return _TENSOR_OP_FACTORY.get_base(
             key=contract.base_cache_key(),
@@ -297,7 +297,7 @@ class TensorOp:
     @property
     def supports_reducer(self) -> bool:
         """Whether this operation accepts `.reduce_by(...)` customization."""
-        return self._contract.supports_reducer
+        return self._contract.op_policy.supports_reducer
 
     @property
     def reducer_plan(self) -> ReducerPlan | None:

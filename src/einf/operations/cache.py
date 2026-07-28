@@ -6,6 +6,7 @@ from typing import Generic, TypeVar
 
 from ..axis import AxisSide, AxisTerms
 from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
+from .kind import OperationKind
 
 KeyT = TypeVar("KeyT", bound=Hashable)
 ValueT = TypeVar("ValueT")
@@ -15,10 +16,9 @@ ValueT = TypeVar("ValueT")
 class BaseOpCacheKey:
     """Deterministic cache key for one base TensorOp instance."""
 
-    name: str
+    kind: OperationKind
     lhs: AxisSide
     rhs: AxisSide
-    supports_reducer: bool
 
 
 @dataclass(frozen=True, slots=True, eq=False)

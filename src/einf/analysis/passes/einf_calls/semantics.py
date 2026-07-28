@@ -7,6 +7,7 @@ from einf.analysis.source import SourceText
 from einf.axis import AxisSide
 from einf.diagnostics import ValidationError
 from einf.operations import TensorOp, contract, einop, rearrange, reduce, repeat, view
+from einf.operations.kind import OperationKind
 from einf.operations.validation import validate_contract_atomic_terms
 from einf.signature import Signature
 
@@ -45,12 +46,10 @@ def _build_base_tensor_op(
     if op_name == "contract":
         validate_contract_atomic_terms(Signature(inputs=lhs, outputs=rhs))
 
-    supports_reducer = op_name in {"reduce", "einop"}
     return TensorOp.from_base_spec(
-        name=op_name,
+        kind=OperationKind(op_name),
         lhs=lhs,
         rhs=rhs,
-        supports_reducer=supports_reducer,
     )
 
 

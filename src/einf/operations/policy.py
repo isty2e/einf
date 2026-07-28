@@ -2,12 +2,14 @@ from dataclasses import dataclass
 
 from ..axis import AxisSide
 from ..diagnostics import ErrorCode, ValidationError
+from .kind import OperationKind
 
 
 @dataclass(frozen=True, slots=True)
 class OpPolicy:
     """Canonical constructor/call arity policy for one operation."""
 
+    supports_reducer: bool = False
     unary_call_only: bool = False
     require_unary_lhs: bool = False
     require_unary_rhs: bool = False
@@ -90,26 +92,28 @@ class OpPolicy:
             )
 
 
-_DEFAULT_POLICY = OpPolicy()
-_POLICIES_BY_OP = {
-    "view": OpPolicy(unary_call_only=True, require_unary_lhs=True),
-    "repeat": OpPolicy(
+_POLICIES_BY_KIND = {
+    OperationKind.VIEW: OpPolicy(unary_call_only=True, require_unary_lhs=True),
+    OperationKind.REARRANGE: OpPolicy(),
+    OperationKind.REPEAT: OpPolicy(
         unary_call_only=True,
         require_unary_lhs=True,
         require_unary_rhs=True,
     ),
-    "reduce": OpPolicy(
+    OperationKind.REDUCE: OpPolicy(
+        supports_reducer=True,
         unary_call_only=True,
         require_unary_lhs=True,
         require_unary_rhs=True,
     ),
-    "contract": OpPolicy(require_unary_rhs=True),
+    OperationKind.CONTRACT: OpPolicy(require_unary_rhs=True),
+    OperationKind.EINOP: OpPolicy(supports_reducer=True),
 }
 
 
-def resolve_op_policy(op_name: str, /) -> OpPolicy:
-    """Resolve canonical operation policy by name."""
-    return _POLICIES_BY_OP.get(op_name, _DEFAULT_POLICY)
+def resolve_op_policy(kind: OperationKind, /) -> OpPolicy:
+    """Resolve canonical operation policy by closed operation kind."""
+    return _POLICIES_BY_KIND[kind]
 
 
 __all__ = ["OpPolicy", "resolve_op_policy"]
