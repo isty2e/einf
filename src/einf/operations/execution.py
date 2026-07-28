@@ -1,9 +1,6 @@
-from functools import lru_cache
-
 from ..diagnostics import ErrorCode, ValidationError
-from ..output_normalization import normalize_runtime_outputs
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
-from ..tensor_types import TensorLike
+from ..tensor_types import TensorLike, is_trusted_tensor_type
 from .policy import OpPolicy
 
 
@@ -56,19 +53,12 @@ def execute_tensor_op_call(
                 data={"operation": op_name},
             ) from error
 
-    raw_outputs = _execute_abstract_plan(
+    return _execute_abstract_plan(
         op_name,
         abstract_plan,
         context,
         tensors,
     )
-    if len(raw_outputs) != expected_output_arity:
-        return normalize_runtime_outputs(
-            op_name=op_name,
-            expected_output_arity=expected_output_arity,
-            raw_outputs=raw_outputs,
-        )
-    return raw_outputs
 
 
 def extract_input_shapes(
@@ -121,7 +111,7 @@ def _extract_input_shape(
             data={"operation": op_name, "index": index},
         )
 
-    if _is_trusted_tensor_type(type(tensor)):
+    if is_trusted_tensor_type(type(tensor)):
         return shape
 
     for dim in shape:
@@ -137,13 +127,6 @@ def _extract_input_shape(
                 data={"operation": op_name, "index": index},
             )
     return shape
-
-
-@lru_cache(maxsize=64)
-def _is_trusted_tensor_type(tensor_type: type[object]) -> bool:
-    """Return whether tensor type can skip per-dimension int entry checks."""
-    tensor_module = tensor_type.__module__
-    return tensor_module.startswith("torch") or tensor_module.startswith("numpy")
 
 
 def _execute_abstract_plan(

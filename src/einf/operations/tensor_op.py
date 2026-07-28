@@ -13,7 +13,7 @@ from ..backend import BackendExecutionIdentity
 from ..diagnostics import ErrorCode, ValidationError
 from ..lowering import DefaultLoweringProgram
 from ..lowering.einop.layout import EinopLayoutNormalization
-from ..output_normalization import normalize_runtime_outputs
+from ..output_normalization import RuntimeOutputContract
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
 from ..plans.cache import RunnerCache
 from ..plans.render import PlanDict, build_plan_dict, render_plan_text
@@ -222,6 +222,11 @@ class TensorOp:
         repr=False,
         compare=False,
     )
+    _runtime_output_contract: RuntimeOutputContract = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Attach fresh mutable runtime state to one immutable TensorOp contract."""
@@ -231,6 +236,14 @@ class TensorOp:
             TensorOpExecutionStrategy.from_contract(self._contract),
         )
         object.__setattr__(self, "_runner_cache", TensorOpRunnerCache())
+        object.__setattr__(
+            self,
+            "_runtime_output_contract",
+            RuntimeOutputContract(
+                op_name=self._contract.name,
+                expected_output_arity=self._contract.output_arity,
+            ),
+        )
 
     @classmethod
     def from_base_spec(
@@ -472,11 +485,12 @@ class TensorOp:
         contract = self._contract
         execution_strategy = self._execution_strategy
         runner_cache = self._runner_cache
+        output_contract = self._runtime_output_contract
         if (
             len(tensors) != contract.input_arity
             or execution_strategy.call_mode is _CallMode.GENERAL
         ):
-            return execute_tensor_op_call(
+            raw_outputs = execute_tensor_op_call(
                 contract.name,
                 contract.input_arity,
                 contract.output_arity,
@@ -484,6 +498,7 @@ class TensorOp:
                 contract.abstract_plan,
                 tensors,
             )
+            return output_contract.normalize(raw_outputs)
 
         input_shapes = extract_input_shapes(op_name=contract.name, tensors=tensors)
         contract.abstract_plan.validate_input_shapes(input_shapes)
@@ -510,7 +525,7 @@ class TensorOp:
                     tensors,
                 )
                 runner_cache.shape_free_single_runners.set(runner_cache_key, runner)
-            return runner(tensors)
+            return output_contract.normalize(runner(tensors))
 
         tuple_runner = runner_cache.shape_free_tuple_runners.get(runner_cache_key)
         if tuple_runner is None:
@@ -527,13 +542,7 @@ class TensorOp:
             )
             runner_cache.shape_free_tuple_runners.set(runner_cache_key, tuple_runner)
         raw_outputs = tuple_runner(tensors)
-        if len(raw_outputs) == contract.output_arity:
-            return raw_outputs
-        return normalize_runtime_outputs(
-            op_name=contract.name,
-            expected_output_arity=contract.output_arity,
-            raw_outputs=raw_outputs,
-        )
+        return output_contract.normalize(raw_outputs)
 
 
 _TENSOR_OP_FACTORY: TensorOpFactory[TensorOp] = TensorOpFactory(

@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from einf import ax, axes
+from einf import ExecutionError, ax, axes
 from einf.backend import BACKEND_RESOLVER, ArrayNamespaceLike, BackendProfile
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.operations import rearrange, repeat, view
@@ -68,6 +68,43 @@ class _SwitchingNamespaceTensor:
         return self
 
 
+class _AlternatingOutputNamespace:
+    __name__ = "custom.alternating_output"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def permute_dims(
+        self,
+        tensor: "_AlternatingOutputTensor",
+        permutation: tuple[int, ...],
+    ) -> object:
+        self.call_count += 1
+        if self.call_count > 1:
+            return object()
+        return _AlternatingOutputTensor(
+            shape=tuple(tensor.shape[index] for index in permutation),
+            namespace=self,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _AlternatingOutputTensor:
+    shape: tuple[int, ...]
+    namespace: _AlternatingOutputNamespace
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> ArrayNamespaceLike:
+        _ = api_version
+        return self.namespace
+
+    def __getitem__(self, key: object) -> "_AlternatingOutputTensor":
+        _ = key
+        return self
+
+
 def test_backend_profile_resolution_distinguishes_namespaces_for_one_tensor_type() -> (
     None
 ):
@@ -105,6 +142,21 @@ def test_shape_free_runner_cache_distinguishes_namespaces_for_one_tensor_type() 
     assert isinstance(output_b, _SwitchingNamespaceTensor)
     assert output_a.marker == "a"
     assert output_b.marker == "b"
+
+
+def test_shape_free_runner_validates_every_untrusted_backend_output() -> None:
+    b, c = axes("untrusted_output_b", "untrusted_output_c")
+    op = rearrange(ax[b, c], ax[c, b])
+    namespace = _AlternatingOutputNamespace()
+    tensor = _AlternatingOutputTensor((2, 3), namespace)
+
+    first_output = op(tensor)
+
+    assert isinstance(first_output, _AlternatingOutputTensor)
+    with pytest.raises(ExecutionError) as error:
+        _ = op(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
 
 
 def test_shape_dependent_runner_cache_distinguishes_namespaces_for_one_tensor_type() -> (
