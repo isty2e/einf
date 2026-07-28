@@ -1,5 +1,3 @@
-from typing import cast
-
 from .base import ScalarAxisTermBase
 from .collections import ScalarAxisTerms
 from .terms import Axis, AxisExpr, AxisInt
@@ -58,9 +56,7 @@ def expand_products_for_terms(terms: ScalarAxisTerms) -> ScalarAxisTerms:
     expanded: list[ScalarAxisTermBase] = []
     for term in terms:
         if isinstance(term, AxisExpr) and term.operator == "*":
-            expanded.extend(
-                cast(tuple[ScalarAxisTermBase, ...], flatten_mul_children(term))
-            )
+            expanded.extend(iter(flatten_mul_children(term)))
             continue
         expanded.append(term)
     return ScalarAxisTerms(tuple(expanded))
