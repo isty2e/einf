@@ -51,7 +51,9 @@ class MarkdownPrinter:
             "",
         ]
         if case_result.round_orders:
-            lines.extend(["Round base order (paired execution rotates within each round):", ""])
+            lines.extend(
+                ["Round base order (paired execution rotates within each round):", ""]
+            )
             for round_index, order in enumerate(case_result.round_orders, start=1):
                 lines.append(f"- round {round_index}: `{' -> '.join(order)}`")
             lines.append("")
@@ -71,9 +73,8 @@ class MarkdownPrinter:
             lines.append(
                 f"| {lib_name} | {_format_summary(run.cold)} | {_format_summary(run.warm)} |"
             )
-        def resolve_warm_round(
-            lib_name: str, round_index: int
-        ) -> TimingSummary | None:
+
+        def resolve_warm_round(lib_name: str, round_index: int) -> TimingSummary | None:
             run = case_result.runs[lib_name]
             if not run.available or run.warm_rounds is None:
                 return None
@@ -127,7 +128,9 @@ class MarkdownPrinter:
                 f"{summary.p95_ms:.4f} | {summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
 
-        lines.extend(["", "Round base order (paired execution rotates within each round):", ""])
+        lines.extend(
+            ["", "Round base order (paired execution rotates within each round):", ""]
+        )
         max_orders = 12
         for round_index, order in enumerate(
             case_result.round_orders[:max_orders], start=1
@@ -136,6 +139,7 @@ class MarkdownPrinter:
         if len(case_result.round_orders) > max_orders:
             hidden = len(case_result.round_orders) - max_orders
             lines.append(f"- ... `{hidden}` additional rounds omitted for brevity")
+
         def resolve_dynamic_round(
             lib_name: str, round_index: int
         ) -> TimingSummary | None:

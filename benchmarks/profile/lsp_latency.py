@@ -104,7 +104,7 @@ def _measure(repeats: int, invoke: Callable[[], None]) -> TimingSummary:
 def _contract_source(calls: int) -> str:
     block = (
         "from einf import ax, axes, contract\n"
-        "i, k, j = axes(\"i\", \"k\", \"j\")\n"
+        'i, k, j = axes("i", "k", "j")\n'
         "contract((ax[i, k], ax[k, j]), ax[i, j])\n"
     )
     return "\n".join(block for _ in range(calls))
@@ -116,7 +116,7 @@ def _default_cases() -> tuple[LspLatencyCase, ...]:
             name="small_valid",
             source=(
                 "from einf import ax, axes, rearrange\n"
-                "b = axes(\"b\")[0]\n"
+                'b = axes("b")[0]\n'
                 "rearrange(ax[b], ax[b])\n"
             ),
         ),
@@ -310,10 +310,7 @@ def _case_to_json(case: LspCaseLatency) -> JsonValue:
 def _format_summary(summary: TimingSummary | None) -> str:
     if summary is None:
         return "n/a"
-    return (
-        f"{summary.median_ms:.3f} "
-        f"[{summary.p25_ms:.3f} - {summary.p75_ms:.3f}]"
-    )
+    return f"{summary.median_ms:.3f} [{summary.p25_ms:.3f} - {summary.p75_ms:.3f}]"
 
 
 def _to_markdown(report: LspLatencyReport) -> str:

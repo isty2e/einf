@@ -112,7 +112,10 @@ def test_compare_overhead_report_trials_requires_repeated_regressions() -> None:
     second_candidate = _report(call_ms=1.03)
 
     regressions, missing_keys = compare_overhead_report_trials(
-        report_pairs=((first_baseline, first_candidate), (second_baseline, second_candidate)),
+        report_pairs=(
+            (first_baseline, first_candidate),
+            (second_baseline, second_candidate),
+        ),
         metric="instrumented_call_ms",
         max_regression_ratio=0.10,
         min_regression_count=2,

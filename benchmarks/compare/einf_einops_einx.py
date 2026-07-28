@@ -170,7 +170,9 @@ def _build_case_specs(*, sizes, seed: int, backend: BackendSpec) -> list[FixedCa
         if einx is None:
             raise RuntimeError("einx is not available")
         einx_module = einx
-        return lambda inputs: as_single_array(einx_module.sum("b h w d -> b d", inputs[0]))
+        return lambda inputs: as_single_array(
+            einx_module.sum("b h w d -> b d", inputs[0])
+        )
 
     def ref_contract(inputs):
         lhs, rhs = inputs

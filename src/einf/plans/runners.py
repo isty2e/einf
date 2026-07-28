@@ -68,7 +68,9 @@ class RouteRunnerKernel(RunnerKernel):
         """Build tuple-output route runner."""
         output_indices = self.output_indices
 
-        def run_route(runtime_tensors: tuple[TensorLike, ...], /) -> tuple[TensorLike, ...]:
+        def run_route(
+            runtime_tensors: tuple[TensorLike, ...], /
+        ) -> tuple[TensorLike, ...]:
             return route_outputs(
                 tensors=runtime_tensors,
                 output_indices=output_indices,
@@ -270,7 +272,9 @@ class StepChainRunnerKernel(RunnerKernel):
 
                 return run_binary_single_output
 
-            def run_single_output(runtime_tensors: tuple[TensorLike, ...], /) -> TensorLike:
+            def run_single_output(
+                runtime_tensors: tuple[TensorLike, ...], /
+            ) -> TensorLike:
                 outputs = runtime_step.run(runtime_tensors)
                 if len(outputs) != 1:
                     raise ValueError(

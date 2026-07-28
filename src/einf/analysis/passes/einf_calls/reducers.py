@@ -24,6 +24,7 @@ def _analysis_reducer_callable(*_args: TensorLike) -> int:
     """Static placeholder reducer for symbol-only callable references."""
     return 0
 
+
 def _parse_reducer_literal(
     *,
     reducer_expr: ast.expr,

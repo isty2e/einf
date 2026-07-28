@@ -104,7 +104,7 @@ def test_lsp_service_prefilter_keeps_supported_einf_alias_calls(
         uri=target.resolve().as_uri(),
         source=(
             "from einf import ax, axes, rearrange as r\n"
-            "b = axes(\"b\")[0]\n"
+            'b = axes("b")[0]\n'
             "r(ax[b], ax[b])\n"
         ),
         version=1,
@@ -124,7 +124,7 @@ def test_lsp_service_prefilter_keeps_supported_einf_module_chains(
         uri=target.resolve().as_uri(),
         source=(
             "import einf\n"
-            "b = einf.axes(\"b\")[0]\n"
+            'b = einf.axes("b")[0]\n'
             "einf.operations.rearrange(einf.ax[b], einf.ax[b])\n"
         ),
         version=1,

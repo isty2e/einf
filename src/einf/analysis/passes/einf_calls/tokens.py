@@ -5,6 +5,7 @@ from .model import _CallParseResult, _CallSide
 
 _VALIDATE_RHS_SUBSET_OPS = frozenset({"contract", "einop", "reduce"})
 
+
 def _axis_roles(
     *,
     op_name: str,

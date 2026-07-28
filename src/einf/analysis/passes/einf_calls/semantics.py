@@ -34,6 +34,7 @@ _ENTRYPOINT_SIGNATURES = {
     "einop": inspect.signature(einop),
 }
 
+
 def _build_base_tensor_op(
     *,
     op_name: str,
@@ -290,6 +291,7 @@ def _parse_with_sizes_call(
             )
         )
         return None
+
 
 def _evaluate_call_expression(
     *,

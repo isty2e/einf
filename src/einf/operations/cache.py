@@ -125,9 +125,7 @@ class TensorOpFactory(Generic[ValueT]):
 
     def __post_init__(self) -> None:
         self._base_cache = BoundedTensorOpCache(max_size=self.base_max_size)
-        self._configured_cache = BoundedTensorOpCache(
-            max_size=self.configured_max_size
-        )
+        self._configured_cache = BoundedTensorOpCache(max_size=self.configured_max_size)
 
     def get_base(
         self,

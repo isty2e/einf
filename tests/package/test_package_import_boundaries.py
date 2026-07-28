@@ -128,8 +128,7 @@ BOUNDARY_RULES = (
 )
 
 
-KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {
-}
+KNOWN_BOUNDARY_DEBT: Mapping[tuple[str, str, str], str] = {}
 
 
 def test_package_import_boundaries_follow_taxonomy_guardrails() -> None:
@@ -138,11 +137,15 @@ def test_package_import_boundaries_follow_taxonomy_guardrails() -> None:
     allowed_keys = set(KNOWN_BOUNDARY_DEBT)
 
     unexpected = tuple(
-        violation for violation in sorted(violations, key=_violation_sort_key) if violation.key not in allowed_keys
+        violation
+        for violation in sorted(violations, key=_violation_sort_key)
+        if violation.key not in allowed_keys
     )
     stale_allowlist = tuple(sorted(allowed_keys - violation_keys))
 
-    assert not unexpected and not stale_allowlist, _format_failure(unexpected, stale_allowlist)
+    assert not unexpected and not stale_allowlist, _format_failure(
+        unexpected, stale_allowlist
+    )
 
 
 def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
@@ -167,7 +170,9 @@ def test_import_boundary_scanner_normalizes_relative_imports() -> None:
     )
     references = {
         reference.module
-        for reference in _import_references(tree=tree, module_name="einf.plans.abstract", path=Path("abstract.py"))
+        for reference in _import_references(
+            tree=tree, module_name="einf.plans.abstract", path=Path("abstract.py")
+        )
     }
 
     assert "einf.plans.lowering_protocol" in references
@@ -179,11 +184,13 @@ def _find_boundary_violations() -> tuple[BoundaryViolation, ...]:
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         module_name = _module_name_for_path(path)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for reference in _import_references(tree=tree, module_name=module_name, path=path):
+        for reference in _import_references(
+            tree=tree, module_name=module_name, path=path
+        ):
             for rule in BOUNDARY_RULES:
-                if _matches_any_prefix(module_name, rule.source_prefixes) and _matches_prefix(
-                    reference.module, rule.target_prefix
-                ):
+                if _matches_any_prefix(
+                    module_name, rule.source_prefixes
+                ) and _matches_prefix(reference.module, rule.target_prefix):
                     violations.add(
                         BoundaryViolation(
                             path=_relative_posix(path),
@@ -195,24 +202,32 @@ def _find_boundary_violations() -> tuple[BoundaryViolation, ...]:
     return tuple(violations)
 
 
-def _import_references(*, tree: ast.AST, module_name: str, path: Path) -> Iterable[ImportReference]:
+def _import_references(
+    *, tree: ast.AST, module_name: str, path: Path
+) -> Iterable[ImportReference]:
     package_name = _package_name_for_imports(module_name=module_name, path=path)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 yield ImportReference(module=alias.name, line=node.lineno)
         elif isinstance(node, ast.ImportFrom):
-            base_module = _resolve_import_from_module(node=node, package_name=package_name)
+            base_module = _resolve_import_from_module(
+                node=node, package_name=package_name
+            )
             if base_module is None:
                 continue
             yield ImportReference(module=base_module, line=node.lineno)
             if base_module == "einf" or node.module is None:
                 for alias in node.names:
                     if alias.name != "*":
-                        yield ImportReference(module=f"{base_module}.{alias.name}", line=node.lineno)
+                        yield ImportReference(
+                            module=f"{base_module}.{alias.name}", line=node.lineno
+                        )
 
 
-def _resolve_import_from_module(*, node: ast.ImportFrom, package_name: str) -> str | None:
+def _resolve_import_from_module(
+    *, node: ast.ImportFrom, package_name: str
+) -> str | None:
     if node.level == 0:
         return node.module
     relative_module = "." * node.level + (node.module or "")
@@ -244,7 +259,12 @@ def _matches_prefix(module_name: str, prefix: str) -> bool:
 
 
 def _violation_sort_key(violation: BoundaryViolation) -> tuple[str, int, str, str]:
-    return (violation.path, violation.line, violation.imported_module, violation.rule_name)
+    return (
+        violation.path,
+        violation.line,
+        violation.imported_module,
+        violation.rule_name,
+    )
 
 
 def _format_failure(

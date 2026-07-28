@@ -29,7 +29,12 @@ def test_find_case_exposes_gap_strategies() -> None:
         "torch_matmul_split",
         "torch_matmul_slice",
     ]
-    assert next(spec for spec in case.runner_specs if spec.name == "torch_matmul_only").role == "baseline"
+    assert (
+        next(
+            spec for spec in case.runner_specs if spec.name == "torch_matmul_only"
+        ).role
+        == "baseline"
+    )
 
 
 def test_validate_output_uses_runner_specific_reference() -> None:
@@ -37,7 +42,9 @@ def test_validate_output_uses_runner_specific_reference() -> None:
         sizes=dynamic_sizes_for_scale("medium"),
         case_name="einop_contract_split_dynamic",
     )
-    runner_spec = next(spec for spec in case.runner_specs if spec.name == "torch_matmul_only")
+    runner_spec = next(
+        spec for spec in case.runner_specs if spec.name == "torch_matmul_only"
+    )
 
     lhs = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     rhs = np.arange(20, dtype=np.float32).reshape(4, 5)

@@ -22,6 +22,7 @@ def _is_ax_subscript(expr: ast.expr) -> bool:
         return value.attr == "ax"
     return False
 
+
 def _parse_scalar_axis_term(
     *,
     term: ast.AST,

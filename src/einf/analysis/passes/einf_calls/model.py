@@ -13,6 +13,7 @@ _CallSide = Literal["lhs", "rhs"]
 _ReducePhaseArg = tuple[AxisTerms, Reducer]
 _ReduceByFirstArg = Reducer | _ReducePhaseArg
 
+
 @dataclass(frozen=True, slots=True)
 class _AxisOccurrence:
     """One axis-token occurrence from one side expression."""
