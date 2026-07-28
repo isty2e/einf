@@ -29,7 +29,6 @@ from .runtime import NamespaceReducer, ReducerRuntimeContext
 
 _DIRECT_TORCH_REDUCER_METHODS: dict[str, str] = {
     "sum": "sum",
-    "prod": "prod",
     "mean": "mean",
     "max": "amax",
     "min": "amin",

@@ -8,6 +8,11 @@ from einf.steps.reduce import build as reduce_build_module
 from einf.steps.reduce import step as reduce_step_module
 from einf.tensor_types import TensorLike
 
+try:
+    import torch
+except Exception:  # pragma: no cover
+    torch = None
+
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
@@ -349,6 +354,50 @@ def test_reduce_ordered_phase_executes() -> None:
 
     expected = np.prod(np.sum(tensor, axis=1), axis=1)
     np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_reduce_prod_torch_accepts_one_axis() -> None:
+    assert torch is not None
+    b, h, d = axes("b", "h", "d")
+    op = reduce(ax[b, h, d], ax[b, d]).reduce_by("prod")
+    tensor = torch.linspace(0.5, 1.5, steps=2 * 3 * 4, dtype=torch.float64).reshape(
+        2, 3, 4
+    )
+
+    result = op(tensor)
+
+    torch.testing.assert_close(result, tensor.prod(dim=1))
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_reduce_prod_torch_accepts_multiple_axes() -> None:
+    assert torch is not None
+    b, h, d = axes("b", "h", "d")
+    op = reduce(ax[b, h, d], ax[b]).reduce_by("prod")
+    tensor = torch.linspace(0.5, 1.5, steps=2 * 3 * 4, dtype=torch.float64).reshape(
+        2, 3, 4
+    )
+
+    result = op(tensor)
+
+    expected = tensor.prod(dim=2).prod(dim=1)
+    torch.testing.assert_close(result, expected)
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_reduce_prod_torch_preserves_nonconsecutive_axis_positions() -> None:
+    assert torch is not None
+    b, h, d = axes("b", "h", "d")
+    op = reduce(ax[b, h, d], ax[h]).reduce_by((ax[b, d], "prod"))
+    tensor = torch.linspace(0.5, 1.5, steps=2 * 3 * 4, dtype=torch.float64).reshape(
+        2, 3, 4
+    )
+
+    result = op(tensor)
+
+    expected = tensor.prod(dim=2).prod(dim=0)
+    torch.testing.assert_close(result, expected)
 
 
 def test_reduce_ordered_phase_preserves_declared_axis_order() -> None:

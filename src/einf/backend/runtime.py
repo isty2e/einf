@@ -203,11 +203,17 @@ def resolve_backend_array_ops(
     backend_module = load_backend_module(backend_family)
     reducers: dict[str, ReducerFn] = {}
     for reducer_name, module_reducer_name in spec.reducer_name_map.items():
-        reducers[reducer_name] = _bind_reducer_op(
-            backend_module,
-            module_reducer_name=module_reducer_name,
-            axis_keyword=spec.reducer_axis_keyword,
-        )
+        if backend_family == "torch" and reducer_name == "prod":
+            reducers[reducer_name] = _bind_torch_prod_reducer(
+                backend_module,
+                module_reducer_name=module_reducer_name,
+            )
+        else:
+            reducers[reducer_name] = _bind_reducer_op(
+                backend_module,
+                module_reducer_name=module_reducer_name,
+                axis_keyword=spec.reducer_axis_keyword,
+            )
 
     if backend_family == "torch":
         module_reshape = _bind_tensor_shape_op(
@@ -436,3 +442,24 @@ def _bind_reducer_op(
     if axis_keyword == "axis":
         return lambda tensor, axes, reducer=reducer: reducer(tensor, axis=axes)
     return lambda tensor, axes, reducer=reducer: reducer(tensor, dim=axes)
+
+
+def _bind_torch_prod_reducer(
+    backend_module: ModuleType,
+    /,
+    *,
+    module_reducer_name: str,
+) -> ReducerFn:
+    """Bind Torch product reduction across one or more canonical axes."""
+    reducer = _resolve_module_op(
+        backend_module,
+        module_op_name=module_reducer_name,
+    )
+
+    def reduce_prod(tensor: TensorLike, axes: tuple[int, ...]) -> TensorLike:
+        reduced = tensor
+        for axis in sorted(axes, reverse=True):
+            reduced = reducer(reduced, dim=axis)
+        return reduced
+
+    return reduce_prod
