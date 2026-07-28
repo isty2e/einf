@@ -12,6 +12,7 @@ from ..axis import AxisSide, AxisTerms
 from ..backend import BackendExecutionIdentity
 from ..diagnostics import ErrorCode, ValidationError
 from ..lowering import DefaultLoweringProgram
+from ..lowering.einop.layout import EinopLayoutNormalization
 from ..output_normalization import normalize_runtime_outputs
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
 from ..plans.cache import RunnerCache
@@ -406,7 +407,24 @@ class TensorOp:
                 "dict reducer plans are not supported; "
                 "use ordered phase tuples like reduce_by((ax[h], 'sum'), (ax[d], 'prod'))"
             )
-        reducer_plan = ReducerPlanParser(lhs=self.lhs, rhs=self.rhs).parse(
+        reducer_signature = self.signature
+        if self.name == "einop":
+            reducer_signature = EinopLayoutNormalization.from_signature(
+                reducer_signature
+            ).logical
+        reducer_parser = ReducerPlanParser(
+            lhs=reducer_signature.inputs,
+            rhs=reducer_signature.outputs,
+        )
+        if self.name == "einop" and not reducer_parser.reduced_terms():
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message="inconsistent dims: reduce_by has no logical axes to reduce",
+                help="remove reduce_by from einop signatures that preserve every axis",
+                related=("einop reducer configuration",),
+                data={"operation": "einop"},
+            )
+        reducer_plan = reducer_parser.parse(
             reducer=reducer,
             phases=phases,
         )

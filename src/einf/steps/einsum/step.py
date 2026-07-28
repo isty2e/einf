@@ -314,11 +314,9 @@ def _validate_einsum_program(program: EinsumSymbolicProgram) -> None:
 
         if program.carrier_index is not None:
             raise ValueError("direct einsum symbolic step cannot have a carrier index")
-        if program.output_arity != 1:
-            raise ValueError("direct einsum symbolic step must be N->1")
-        if len(program.equations) != 1:
+        if program.output_arity != len(program.equations):
             raise ValueError(
-                "direct einsum symbolic step requires exactly one equation"
+                "direct einsum symbolic step requires one equation per output"
             )
         return
 
