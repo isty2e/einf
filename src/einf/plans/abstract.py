@@ -1,7 +1,11 @@
 from dataclasses import dataclass, field
 
 from einf.axis import AxisSide
-from einf.backend import BACKEND_RESOLVER, BackendProfile
+from einf.backend import (
+    BACKEND_RESOLVER,
+    BackendExecutionIdentity,
+    BackendProfile,
+)
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.ir import IRProgram
 from einf.ir.routing.static import precompute_route_output_indices
@@ -12,7 +16,6 @@ from einf.steps.context import PlanSelectionContext
 from einf.tensor_types import TensorLike
 
 from .cache import (
-    BackendProfileCache,
     RouteOutputIndexCache,
     RunnerCache,
     RunnerCacheKey,
@@ -37,12 +40,11 @@ class AbstractPlanRuntimeCaches:
 
     last_validated_input_shapes: tuple[tuple[int, ...], ...] | None = None
     selection: SelectionCache = field(default_factory=SelectionCache)
-    backend_profiles: BackendProfileCache = field(default_factory=BackendProfileCache)
     route_output_indices: RouteOutputIndexCache | None = None
-    single_output_runners: RunnerCache[SingleOutputRunner] = field(
+    single_output_runners: RunnerCache[RunnerCacheKey, SingleOutputRunner] = field(
         default_factory=lambda: RunnerCache()
     )
-    tuple_runners: RunnerCache[TupleRunner] = field(
+    tuple_runners: RunnerCache[RunnerCacheKey, TupleRunner] = field(
         default_factory=lambda: RunnerCache()
     )
 
@@ -252,10 +254,7 @@ class AbstractPlan:
             return context
         return RuntimeSpecializationContext(
             input_shapes=context.input_shapes,
-            backend_profile=self.resolve_backend_profile(
-                op_name=self.op_name,
-                tensors=tensors,
-            ),
+            backend_profile=self.resolve_backend_profile(tensors),
         )
 
     def _select_runtime_symbolic_plan(
@@ -285,6 +284,7 @@ class AbstractPlan:
         self,
         *,
         tensors: tuple[TensorLike, ...],
+        backend_identity: BackendExecutionIdentity,
         specialization_depends_on_shapes: bool,
         input_shapes: tuple[tuple[int, ...], ...],
     ) -> RunnerCacheKey:
@@ -297,7 +297,7 @@ class AbstractPlan:
         else:
             tensor_types = tuple(type(tensor) for tensor in tensors)
         shape_key = input_shapes if specialization_depends_on_shapes else None
-        return (tensor_types, shape_key)
+        return (tensor_types, backend_identity, shape_key)
 
     def _build_step_chain_runner_kernel(
         self,
@@ -366,20 +366,24 @@ class AbstractPlan:
                 True,
             )
         )
-        runner_cache_key = self._build_runner_cache_key(
-            tensors=tensors,
-            specialization_depends_on_shapes=specialization_depends_on_shapes,
-            input_shapes=context.input_shapes,
-        )
-        cached_runner = self._runtime.tuple_runners.get(runner_cache_key)
-        if cached_runner is not None:
-            return cached_runner
-
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors
         )
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
+        backend_profile = runtime_context.backend_profile
+        if backend_profile is None:
+            raise RuntimeError("runtime runner resolution requires a backend profile")
+        runner_cache_key = self._build_runner_cache_key(
+            tensors=tensors,
+            backend_identity=backend_profile.execution_identity,
+            specialization_depends_on_shapes=specialization_depends_on_shapes,
+            input_shapes=runtime_context.input_shapes,
+        )
+        cached_runner = self._runtime.tuple_runners.get(runner_cache_key)
+        if cached_runner is not None:
+            return cached_runner
+
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
         runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
@@ -414,20 +418,24 @@ class AbstractPlan:
                 True,
             )
         )
-        runner_cache_key = self._build_runner_cache_key(
-            tensors=tensors,
-            specialization_depends_on_shapes=specialization_depends_on_shapes,
-            input_shapes=context.input_shapes,
-        )
-        cached_runner = self._runtime.single_output_runners.get(runner_cache_key)
-        if cached_runner is not None:
-            return cached_runner
-
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors
         )
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
+        backend_profile = runtime_context.backend_profile
+        if backend_profile is None:
+            raise RuntimeError("runtime runner resolution requires a backend profile")
+        runner_cache_key = self._build_runner_cache_key(
+            tensors=tensors,
+            backend_identity=backend_profile.execution_identity,
+            specialization_depends_on_shapes=specialization_depends_on_shapes,
+            input_shapes=runtime_context.input_shapes,
+        )
+        cached_runner = self._runtime.single_output_runners.get(runner_cache_key)
+        if cached_runner is not None:
+            return cached_runner
+
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
         runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
@@ -493,20 +501,11 @@ class AbstractPlan:
 
     def resolve_backend_profile(
         self,
-        *,
-        op_name: str,
         tensors: tuple[TensorLike, ...],
+        /,
     ) -> BackendProfile:
-        """Resolve and cache backend profile by input runtime tensor types."""
-        cached_profile = self._runtime.backend_profiles.get(tensors)
-        if cached_profile is not None:
-            return cached_profile
-        backend_profile = BACKEND_RESOLVER.resolve(*tensors, op_name=op_name)
-        self._runtime.backend_profiles.set(
-            tensors=tensors,
-            profile=backend_profile,
-        )
-        return backend_profile
+        """Resolve this plan's backend profile from current runtime tensors."""
+        return BACKEND_RESOLVER.resolve(*tensors, op_name=self.op_name)
 
 
 __all__ = [

@@ -1,4 +1,3 @@
-from dataclasses import replace
 from threading import Event, Thread
 from typing import Callable, TypeVar, cast
 
@@ -6,7 +5,6 @@ import numpy as np
 
 from einf.backend import BACKEND_RESOLVER
 from einf.plans.cache import (
-    BackendProfileCache,
     RouteOutputIndexCache,
     RunnerCache,
     RunnerCacheKey,
@@ -15,7 +13,6 @@ from einf.plans.cache import (
     SelectionCacheKey,
 )
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
-from einf.tensor_types import TensorLike
 
 ResultT = TypeVar("ResultT")
 
@@ -72,10 +69,6 @@ class _InterleavingSelectionCache(_LastHitReadBarrier, SelectionCache):
     pass
 
 
-class _InterleavingBackendProfileCache(_LastHitReadBarrier, BackendProfileCache):
-    pass
-
-
 class _InterleavingRouteOutputIndexCache(_LastHitReadBarrier, RouteOutputIndexCache):
     pass
 
@@ -87,7 +80,7 @@ class _InterleavingRuntimeStepCache(
     pass
 
 
-class _InterleavingRunnerCache(_LastHitReadBarrier, RunnerCache[str]):
+class _InterleavingRunnerCache(_LastHitReadBarrier, RunnerCache[RunnerCacheKey, str]):
     pass
 
 
@@ -147,44 +140,6 @@ def test_selection_cache_publishes_last_hit_atomically() -> None:
     assert result == 11
 
 
-def test_backend_profile_cache_publishes_unary_last_hit_atomically() -> None:
-    cache = _InterleavingBackendProfileCache()
-    tensor_a = np.zeros((2, 3))
-    tensor_b = cast(TensorLike, np.zeros((3, 2)).view(_AlternateArray))
-    profile_a = BACKEND_RESOLVER.resolve(tensor_a, op_name="rearrange")
-    profile_b = replace(profile_a, namespace_id="alternate")
-    cache.set(tensors=(tensor_a,), profile=profile_a)
-
-    result = _replace_last_hit_after_state_read(
-        cache=cache,
-        state_attributes=("_last_unary_hit", "_last_unary_type"),
-        getter=lambda: cache.get((tensor_a,)),
-        replace_last_hit=lambda: cache.set(tensors=(tensor_b,), profile=profile_b),
-    )
-
-    assert result is profile_a
-
-
-def test_backend_profile_cache_publishes_general_last_hit_atomically() -> None:
-    cache = _InterleavingBackendProfileCache()
-    tensor_a = np.zeros((2, 3))
-    tensor_b = cast(TensorLike, np.zeros((3, 2)).view(_AlternateArray))
-    tensors_a: tuple[TensorLike, ...] = (tensor_a, tensor_a)
-    tensors_b: tuple[TensorLike, ...] = (tensor_b, tensor_a)
-    profile_a = BACKEND_RESOLVER.resolve(*tensors_a, op_name="contract")
-    profile_b = replace(profile_a, namespace_id="alternate")
-    cache.set(tensors=tensors_a, profile=profile_a)
-
-    result = _replace_last_hit_after_state_read(
-        cache=cache,
-        state_attributes=("_last_hit", "_last_key"),
-        getter=lambda: cache.get(tensors_a),
-        replace_last_hit=lambda: cache.set(tensors=tensors_b, profile=profile_b),
-    )
-
-    assert result is profile_a
-
-
 def test_route_output_index_cache_publishes_last_hit_atomically() -> None:
     cache = _InterleavingRouteOutputIndexCache(static_output_indices=None)
     input_shapes_a = ((2, 3), (3, 4))
@@ -232,8 +187,12 @@ def test_runtime_step_cache_publishes_last_hit_atomically() -> None:
 
 def test_runner_cache_publishes_last_hit_atomically() -> None:
     cache = _InterleavingRunnerCache()
-    key_a: RunnerCacheKey = ((np.ndarray,), None)
-    key_b: RunnerCacheKey = ((_AlternateArray,), None)
+    backend_identity = BACKEND_RESOLVER.resolve(
+        np.zeros((1,)),
+        op_name="rearrange",
+    ).execution_identity
+    key_a: RunnerCacheKey = ((np.ndarray,), backend_identity, None)
+    key_b: RunnerCacheKey = ((_AlternateArray,), backend_identity, None)
     cache.set(key_a, "runner-a")
 
     result = _replace_last_hit_after_state_read(

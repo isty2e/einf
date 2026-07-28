@@ -9,10 +9,12 @@ except ImportError:  # pragma: no cover
     from typing_extensions import Self
 
 from ..axis import AxisSide, AxisTerms
+from ..backend import BackendExecutionIdentity
 from ..diagnostics import ErrorCode, ValidationError
 from ..lowering import DefaultLoweringProgram
 from ..output_normalization import normalize_runtime_outputs
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
+from ..plans.cache import RunnerCache
 from ..plans.render import PlanDict, build_plan_dict, render_plan_text
 from ..reduction.plan import ReducerPlanParser
 from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
@@ -27,7 +29,8 @@ from .cache import (
 from .execution import execute_tensor_op_call, extract_input_shapes
 from .policy import OpPolicy, resolve_op_policy
 
-RuntimeTypeKey = tuple[type, ...]
+RuntimeTypeKey = tuple[type[object], ...]
+RuntimeRunnerKey = tuple[RuntimeTypeKey, BackendExecutionIdentity]
 _DEFAULT_LOWERING_PROGRAM = DefaultLoweringProgram()
 _BASE_OP_CACHE_MAX_SIZE = 512
 _CONFIGURED_OP_CACHE_MAX_SIZE = 2_048
@@ -192,14 +195,14 @@ class TensorOpExecutionStrategy:
 class TensorOpRunnerCache:
     """Mutable runner cache for one TensorOp execution strategy."""
 
-    shape_free_single_runners: dict[
-        RuntimeTypeKey,
+    shape_free_single_runners: RunnerCache[
+        RuntimeRunnerKey,
         Callable[[tuple[TensorLike, ...]], TensorLike],
-    ] = field(default_factory=dict)
-    shape_free_tuple_runners: dict[
-        RuntimeTypeKey,
+    ] = field(default_factory=lambda: RunnerCache())
+    shape_free_tuple_runners: RunnerCache[
+        RuntimeRunnerKey,
         Callable[[tuple[TensorLike, ...]], tuple[TensorLike, ...]],
-    ] = field(default_factory=dict)
+    ] = field(default_factory=lambda: RunnerCache())
 
 
 @final
@@ -467,31 +470,44 @@ class TensorOp:
         input_shapes = extract_input_shapes(op_name=contract.name, tensors=tensors)
         contract.abstract_plan.validate_input_shapes(input_shapes)
         runtime_type_key = self._runtime_type_key(tensors)
+        backend_profile = contract.abstract_plan.resolve_backend_profile(tensors)
+        runner_cache_key = (
+            runtime_type_key,
+            backend_profile.execution_identity,
+        )
         if execution_strategy.call_mode is _CallMode.SHAPE_FREE_SINGLE:
-            runner = runner_cache.shape_free_single_runners.get(runtime_type_key)
+            runner = runner_cache.shape_free_single_runners.get(runner_cache_key)
             if runner is None:
                 shape_free_context = execution_strategy.shape_free_context
                 if shape_free_context is None:
                     raise RuntimeError(
                         "shape-free single mode requires runtime context"
                     )
+                runtime_context = RuntimeSpecializationContext(
+                    input_shapes=shape_free_context.input_shapes,
+                    backend_profile=backend_profile,
+                )
                 runner = contract.abstract_plan.resolve_single_output_runner(
-                    shape_free_context,
+                    runtime_context,
                     tensors,
                 )
-                runner_cache.shape_free_single_runners[runtime_type_key] = runner
+                runner_cache.shape_free_single_runners.set(runner_cache_key, runner)
             return runner(tensors)
 
-        tuple_runner = runner_cache.shape_free_tuple_runners.get(runtime_type_key)
+        tuple_runner = runner_cache.shape_free_tuple_runners.get(runner_cache_key)
         if tuple_runner is None:
             shape_free_context = execution_strategy.shape_free_context
             if shape_free_context is None:
                 raise RuntimeError("shape-free tuple mode requires runtime context")
+            runtime_context = RuntimeSpecializationContext(
+                input_shapes=shape_free_context.input_shapes,
+                backend_profile=backend_profile,
+            )
             tuple_runner = contract.abstract_plan.resolve_tuple_runner(
-                shape_free_context,
+                runtime_context,
                 tensors,
             )
-            runner_cache.shape_free_tuple_runners[runtime_type_key] = tuple_runner
+            runner_cache.shape_free_tuple_runners.set(runner_cache_key, tuple_runner)
         raw_outputs = tuple_runner(tensors)
         if len(raw_outputs) == contract.output_arity:
             return raw_outputs

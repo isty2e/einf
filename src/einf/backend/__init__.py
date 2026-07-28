@@ -1,6 +1,7 @@
 from .dispatch import (
     BACKEND_POLICY,
     BACKEND_RESOLVER,
+    BackendExecutionIdentity,
     BackendPolicy,
     BackendProfile,
     BackendResolver,
@@ -20,6 +21,7 @@ __all__ = [
     "ArrayNamespace",
     "ArrayNamespaceLike",
     "BackendArrayOps",
+    "BackendExecutionIdentity",
     "BackendFamily",
     "BackendProfile",
     "BACKEND_POLICY",

@@ -27,6 +27,7 @@ def test_analysis_parser_surface_remains_available() -> None:
 
 def test_backend_top_level_exports_dispatch_runtime_contract_only() -> None:
     assert hasattr(backend, "BACKEND_RESOLVER")
+    assert hasattr(backend, "BackendExecutionIdentity")
     assert hasattr(backend, "BackendProfile")
     assert hasattr(backend, "BackendArrayOps")
     assert hasattr(backend, "bind_array_namespace")

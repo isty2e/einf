@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import opt_einsum.backends as oe_backends
 from array_api_compat import array_namespace
@@ -17,6 +17,39 @@ _STRICT_VIEW_FAMILIES = frozenset(("numpy", "torch"))
 _EINSUM_REQUIRED_OPS = frozenset(("contract", "einop"))
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class BackendExecutionIdentity:
+    """Canonical backend facts that determine runtime specialization."""
+
+    namespace: ArrayNamespaceLike
+    namespace_id: str
+    backend_family: BackendFamily | None
+    supports_contract_einsum: bool
+    supports_strict_view: bool
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                id(self.namespace),
+                self.namespace_id,
+                self.backend_family,
+                self.supports_contract_einsum,
+                self.supports_strict_view,
+            )
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, BackendExecutionIdentity):
+            return False
+        return (
+            self.namespace is other.namespace
+            and self.namespace_id == other.namespace_id
+            and self.backend_family == other.backend_family
+            and self.supports_contract_einsum == other.supports_contract_einsum
+            and self.supports_strict_view == other.supports_strict_view
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class BackendProfile:
     """Resolved backend profile for one TensorOp call."""
@@ -26,6 +59,20 @@ class BackendProfile:
     backend_family: BackendFamily | None
     supports_contract_einsum: bool
     supports_strict_view: bool
+    execution_identity: BackendExecutionIdentity = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "execution_identity",
+            BackendExecutionIdentity(
+                namespace=self.namespace,
+                namespace_id=self.namespace_id,
+                backend_family=self.backend_family,
+                supports_contract_einsum=self.supports_contract_einsum,
+                supports_strict_view=self.supports_strict_view,
+            ),
+        )
 
 
 class BackendPolicy:
