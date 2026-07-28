@@ -99,6 +99,8 @@ class TensorOpContract:
         """Normalize constructor inputs and derive the canonical execution contract."""
         normalized = Signature(inputs=self.lhs, outputs=self.rhs)
         op_policy = resolve_op_policy(self.kind)
+        if self.reducer_plan is not None and not op_policy.supports_reducer:
+            raise ValueError(f"{self.name} does not support reducer plans")
         op_policy.validate_constructor(
             op_name=self.name,
             lhs=normalized.inputs,
