@@ -156,4 +156,4 @@ class ReducerPlanParser:
         )
 
 
-__all__ = ["infer_unary_reduced_terms", "ReducerPlanParser"]
+__all__ = ["ReducerPlanParser", "infer_unary_reduced_terms"]

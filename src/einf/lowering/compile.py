@@ -69,11 +69,12 @@ def _validate_ir_program_shape(ir_program: IRProgram) -> None:
             f"{ir_program.op_name}: {missing_text}"
         )
 
-    if rule.must_start_with_assemble:
-        if not node_kinds or node_kinds[0] != "assemble":
-            raise ValueError(
-                f"lowering IR must start with 'assemble' for {ir_program.op_name}"
-            )
+    if rule.must_start_with_assemble and (
+        not node_kinds or node_kinds[0] != "assemble"
+    ):
+        raise ValueError(
+            f"lowering IR must start with 'assemble' for {ir_program.op_name}"
+        )
 
 
 def build_symbolic_candidates_from_ir(

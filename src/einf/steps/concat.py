@@ -222,8 +222,8 @@ class ConcatSymbolicStep(AxisSideSymbolicStep[ConcatSymbolicProgram]):
 
 __all__ = [
     "ConcatRuntimeStep",
-    "ConcatSymbolicStep",
     "ConcatSymbolicProgram",
+    "ConcatSymbolicStep",
     "build_concat_symbolic_program",
     "resolve_concat_axis",
 ]

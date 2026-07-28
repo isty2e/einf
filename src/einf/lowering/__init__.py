@@ -8,9 +8,9 @@ from .core import (
 )
 
 __all__ = [
-    "build_symbolic_candidates_from_ir",
     "DefaultLoweringProgram",
     "EmptyLoweringProgram",
     "LoweringProgram",
     "StaticLoweringProgram",
+    "build_symbolic_candidates_from_ir",
 ]

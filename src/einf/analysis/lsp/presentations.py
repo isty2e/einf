@@ -144,9 +144,9 @@ def _format_span(span: TextSpan) -> str:
 
 
 __all__ = [
-    "AxisTokenContext",
     "INLAY_LABELS",
     "PRESENTATION_ROLE_ORDER",
+    "AxisTokenContext",
     "build_hover_markdown",
     "build_inlay_label",
     "find_axis_token_context",

@@ -37,9 +37,7 @@ def _supports_torch_storage_interface(value: TensorLike) -> TypeGuard[_TorchTens
         return False
     if not callable(getattr(value, "stride", None)):
         return False
-    if not callable(getattr(value, "element_size", None)):
-        return False
-    return True
+    return callable(getattr(value, "element_size", None))
 
 
 def validate_view_outputs(
@@ -175,7 +173,7 @@ def _torch_storage_offsets(
         storage_offset = int(tensor.storage_offset())
         shape = tuple(int(dim) for dim in tensor.shape)
         strides = tuple(int(stride) for stride in tensor.stride())
-    except Exception:
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
         return None
 
     if len(shape) != len(strides):
@@ -220,7 +218,7 @@ def _torch_storage_congruence_proves_disjoint(
         rhs_strides = tuple(int(stride) for stride in rhs.stride())
         lhs_element_size = int(lhs.element_size())
         rhs_element_size = int(rhs.element_size())
-    except Exception:
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
         return False
 
     if lhs_element_size <= 0 or lhs_element_size != rhs_element_size:
@@ -257,7 +255,7 @@ def _torch_byte_span(tensor: TensorLike) -> tuple[int, int] | None:
         strides = tuple(int(stride) for stride in tensor.stride())
         shape = tuple(int(dim) for dim in tensor.shape)
         element_size = int(tensor.element_size())
-    except Exception:
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
         return None
 
     if len(strides) != len(shape):

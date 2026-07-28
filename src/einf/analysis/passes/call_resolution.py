@@ -97,7 +97,7 @@ class _BindingCollector:
 
     def __init__(self, source_text: SourceText) -> None:
         self._source_text = source_text
-        self._scope_stack: list[dict[str, _Binding]] = [dict()]
+        self._scope_stack: list[dict[str, _Binding]] = [{}]
         self._call_bindings: dict[TextSpan, CallBindings] = {}
 
     def collect(self, module_node: ast.Module) -> dict[TextSpan, CallBindings]:
@@ -310,7 +310,7 @@ class _BindingCollector:
 
     def _push_scope(self) -> None:
         """Enter one nested lexical scope."""
-        self._scope_stack.append(dict())
+        self._scope_stack.append({})
 
     def _pop_scope(self) -> None:
         """Leave one nested lexical scope."""

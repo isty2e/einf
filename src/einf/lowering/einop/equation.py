@@ -3,6 +3,20 @@ from einf.diagnostics import ErrorCode, ValidationError
 from einf.signature import Signature
 
 
+def _symbol_for(
+    key: str,
+    *,
+    key_to_symbol: dict[str, str],
+    symbols: str,
+) -> str:
+    existing = key_to_symbol.get(key)
+    if existing is not None:
+        return existing
+    assigned = symbols[len(key_to_symbol)]
+    key_to_symbol[key] = assigned
+    return assigned
+
+
 def has_nary_contraction_candidate(signature: Signature) -> bool:
     """Return whether n-ary signature has at least one contractible shared term."""
     output_terms = {term for axis_list in signature.outputs for term in axis_list}
@@ -103,14 +117,6 @@ def build_einop_equations(
                 data={"operation": "einop"},
             )
 
-        def symbol_for(key: str) -> str:
-            existing = key_to_symbol.get(key)
-            if existing is not None:
-                return existing
-            assigned = symbols[len(key_to_symbol)]
-            key_to_symbol[key] = assigned
-            return assigned
-
         input_subscripts: list[str] = []
         input_term_keys: set[str] = set()
         for input_axis_list in input_axis_lists:
@@ -141,7 +147,14 @@ def build_einop_equations(
                 input_keys.append(term_key)
                 input_term_keys.add(term_key)
             input_subscripts.append(
-                "".join(symbol_for(term_key) for term_key in input_keys)
+                "".join(
+                    _symbol_for(
+                        term_key,
+                        key_to_symbol=key_to_symbol,
+                        symbols=symbols,
+                    )
+                    for term_key in input_keys
+                )
             )
 
         output_keys: list[str] = []
@@ -179,7 +192,14 @@ def build_einop_equations(
                 data={"operation": "einop", "missing": len(missing_keys)},
             )
 
-        output_subscript = "".join(symbol_for(term_key) for term_key in output_keys)
+        output_subscript = "".join(
+            _symbol_for(
+                term_key,
+                key_to_symbol=key_to_symbol,
+                symbols=symbols,
+            )
+            for term_key in output_keys
+        )
         equations.append(f"{','.join(input_subscripts)}->{output_subscript}")
 
     return tuple(equations)

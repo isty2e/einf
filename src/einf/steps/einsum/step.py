@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import cast
 
 import opt_einsum
 
@@ -22,7 +23,7 @@ from einf.steps.scoring import einsum_output_shape, einsum_peak_numel
 from einf.tensor_types import TensorLike
 
 from .equation import build_contract_equation
-from .native import try_native_contract_einsum
+from .native import EINSUM_FALLBACK_ERRORS, try_native_contract_einsum
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
@@ -492,15 +493,18 @@ class _EinsumEquationExecutor:
         operand_shapes = _operand_shapes_key(operands)
         if operand_shapes is not None:
             should_use_cached_expression = False
-            if len(operands) > 2 and not chain_mode:
-                should_use_cached_expression = True
-            elif len(operands) == 2 and not allow_native_matmul:
+            if (
+                len(operands) > 2
+                and not chain_mode
+                or len(operands) == 2
+                and not allow_native_matmul
+            ):
                 should_use_cached_expression = True
             if should_use_cached_expression:
                 try:
                     expression = _cached_contract_expression(equation, operand_shapes)
                     return expression(*operands)
-                except Exception:
+                except EINSUM_FALLBACK_ERRORS:
                     pass
 
         if (
@@ -515,21 +519,21 @@ class _EinsumEquationExecutor:
                     operands[0],
                     operands[1],
                 )
-            except Exception:
+            except EINSUM_FALLBACK_ERRORS:
                 pass
 
         module_einsum = self.native_module_einsum
         if module_einsum is not None:
             try:
                 return module_einsum(equation, *operands)
-            except Exception:
+            except EINSUM_FALLBACK_ERRORS:
                 pass
 
         namespace_einsum = self.native_namespace_einsum
         if namespace_einsum is not None and len(operands) == 2:
             try:
                 native_output = namespace_einsum(equation, *operands)
-            except Exception:
+            except EINSUM_FALLBACK_ERRORS:
                 native_output = try_native_contract_einsum(
                     equation=equation,
                     tensors=operands,
@@ -575,13 +579,24 @@ def _build_einsum_executor(profile: BackendProfile, /) -> _EinsumEquationExecuto
         if backend_module is not None:
             module_einsum_candidate = getattr(backend_module, "einsum", None)
             if callable(module_einsum_candidate):
-                module_einsum = module_einsum_candidate
+                module_einsum = cast(
+                    Callable[..., TensorLike],
+                    module_einsum_candidate,
+                )
             module_matmul_candidate = getattr(backend_module, "matmul", None)
             if callable(module_matmul_candidate):
-                module_matmul = module_matmul_candidate
+                module_matmul = cast(
+                    Callable[[TensorLike, TensorLike], TensorLike],
+                    module_matmul_candidate,
+                )
 
-    namespace_einsum = getattr(profile.namespace, "einsum", None)
-    if not callable(namespace_einsum):
+    namespace_einsum_candidate = getattr(profile.namespace, "einsum", None)
+    if callable(namespace_einsum_candidate):
+        namespace_einsum = cast(
+            Callable[..., TensorLike],
+            namespace_einsum_candidate,
+        )
+    else:
         namespace_einsum = None
     return _EinsumEquationExecutor(
         profile=profile,
@@ -724,10 +739,10 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
 
 
 __all__ = [
-    "build_einsum_symbolic_program_from_equations",
-    "build_einsum_symbolic_program_from_sides",
-    "EinsumSymbolicProgram",
     "EinsumRuntimeProgram",
     "EinsumRuntimeStep",
+    "EinsumSymbolicProgram",
     "EinsumSymbolicStep",
+    "build_einsum_symbolic_program_from_equations",
+    "build_einsum_symbolic_program_from_sides",
 ]

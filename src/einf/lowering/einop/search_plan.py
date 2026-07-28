@@ -127,10 +127,13 @@ def build_symbolic_einsum_chain_plan(
             if stage_plan.kind == "search_chain":
                 failed_states.add(state_key)
                 return None
-            if stage_plan.kind == "rearrange" and len(output_axis_lists) > 1:
-                if not is_multi_output_split_feasible(carrier_terms):
-                    failed_states.add(state_key)
-                    return None
+            if (
+                stage_plan.kind == "rearrange"
+                and len(output_axis_lists) > 1
+                and not is_multi_output_split_feasible(carrier_terms)
+            ):
+                failed_states.add(state_key)
+                return None
 
             return EinopLoweringPlan(
                 kind="einsum_chain_then_unary",

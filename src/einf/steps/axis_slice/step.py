@@ -110,7 +110,7 @@ def _try_run_direct_axis_slice(
             )
             for output_terms in rhs_terms
         )
-    except Exception:
+    except (KeyError, TypeError):
         return None
 
     if any(size < 0 for size in split_sizes):
@@ -312,7 +312,7 @@ class AxisSliceSymbolicStep(AxisSideSymbolicStep[AxisSliceSymbolicProgram]):
                 )
                 if all(size >= 0 for size in resolved_sizes):
                     precomputed_split_sizes = resolved_sizes
-            except Exception:
+            except (KeyError, TypeError):
                 precomputed_split_sizes = None
         return AxisSliceRuntimeStep(
             name=self.name,
@@ -327,8 +327,8 @@ class AxisSliceSymbolicStep(AxisSideSymbolicStep[AxisSliceSymbolicProgram]):
 
 __all__ = [
     "AxisSliceRuntimeStep",
-    "AxisSliceSymbolicStep",
     "AxisSliceSymbolicProgram",
+    "AxisSliceSymbolicStep",
     "build_axis_slice_symbolic_program",
     "resolve_axis_slice_axis",
 ]

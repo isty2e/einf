@@ -9,12 +9,12 @@ from .types import (
 )
 
 __all__ = [
-    "discover_step_fusion",
-    "discover_step_fusions",
-    "RuntimeStepFusionRule",
     "RuntimeStepFusion",
+    "RuntimeStepFusionRule",
     "RuntimeStepFusions",
     "RuntimeSteps",
     "SingleOutputRunner",
     "TupleRunner",
+    "discover_step_fusion",
+    "discover_step_fusions",
 ]

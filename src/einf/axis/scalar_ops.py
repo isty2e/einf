@@ -1,3 +1,5 @@
+from typing import cast
+
 from .base import ScalarAxisTermBase
 from .collections import ScalarAxisTerms
 from .terms import Axis, AxisExpr, AxisInt
@@ -31,7 +33,7 @@ def flatten_add_children(term: ScalarAxisTermBase) -> ScalarAxisTerms:
     if isinstance(term, AxisExpr) and term.operator == "+":
         left = flatten_add_children(term.left)
         right = flatten_add_children(term.right)
-        return ScalarAxisTerms(tuple((*left, *right)))
+        return ScalarAxisTerms((*left, *right))
     return ScalarAxisTerms((term,))
 
 
@@ -47,7 +49,7 @@ def flatten_mul_children(term: ScalarAxisTermBase) -> ScalarAxisTerms:
     if isinstance(term, AxisExpr) and term.operator == "*":
         left = flatten_mul_children(term.left)
         right = flatten_mul_children(term.right)
-        return ScalarAxisTerms(tuple((*left, *right)))
+        return ScalarAxisTerms((*left, *right))
     return ScalarAxisTerms((term,))
 
 
@@ -56,8 +58,9 @@ def expand_products_for_terms(terms: ScalarAxisTerms) -> ScalarAxisTerms:
     expanded: list[ScalarAxisTermBase] = []
     for term in terms:
         if isinstance(term, AxisExpr) and term.operator == "*":
-            for child in flatten_mul_children(term):
-                expanded.append(child)
+            expanded.extend(
+                cast(tuple[ScalarAxisTermBase, ...], flatten_mul_children(term))
+            )
             continue
         expanded.append(term)
     return ScalarAxisTerms(tuple(expanded))

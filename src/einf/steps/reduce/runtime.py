@@ -66,18 +66,18 @@ class ReducerRuntimeContext:
                     axes=axes,
                 )
             except Exception as error:
-                self.raise_string_reducer_error(
+                raise self.string_reducer_error(
                     reducer_name=reducer_name,
                     error=error,
-                )
+                ) from error
         else:
             try:
                 reduced = reducer_fn(tensor, axis=axes)
             except Exception as error:
-                self.raise_string_reducer_error(
+                raise self.string_reducer_error(
                     reducer_name=reducer_name,
                     error=error,
-                )
+                ) from error
         return self.coerce_output(reduced)
 
     def coerce_output(
@@ -106,14 +106,14 @@ class ReducerRuntimeContext:
             data={},
         )
 
-    def raise_string_reducer_error(
+    def string_reducer_error(
         self,
         *,
         reducer_name: ReducerName,
         error: Exception,
-    ) -> Never:
-        """Raise normalized string-reducer runtime error."""
-        raise ValidationError(
+    ) -> ValidationError:
+        """Build one normalized string-reducer runtime error."""
+        return ValidationError(
             code=ErrorCode.INCONSISTENT_DIMS,
             message=(
                 "inconsistent dims: backend reducer "
@@ -125,21 +125,21 @@ class ReducerRuntimeContext:
             ),
             related=("reduce reducer",),
             data={"reducer": reducer_name.value},
-        ) from error
+        )
 
-    def raise_custom_reducer_error(
+    def custom_reducer_error(
         self,
         *,
         error: Exception,
-    ) -> Never:
-        """Raise normalized custom-reducer runtime error."""
-        raise ValidationError(
+    ) -> ValidationError:
+        """Build one normalized custom-reducer runtime error."""
+        return ValidationError(
             code=ErrorCode.INCONSISTENT_DIMS,
             message=f"inconsistent dims: custom reducer failed: {error}",
             help="ensure reducer domain is valid for selected axes",
             related=("reduce reducer",),
             data={},
-        ) from error
+        )
 
     def raise_unsupported_reducer_signature(self) -> Never:
         """Raise normalized unsupported reducer signature error."""
@@ -250,7 +250,7 @@ class CallableReducerInvoker:
         except TypeError:
             raise
         except Exception as error:
-            return context.raise_custom_reducer_error(error=error)
+            raise context.custom_reducer_error(error=error) from error
 
     def _run_fallback(
         self,
@@ -273,7 +273,7 @@ class CallableReducerInvoker:
                     continue
                 raise
             except Exception as error:
-                return context.raise_custom_reducer_error(error=error)
+                raise context.custom_reducer_error(error=error) from error
         return context.raise_unsupported_reducer_signature()
 
     def _is_binding_typeerror(
@@ -428,11 +428,11 @@ REDUCER_COMPILER = ReducerCompiler()
 
 
 __all__ = [
+    "REDUCER_COMPILER",
     "CallableReducerInvoker",
     "CompiledCallableReducer",
     "CompiledReducer",
     "CompiledStringReducer",
-    "REDUCER_COMPILER",
     "ReducerCompiler",
     "ReducerRuntimeContext",
     "resolve_namespace_reducer",

@@ -195,7 +195,7 @@ class EquationSolver:
                 continue
             candidates = {
                 value
-                for value in range(0, bound + 1)
+                for value in range(bound + 1)
                 if equation.expr.evaluate({**current, variable: value})
                 == equation.target
             }
@@ -206,7 +206,7 @@ class EquationSolver:
             yield from sorted(allowed)
             return
 
-        yield from range(0, bound + 1)
+        yield from range(bound + 1)
 
     @staticmethod
     def _equations_feasible(

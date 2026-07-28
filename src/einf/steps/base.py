@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from inspect import isabstract
+from inspect import get_annotations, isabstract
 from typing import Generic, TypeVar
 
 from einf.axis import AxisSide
@@ -68,16 +68,16 @@ class SymbolicProgram(StepProgram):
         raise NotImplementedError
 
 
-StepProgramT = TypeVar("StepProgramT", bound=StepProgram, covariant=True)
+StepProgramT_co = TypeVar("StepProgramT_co", bound=StepProgram, covariant=True)
 
 
-class RuntimeStep(Generic[StepProgramT], ABC):
+class RuntimeStep(ABC, Generic[StepProgramT_co]):
     """Executable runtime instruction."""
 
     name: str
     input_arity: int
     output_arity: int
-    program: StepProgramT
+    program: StepProgramT_co
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
@@ -85,7 +85,7 @@ class RuntimeStep(Generic[StepProgramT], ABC):
             return
         if "run" not in cls.__dict__:
             return
-        program_annotation = cls.__dict__.get("__annotations__", {}).get("program")
+        program_annotation = get_annotations(cls).get("program")
         if not isinstance(program_annotation, type) or not issubclass(
             program_annotation,
             StepProgram,
@@ -125,13 +125,13 @@ class RuntimeStep(Generic[StepProgramT], ABC):
         return self.run_single_output((lhs, rhs))
 
 
-class SymbolicStep(Generic[StepProgramT], ABC):
+class SymbolicStep(ABC, Generic[StepProgramT_co]):
     """Symbolic instruction that can specialize to a runtime step."""
 
     name: str
     input_arity: int
     output_arity: int
-    program: StepProgramT
+    program: StepProgramT_co
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
@@ -139,7 +139,7 @@ class SymbolicStep(Generic[StepProgramT], ABC):
             return
         if "specialize" not in cls.__dict__:
             return
-        program_annotation = cls.__dict__.get("__annotations__", {}).get("program")
+        program_annotation = get_annotations(cls).get("program")
         if not isinstance(program_annotation, type) or not issubclass(
             program_annotation,
             StepProgram,
@@ -168,7 +168,7 @@ class SymbolicStep(Generic[StepProgramT], ABC):
 
 
 @dataclass(frozen=True, slots=True)
-class AxisSideSymbolicStep(SymbolicStep[StepProgramT]):
+class AxisSideSymbolicStep(SymbolicStep[StepProgramT_co]):
     """Base symbolic step for operations defined by `(lhs, rhs)` sides."""
 
     lhs: AxisSide
@@ -199,7 +199,7 @@ __all__ = [
     "RuntimeStep",
     "StepProgram",
     "SymbolicProgram",
-    "SymbolicStepScore",
     "SymbolicStep",
+    "SymbolicStepScore",
     "UnaryRuntimeProgram",
 ]

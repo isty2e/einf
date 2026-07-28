@@ -106,10 +106,10 @@ class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
                 return getattr(tensor, self.direct_method_name)(dim=self.axes)
             return getattr(tensor, self.direct_method_name)(axis=self.axes)
         except Exception as error:
-            self.runtime_context.raise_string_reducer_error(
+            raise self.runtime_context.string_reducer_error(
                 reducer_name=self.reducer,
                 error=error,
-            )
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,8 +398,8 @@ def _build_shape_invariant_reduce_runtime_program(
 
 
 __all__ = [
-    "build_reduce_symbolic_program",
-    "ReduceSymbolicProgram",
     "ReduceRuntimeStep",
+    "ReduceSymbolicProgram",
     "ReduceSymbolicStep",
+    "build_reduce_symbolic_program",
 ]

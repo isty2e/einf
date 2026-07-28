@@ -79,7 +79,7 @@ class ShapeMatcher:
             if max_current < 0:
                 return
 
-            for count in range(0, max_current + 1):
+            for count in range(max_current + 1):
                 pack_value = tuple(shape[dim_index : dim_index + count])
                 next_pack_sizes = dict(state.pack_sizes)
                 next_pack_sizes[pack_name] = pack_value

@@ -90,4 +90,4 @@ def einop(
     )
 
 
-__all__ = ["view", "rearrange", "repeat", "reduce", "contract", "einop"]
+__all__ = ["contract", "einop", "rearrange", "reduce", "repeat", "view"]

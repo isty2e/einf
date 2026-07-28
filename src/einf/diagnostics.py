@@ -131,4 +131,4 @@ class ExecutionError(TensorOpError):
     channel = "execution_error"
 
 
-__all__ = ["ErrorCode", "TensorOpError", "ValidationError", "ExecutionError"]
+__all__ = ["ErrorCode", "ExecutionError", "TensorOpError", "ValidationError"]

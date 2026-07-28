@@ -4,7 +4,7 @@ from functools import cache
 from importlib import import_module
 from importlib.util import find_spec
 from types import ModuleType
-from typing import Literal, Protocol, TypeGuard, runtime_checkable
+from typing import Literal, Protocol, TypeGuard, cast, runtime_checkable
 
 from array_api_compat import array_namespace
 
@@ -121,7 +121,7 @@ class ArrayNamespace(Protocol):
 
     def concat(self, tensors: list[TensorLike], /, *, axis: int) -> TensorLike: ...
 
-    def asarray(self, value: bool | int | float | complex, /) -> TensorLike: ...
+    def asarray(self, value: bool | complex, /) -> TensorLike: ...
 
     def sum(self, tensor: TensorLike, /, *, axis: tuple[int, ...]) -> TensorLike: ...
 
@@ -259,12 +259,16 @@ def resolve_backend_array_ops(
             and callable(tensor_unsqueeze)
             and callable(tensor_expand)
         ):
+            tensor_reshape_op = cast(Callable[..., TensorLike], tensor_reshape)
+            tensor_permute_op = cast(Callable[..., TensorLike], tensor_permute)
+            tensor_unsqueeze_op = cast(Callable[..., TensorLike], tensor_unsqueeze)
+            tensor_expand_op = cast(Callable[..., TensorLike], tensor_expand)
             return BackendArrayOps(
                 backend_family=backend_family,
-                reshape=lambda tensor, shape: tensor_reshape(tensor, shape),
-                permute=lambda tensor, axes: tensor_permute(tensor, *axes),
-                expand_dims=lambda tensor, axis: tensor_unsqueeze(tensor, axis),
-                broadcast_to=lambda tensor, shape: tensor_expand(tensor, *shape),
+                reshape=lambda tensor, shape: tensor_reshape_op(tensor, shape),
+                permute=lambda tensor, axes: tensor_permute_op(tensor, *axes),
+                expand_dims=lambda tensor, axis: tensor_unsqueeze_op(tensor, axis),
+                broadcast_to=lambda tensor, shape: tensor_expand_op(tensor, *shape),
                 concat=_bind_concat_op(
                     backend_module,
                     module_op_name=spec.concat_name,
@@ -356,11 +360,11 @@ def _resolve_module_op(
     """Resolve one backend module callable and fail when unavailable."""
     op_candidate = getattr(backend_module, module_op_name, None)
     if not callable(op_candidate):
-        raise ValueError(
+        raise TypeError(
             "backend runtime module callable is unavailable: "
             f"{backend_module.__name__}.{module_op_name}"
         )
-    return op_candidate
+    return cast(Callable[..., TensorLike], op_candidate)
 
 
 def _bind_tensor_shape_op(

@@ -114,7 +114,7 @@ class BackendPolicy:
         """Return whether one backend family supports contract einsum."""
         try:
             return bool(oe_backends.has_einsum(backend_family))
-        except Exception:
+        except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
             return False
 
     def supports_strict_view(
@@ -128,9 +128,7 @@ class BackendPolicy:
             return True
         if is_namespace_family(namespace_id, "numpy"):
             return True
-        if is_namespace_family(namespace_id, "torch"):
-            return True
-        return False
+        return bool(is_namespace_family(namespace_id, "torch"))
 
 
 class BackendResolver:

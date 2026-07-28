@@ -157,9 +157,7 @@ def _is_shape_contract_type_error(error: TypeError, /) -> bool:
     message = str(error)
     if message == "shape entries must be integers":
         return True
-    if message == "each input shape must be a tuple[int, ...]":
-        return True
-    return False
+    return message == "each input shape must be a tuple[int, ...]"
 
 
 __all__ = [

@@ -316,11 +316,11 @@ class AxisPermuteSymbolicStep(AxisSideSymbolicStep[AxisPermuteSymbolicProgram]):
 
 
 __all__ = [
-    "AxisPermuteSymbolicStep",
     "AxisPermuteSymbolicProgram",
+    "AxisPermuteSymbolicStep",
+    "PermuteRuntimeStep",
+    "PermuteSymbolicProgram",
+    "PermuteSymbolicStep",
     "build_axis_permute_symbolic_program",
     "build_permute_symbolic_program",
-    "PermuteSymbolicProgram",
-    "PermuteRuntimeStep",
-    "PermuteSymbolicStep",
 ]

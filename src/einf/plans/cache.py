@@ -229,8 +229,8 @@ __all__ = [
     "RouteOutputIndexCache",
     "RunnerCache",
     "RunnerCacheKey",
-    "RuntimeStepSpecializationCache",
     "RuntimeStepCacheKey",
+    "RuntimeStepSpecializationCache",
     "SelectionCache",
     "SelectionCacheKey",
 ]

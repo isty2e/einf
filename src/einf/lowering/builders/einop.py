@@ -387,40 +387,40 @@ def build_einop_symbolic_plan(
             equations=execution_plan.equations,
         )
 
-    if execution_plan.kind == "einsum_carrier_then_unary":
-        if (
-            execution_plan.intermediate is not None
-            and len(execution_plan.equations) == 1
-        ):
-            carrier_step = EinsumSymbolicStep(
-                program=build_einsum_symbolic_program_from_equations(
-                    input_arity=len(lhs),
-                    output_arity=1,
-                    equations=(execution_plan.equations[0],),
-                    allow_native_matmul=True,
-                )
-            )
-            carrier_lhs = AxisSide.from_spec(
-                (execution_plan.intermediate,),
-                side_name="lhs",
-            )
-            tail_plan = build_einop_symbolic_plan(
-                build_default_ir_program(
-                    op_name="einop",
-                    lhs=carrier_lhs,
-                    rhs=rhs,
-                ),
-                explicit_sizes_items,
-                None,
-            )
-            if tail_plan.input_arity != 1:
-                raise ValueError("carrier tail lowering must be unary")
-            return SymbolicPlan(
-                kind="einsum_carrier_then_unary",
+    if (
+        execution_plan.kind == "einsum_carrier_then_unary"
+        and execution_plan.intermediate is not None
+        and len(execution_plan.equations) == 1
+    ):
+        carrier_step = EinsumSymbolicStep(
+            program=build_einsum_symbolic_program_from_equations(
                 input_arity=len(lhs),
-                output_arity=len(rhs),
-                steps=(carrier_step, *tail_plan.steps),
+                output_arity=1,
+                equations=(execution_plan.equations[0],),
+                allow_native_matmul=True,
             )
+        )
+        carrier_lhs = AxisSide.from_spec(
+            (execution_plan.intermediate,),
+            side_name="lhs",
+        )
+        tail_plan = build_einop_symbolic_plan(
+            build_default_ir_program(
+                op_name="einop",
+                lhs=carrier_lhs,
+                rhs=rhs,
+            ),
+            explicit_sizes_items,
+            None,
+        )
+        if tail_plan.input_arity != 1:
+            raise ValueError("carrier tail lowering must be unary")
+        return SymbolicPlan(
+            kind="einsum_carrier_then_unary",
+            input_arity=len(lhs),
+            output_arity=len(rhs),
+            steps=(carrier_step, *tail_plan.steps),
+        )
 
     if execution_plan.kind == "einsum_chain_then_unary":
         if (

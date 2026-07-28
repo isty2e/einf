@@ -115,7 +115,7 @@ def try_run_reshape_program(
     if namespace_xp is None and backend_ops is None:
         try:
             namespace_binding = bind_array_namespace(tensor)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
         namespace_xp = namespace_binding.as_array_namespace(
             RESHAPE_REQUIRED_NAMESPACE_METHODS

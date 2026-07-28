@@ -116,8 +116,8 @@ class DefaultLoweringProgram(LoweringProgram):
 
 
 __all__ = [
-    "LoweringProgram",
     "DefaultLoweringProgram",
     "EmptyLoweringProgram",
+    "LoweringProgram",
     "StaticLoweringProgram",
 ]
