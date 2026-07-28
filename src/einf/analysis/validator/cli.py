@@ -1,9 +1,9 @@
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, build_checker_adapters
+from einf.analysis.validator.json_projection import project_validation_report
 from einf.analysis.validator.run import (
     SUPPORTED_PARSER_NAMES,
     build_parser_backend,
@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         parser_backend=parser_backend,
         checker_adapters=checker_adapters,
     )
-    print(json.dumps(asdict(report), indent=2, sort_keys=True))
+    print(json.dumps(project_validation_report(report), indent=2, sort_keys=True))
     return report.exit_code()
 
 

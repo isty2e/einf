@@ -1,5 +1,8 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 from einf.analysis.parser import AstParserBackend
 from einf.analysis.validator.cli import main
@@ -18,6 +21,49 @@ reduce(ax[b, n], ax[b, z])
 
 
 SYNTAX_ERROR_SOURCE = "from einf import rearrange\nrearrange(\n"
+
+
+def _write_fake_basedpyright(
+    *,
+    bin_directory: Path,
+    stdout: str,
+    exit_code: int,
+) -> None:
+    bin_directory.mkdir()
+    executable = bin_directory / "basedpyright"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"print({stdout!r})\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+
+def _run_validator_subprocess(
+    *,
+    target: Path,
+    checker_bin_directory: Path,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["PATH"] = (
+        f"{checker_bin_directory}{os.pathsep}{environment.get('PATH', '')}"
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from einf.analysis.validator.cli import main; raise SystemExit(main())",
+            "--checker",
+            "basedpyright",
+            str(target),
+        ],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+    )
 
 
 def test_run_validation_reports_semantic_diagnostics(tmp_path: Path) -> None:
@@ -113,3 +159,81 @@ def test_validator_cli_main_prints_json_and_returns_exit_code(
     assert payload["files"][0]["diagnostics"] == []
     assert payload["files"][0]["checker_diagnostics"] == []
     assert payload["files"][0]["failures"] == []
+
+
+def test_validator_cli_subprocess_serializes_mixed_diagnostics(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text(DIAGNOSTIC_SOURCE, encoding="utf-8")
+    checker_bin_directory = tmp_path / "bin"
+    checker_output = json.dumps(
+        {
+            "generalDiagnostics": [
+                {
+                    "file": str(target.resolve()),
+                    "severity": "warning",
+                    "message": "fake checker diagnostic",
+                    "rule": "fake-rule",
+                    "range": {
+                        "start": {"line": 1, "character": 2},
+                        "end": {"line": 1, "character": 5},
+                    },
+                }
+            ]
+        }
+    )
+    _write_fake_basedpyright(
+        bin_directory=checker_bin_directory,
+        stdout=checker_output,
+        exit_code=1,
+    )
+
+    process = _run_validator_subprocess(
+        target=target,
+        checker_bin_directory=checker_bin_directory,
+    )
+    payload = json.loads(process.stdout)
+
+    assert process.returncode == 1
+    assert payload["checker_failures"] == []
+    assert len(payload["files"]) == 1
+    file_payload = payload["files"][0]
+    assert len(file_payload["diagnostics"]) == 1
+    assert file_payload["checker_diagnostics"] == [
+        {
+            "code": "fake-rule",
+            "message": "fake checker diagnostic",
+            "path": str(target.resolve()),
+            "severity": "warning",
+            "span": {
+                "end": {"column": 5, "line": 2},
+                "start": {"column": 2, "line": 2},
+            },
+            "tool": "basedpyright",
+        }
+    ]
+
+
+def test_validator_cli_subprocess_serializes_checker_failure(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text(VALID_SOURCE, encoding="utf-8")
+    checker_bin_directory = tmp_path / "bin"
+    _write_fake_basedpyright(
+        bin_directory=checker_bin_directory,
+        stdout="not JSON",
+        exit_code=2,
+    )
+
+    process = _run_validator_subprocess(
+        target=target,
+        checker_bin_directory=checker_bin_directory,
+    )
+    payload = json.loads(process.stdout)
+
+    assert process.returncode == 1
+    assert payload["checker_failures"][0]["tool"] == "basedpyright"
+    assert payload["checker_failures"][0]["kind"] == "output_parse_error"
+    assert payload["files"][0]["checker_diagnostics"] == []
