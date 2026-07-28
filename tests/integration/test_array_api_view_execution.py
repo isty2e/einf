@@ -149,6 +149,39 @@ def test_view_torch_allows_disjoint_strided_outputs() -> None:
 
 
 @pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_view_torch_allows_large_disjoint_interleaved_outputs() -> None:
+    assert torch is not None
+    b, n, m = axes("b", "n", "m")
+    op = view(ax[b, (n + m)], (ax[n, b], ax[m, b])).with_sizes(n=1, m=1)
+
+    tensor = torch.arange(200_002).reshape(100_001, 2)
+    out_left, out_right = op(tensor)
+
+    assert out_left.stride() == (1, 2)
+    assert out_right.stride() == (1, 2)
+    assert out_left.storage_offset() == 0
+    assert out_right.storage_offset() == 1
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_view_torch_rejects_large_overlapping_strided_outputs() -> None:
+    assert torch is not None
+    n, m, d = axes("n", "m", "d")
+    op = view(ax[(n + m), d], (ax[n, d], ax[m, d])).with_sizes(n=1, m=1)
+
+    tensor = torch.as_strided(
+        torch.arange(100_002),
+        size=(2, 100_001),
+        stride=(1, 1),
+    )
+
+    with pytest.raises(ValidationError) as error:
+        _ = op(tensor)
+
+    assert error.value.code == ErrorCode.NOT_A_VIEW.value
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
 def test_view_torch_rejects_large_stride_zero_overlapping_split_outputs() -> None:
     assert torch is not None
     n, m = axes("n", "m")
