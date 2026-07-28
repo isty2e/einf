@@ -91,3 +91,11 @@ def test_typed_signature_dsl_supports_axis_pack_terms() -> None:
     sig = Signature(inputs=(ax[t1, 3, t2],), outputs=(ax[t2, 3, t1],))
     assert sig.inputs[0][0] == t1
     assert sig.outputs[0][-1] == t1
+
+
+def test_typed_signature_rejects_scalar_axis_and_pack_with_same_name() -> None:
+    (scalar_axis,) = axes("shared")
+    (axis_pack,) = packs("shared")
+
+    with pytest.raises(ValueError, match="scalar axis and axis-pack names"):
+        Signature(inputs=(ax[scalar_axis],), outputs=(ax[axis_pack],))

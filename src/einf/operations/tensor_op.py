@@ -49,10 +49,22 @@ def _normalize_sizes_items(
     *,
     op_name: str,
     sizes_items: tuple[tuple[str, int], ...],
+    axis_names: set[str],
 ) -> tuple[tuple[str, int], ...]:
     """Validate and normalize size bindings to one immutable sorted tuple."""
     merged: dict[str, int] = {}
     for key, value in sizes_items:
+        if key not in axis_names:
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message=(
+                    f"inconsistent dims: with_sizes binding {key!r} "
+                    "does not name a scalar axis in the signature"
+                ),
+                help="bind only scalar axes referenced by the operation signature",
+                related=("with_sizes binding",),
+                data={"operation": op_name, "dim": key},
+            )
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"size binding for {key!r} must be an int")
         if value < 0:
@@ -95,6 +107,7 @@ class TensorOpContract:
         normalized_sizes_items = _normalize_sizes_items(
             op_name=self.name,
             sizes_items=self.sizes_items,
+            axis_names=normalized.axis_names(),
         )
         abstract_plan = AbstractPlan(
             op_name=self.name,

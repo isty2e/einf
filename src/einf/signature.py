@@ -15,8 +15,20 @@ class Signature:
         inputs: tuple[AxisTerms, ...],
         outputs: tuple[AxisTerms, ...],
     ) -> None:
-        object.__setattr__(self, "inputs", AxisSide.coerce(inputs))
-        object.__setattr__(self, "outputs", AxisSide.coerce(outputs))
+        normalized_inputs = AxisSide.coerce(inputs)
+        normalized_outputs = AxisSide.coerce(outputs)
+        axis_names = normalized_inputs.axis_names() | normalized_outputs.axis_names()
+        pack_names = normalized_inputs.pack_names() | normalized_outputs.pack_names()
+        overlapping_names = axis_names & pack_names
+        if overlapping_names:
+            rendered_names = ", ".join(repr(name) for name in sorted(overlapping_names))
+            raise ValueError(
+                "scalar axis and axis-pack names must be distinct; "
+                f"overlapping names: {rendered_names}"
+            )
+
+        object.__setattr__(self, "inputs", normalized_inputs)
+        object.__setattr__(self, "outputs", normalized_outputs)
 
     @property
     def input_arity(self) -> int:

@@ -129,24 +129,20 @@ def test_tensorop_call_accepts_scalar_shape_contract() -> None:
     assert result is tensor
 
 
-def test_tensorop_call_rejects_unused_with_sizes_binding() -> None:
+def test_tensorop_with_sizes_rejects_unused_binding() -> None:
     (n,) = axes("n")
-    op = rearrange(ax[n], ax[n]).with_sizes(unused=3)
-    tensor = np.ones((3,), dtype=np.float32)
 
     with pytest.raises(ValidationError) as error:
-        _ = op(tensor)
+        rearrange(ax[n], ax[n]).with_sizes(unused=3)
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
 
-def test_tensorop_call_rejects_scalar_binding_for_axis_pack() -> None:
+def test_tensorop_with_sizes_rejects_scalar_binding_for_axis_pack() -> None:
     (tail,) = packs("tail")
-    op = rearrange(ax[tail], ax[tail]).with_sizes(tail=3)
-    tensor = np.ones((3,), dtype=np.float32)
 
     with pytest.raises(ValidationError) as error:
-        _ = op(tensor)
+        rearrange(ax[tail], ax[tail]).with_sizes(tail=3)
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
