@@ -1,11 +1,11 @@
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerRequest,
     CheckerResult,
 )
 from einf.analysis.model import DiagnosticSeverity
@@ -27,25 +27,24 @@ class TyAdapter(CheckerAdapter):
 
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
-        return [
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
+        return (
             self.executable,
             "check",
-            *[str(path) for path in targets],
+            *[str(path) for path in request.targets],
             "--output-format",
             "concise",
             "--no-progress",
-        ]
+        )
 
     def parse_output(
         self,
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
         diagnostics: list[CheckerDiagnostic] = []
         unrecognized_line: str | None = None
@@ -63,7 +62,7 @@ class TyAdapter(CheckerAdapter):
                 diagnostics.append(
                     CheckerDiagnostic(
                         tool=self.name,
-                        path=resolve_report_path(match.group("path"), project_root),
+                        path=resolve_report_path(match.group("path"), request),
                         code=match.group("code"),
                         message=match.group("message"),
                         severity=_severity_from_text(severity),

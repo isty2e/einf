@@ -13,7 +13,6 @@ class DocumentAnalysisRequest:
     uri: str
     source: str
     version: int | None
-    include_checkers: bool
 
 
 _AnalyzeDocument = Callable[[DocumentAnalysisRequest], LspDocumentState]

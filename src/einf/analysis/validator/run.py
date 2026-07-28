@@ -1,7 +1,15 @@
+import asyncio
 import os
 from pathlib import Path
 
-from einf.analysis.checkers import CheckerAdapter, CheckerDiagnostic, CheckerFailure
+from einf.analysis.checkers import (
+    CheckerAdapter,
+    CheckerDiagnostic,
+    CheckerExecutionPolicy,
+    CheckerExecutor,
+    CheckerRequest,
+    CheckerResult,
+)
 from einf.analysis.engine import analyze_module
 from einf.analysis.parser import (
     AstParserBackend,
@@ -36,6 +44,7 @@ def run_validation(
     targets: tuple[Path, ...],
     parser_backend: ParserBackend,
     checker_adapters: tuple[CheckerAdapter, ...] = (),
+    checker_execution_policy: CheckerExecutionPolicy | None = None,
 ) -> ValidationReport:
     """Analyze Python targets and return one stable validation report."""
     resolved_targets = _resolve_python_targets(targets)
@@ -53,24 +62,26 @@ def run_validation(
             path: analyze_path(path=path, parser_backend=parser_backend)
             for path in resolved_targets
         }
-    checker_failures, checker_diagnostics_by_path = run_checker_adapters(
+    checker_result = _run_checker_adapters(
         targets=checker_targets,
         checker_adapters=checker_adapters,
         project_root=project_root,
+        execution_policy=checker_execution_policy or CheckerExecutionPolicy(),
     )
 
     return ValidationReport(
         schema_version=SCHEMA_VERSION,
         parser_backend=parser_backend.name,
-        checker_failures=checker_failures,
+        checker_failures=checker_result.failures,
         files=tuple(
             _merge_file_report(
                 path=path,
                 analyzer_report=analyzer_reports.get(path),
-                checker_diagnostics=checker_diagnostics_by_path.get(path, ()),
+                checker_diagnostics=checker_result.diagnostics_for(path),
             )
             for path in sorted(
-                set(analyzer_reports) | set(checker_diagnostics_by_path),
+                set(analyzer_reports)
+                | {diagnostic.path for diagnostic in checker_result.diagnostics},
             )
         ),
     )
@@ -104,59 +115,23 @@ def _infer_project_root(targets: tuple[Path, ...]) -> Path:
     return Path(os.path.commonpath([str(root) for root in roots]))
 
 
-def run_checker_adapters(
+def _run_checker_adapters(
     *,
     targets: tuple[Path, ...],
     checker_adapters: tuple[CheckerAdapter, ...],
     project_root: Path,
-) -> tuple[
-    tuple[CheckerFailure, ...],
-    dict[Path, tuple[CheckerDiagnostic, ...]],
-]:
+    execution_policy: CheckerExecutionPolicy,
+) -> CheckerResult:
     if not targets or not checker_adapters:
-        return (), {}
+        return CheckerResult(diagnostics=(), failures=())
 
-    checker_failures: list[CheckerFailure] = []
-    checker_diagnostics_by_path: dict[Path, list[CheckerDiagnostic]] = {}
-    for checker_adapter in checker_adapters:
-        checker_result = checker_adapter.run(
-            targets=targets,
-            project_root=project_root,
-        )
-        checker_failures.extend(checker_result.failures)
-        for checker_diagnostic in checker_result.diagnostics:
-            checker_diagnostics_by_path.setdefault(
-                checker_diagnostic.path,
-                [],
-            ).append(checker_diagnostic)
-    return (
-        tuple(checker_failures),
-        {
-            path: _sort_checker_diagnostics(tuple(diagnostics))
-            for path, diagnostics in checker_diagnostics_by_path.items()
-        },
-    )
+    request = CheckerRequest(targets=targets, project_root=project_root)
 
+    async def execute() -> CheckerResult:
+        executor = CheckerExecutor(execution_policy)
+        return await executor.run_all(checker_adapters, request)
 
-def _sort_checker_diagnostics(
-    checker_diagnostics: tuple[CheckerDiagnostic, ...],
-) -> tuple[CheckerDiagnostic, ...]:
-    return tuple(
-        sorted(
-            checker_diagnostics,
-            key=lambda checker_diagnostic: (
-                checker_diagnostic.span.start.line
-                if checker_diagnostic.span is not None
-                else -1,
-                checker_diagnostic.span.start.column
-                if checker_diagnostic.span is not None
-                else -1,
-                checker_diagnostic.tool,
-                checker_diagnostic.code or "",
-                checker_diagnostic.message,
-            ),
-        )
-    )
+    return asyncio.run(execute())
 
 
 def _merge_file_report(

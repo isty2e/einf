@@ -8,7 +8,6 @@ from einf.analysis.lsp.analysis_queue import (
     DocumentAnalysisRequest,
     LspAnalysisQueue,
 )
-from einf.analysis.lsp.server import EinfLanguageServer, _analyze_document_request
 from einf.analysis.lsp.service import LspDocumentState
 from einf.analysis.validator.model import ValidationFileReport
 
@@ -18,15 +17,13 @@ def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
         uri=request.uri,
         path=Path(request.uri.removeprefix("file://")),
         version=request.version,
-        report=ValidationFileReport(
+        semantic_report=ValidationFileReport(
             path=request.uri,
             diagnostics=(),
             checker_diagnostics=(),
             axis_tokens=(),
             failures=(),
         ),
-        checker_failures=(),
-        checker_fresh=False,
     )
 
 
@@ -55,13 +52,11 @@ def test_blocked_analysis_does_not_block_event_loop_or_other_document() -> None:
             uri="file:///blocked.py",
             source="blocked",
             version=1,
-            include_checkers=False,
         )
         ready_request = DocumentAnalysisRequest(
             uri="file:///ready.py",
             source="ready",
             version=1,
-            include_checkers=False,
         )
 
         blocked_task = asyncio.create_task(
@@ -120,7 +115,6 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                     uri=uri,
                     source="first",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: None,
@@ -135,7 +129,6 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                         uri=uri,
                         source="replacement",
                         version=2,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -149,7 +142,6 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                         uri="file:///other.py",
                         source="other",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -189,7 +181,6 @@ def test_stale_running_analysis_result_is_discarded() -> None:
                     uri="file:///sample.py",
                     source="old",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: committed_versions.append(state.version),
@@ -205,7 +196,6 @@ def test_stale_running_analysis_result_is_discarded() -> None:
                         uri="file:///sample.py",
                         source="new",
                         version=2,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: committed_versions.append(state.version),
@@ -248,7 +238,6 @@ def test_latest_waiter_follows_replacement_generation() -> None:
                     uri="file:///sample.py",
                     source="old",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: None,
@@ -266,7 +255,6 @@ def test_latest_waiter_follows_replacement_generation() -> None:
                         uri="file:///sample.py",
                         source="new",
                         version=2,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -283,84 +271,6 @@ def test_latest_waiter_follows_replacement_generation() -> None:
             release_stale.set()
             await stale_task
             await queue.close()
-
-    asyncio.run(scenario())
-
-
-def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> None:
-    async def scenario() -> None:
-        stale_started = threading.Event()
-        release_stale = threading.Event()
-        published_versions: list[int | None] = []
-        server = EinfLanguageServer()
-        service = server.einf_service
-
-        def analyze_document(
-            *,
-            uri: str,
-            source: str,
-            version: int | None,
-            include_checkers: bool,
-        ) -> LspDocumentState:
-            request = DocumentAnalysisRequest(
-                uri=uri,
-                source=source,
-                version=version,
-                include_checkers=include_checkers,
-            )
-            if version == 1:
-                stale_started.set()
-                assert release_stale.wait(timeout=2)
-            return _state(request)
-
-        monkeypatch.setattr(service, "analyze_document", analyze_document)
-        monkeypatch.setattr(
-            server,
-            "text_document_publish_diagnostics",
-            lambda params: published_versions.append(params.version),
-        )
-
-        stale_task = asyncio.create_task(
-            _analyze_document_request(
-                server,
-                request=DocumentAnalysisRequest(
-                    uri="file:///sample.py",
-                    source="old",
-                    version=1,
-                    include_checkers=False,
-                ),
-            )
-        )
-        latest_task: asyncio.Task[LspDocumentState | None] | None = None
-        latest_state: LspDocumentState | None = None
-        try:
-            await _wait_until_set(stale_started)
-            latest_task = asyncio.create_task(
-                _analyze_document_request(
-                    server,
-                    request=DocumentAnalysisRequest(
-                        uri="file:///sample.py",
-                        source="new",
-                        version=2,
-                        include_checkers=False,
-                    ),
-                )
-            )
-            await asyncio.sleep(0)
-
-            assert service.get_document_state(uri="file:///sample.py") is None
-            assert published_versions == []
-        finally:
-            release_stale.set()
-            stale_state = await stale_task
-            if latest_task is not None:
-                latest_state = await latest_task
-            await server.einf_analysis_queue.close()
-
-        assert stale_state is None
-        assert latest_state is not None
-        assert service.get_document_state(uri="file:///sample.py") == latest_state
-        assert published_versions == [2]
 
     asyncio.run(scenario())
 
@@ -385,7 +295,6 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                     uri="file:///active.py",
                     source="active",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: None,
@@ -399,7 +308,6 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         uri="file:///pending.py",
                         source="old-pending",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -412,7 +320,6 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         uri="file:///pending.py",
                         source="new-pending",
                         version=2,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -425,7 +332,6 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         uri="file:///waiting.py",
                         source="waiting",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -468,7 +374,6 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                     uri="file:///active.py",
                     source="active",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: None,
@@ -483,7 +388,6 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                         uri="file:///pending.py",
                         source="pending",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -496,7 +400,6 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                         uri="file:///cancelled.py",
                         source="cancelled",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -544,7 +447,6 @@ def test_backpressured_request_is_replaced_before_capacity_is_available() -> Non
                         uri=uri,
                         source=source,
                         version=version,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,
@@ -600,7 +502,6 @@ def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
                     uri=uri,
                     source="cancelled",
                     version=1,
-                    include_checkers=False,
                 ),
                 analyze=analyze,
                 commit=lambda state: committed_versions.append(state.version),
@@ -618,7 +519,6 @@ def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
                 uri=uri,
                 source="recovered",
                 version=2,
-                include_checkers=False,
             ),
             analyze=analyze,
             commit=lambda state: committed_versions.append(state.version),
@@ -648,7 +548,6 @@ def test_queue_worker_survives_analysis_and_commit_failures() -> None:
             uri="file:///sample.py",
             source="source",
             version=1,
-            include_checkers=False,
         )
         with pytest.raises(ValueError, match="analysis failed"):
             await queue.analyze(
@@ -695,7 +594,6 @@ def test_close_resolves_backpressured_request_and_latest_waiter() -> None:
                         uri=uri,
                         source="source",
                         version=1,
-                        include_checkers=False,
                     ),
                     analyze=analyze,
                     commit=lambda state: None,

@@ -30,7 +30,9 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 ```json
 {
   "parser": "ast",
-  "checkers": []
+  "checkers": [],
+  "checkerTimeoutSeconds": 30,
+  "checkerMaxConcurrency": 1
 }
 ```
 
@@ -55,8 +57,9 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 1. `didOpen` analyzes immediately,
 2. `didChange` events are coalesced briefly so rapid edits analyze only the
    latest document version,
-3. semantic tokens, hover, and inlay hints read the latest cached analysis,
-4. a pending edit is flushed before a semantic-token, hover, or inlay request
+3. semantic analysis runs in a bounded background worker queue,
+4. semantic tokens, hover, and inlay hints read the latest cached analysis,
+5. a pending edit is flushed before a semantic-token, hover, or inlay request
    is answered.
 
 The sidecar also takes a conservative fast path for Python files that contain
@@ -80,7 +83,9 @@ external checkers on save by passing `checkers` in `initialize` options.
 ```json
 {
   "parser": "ast",
-  "checkers": ["basedpyright", "pyrefly"]
+  "checkers": ["basedpyright", "pyrefly"],
+  "checkerTimeoutSeconds": 30,
+  "checkerMaxConcurrency": 1
 }
 ```
 
@@ -89,7 +94,12 @@ changes continue to receive fresh `einf` semantic diagnostics and
 semantic tokens, but stale checker diagnostics are not retained as if
 they were current.
 
-Checker execution starts external processes and can be much slower than
-`einf` semantic analysis. Treat it as a compatibility fallback for editors
-that cannot run a separate Python language server, not as the recommended
-interactive path.
+Checker execution uses a separate bounded async subprocess coordinator.
+`checkerTimeoutSeconds` limits each checker process, while
+`checkerMaxConcurrency` limits checker processes across documents and tools.
+Saving or closing a newer document generation cancels and reaps obsolete
+checker processes before their results can be published.
+
+Checker execution can be much slower than `einf` semantic analysis. Treat it
+as a compatibility fallback for editors that cannot run a separate Python
+language server, not as the recommended interactive path.

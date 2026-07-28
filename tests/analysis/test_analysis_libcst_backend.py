@@ -9,7 +9,6 @@ from types import ModuleType
 import pytest
 
 from einf.analysis.engine import analyze_module
-from einf.analysis.lsp.config import LspConfig
 from einf.analysis.lsp.service import LspService
 from einf.analysis.model import TextPosition, TextSpan
 from einf.analysis.parser import (
@@ -150,7 +149,7 @@ def test_libcst_lsp_reports_unavailable_parser_before_source_filter(
         _fake_import_module,
     )
 
-    state = LspService(LspConfig(parser="libcst")).open_document(
+    state = LspService("libcst").open_document(
         uri=(tmp_path / "sample.py").as_uri(),
         source="x = 1\n",
         version=1,
@@ -263,7 +262,7 @@ def test_libcst_lsp_reports_malformed_source_when_installed(tmp_path: Path) -> N
     if importlib.util.find_spec("libcst") is None:
         pytest.skip("libcst is not installed in this environment")
 
-    state = LspService(LspConfig(parser="libcst")).open_document(
+    state = LspService("libcst").open_document(
         uri=(tmp_path / "malformed.py").as_uri(),
         source=_MALFORMED_SOURCE,
         version=1,

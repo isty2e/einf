@@ -1,11 +1,11 @@
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerRequest,
     CheckerResult,
 )
 from einf.analysis.model import TextSpan
@@ -20,25 +20,24 @@ class PyreflyAdapter(CheckerAdapter):
 
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
-        return [
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
+        return (
             self.executable,
             "check",
-            *[str(path) for path in targets],
+            *[str(path) for path in request.targets],
             "--output-format",
             "json",
             "--summary=none",
-        ]
+        )
 
     def parse_output(
         self,
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
         if not stdout.strip():
             if stderr.strip():
@@ -109,7 +108,7 @@ class PyreflyAdapter(CheckerAdapter):
             diagnostics.append(
                 CheckerDiagnostic(
                     tool=self.name,
-                    path=resolve_report_path(path_text, project_root),
+                    path=resolve_report_path(path_text, request),
                     code=name if isinstance(name, str) else None,
                     message=description,
                     severity="error",

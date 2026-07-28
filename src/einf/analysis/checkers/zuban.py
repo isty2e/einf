@@ -1,11 +1,11 @@
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerRequest,
     CheckerResult,
 )
 from einf.analysis.model import DiagnosticSeverity
@@ -30,26 +30,31 @@ class ZubanAdapter(CheckerAdapter):
 
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
-        return [
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
+        target_arguments: list[str] = []
+        for path in request.targets:
+            try:
+                target_arguments.append(str(path.relative_to(request.project_root)))
+            except ValueError:
+                target_arguments.append(str(path))
+        return (
             self.executable,
             "check",
-            *[_target_arg(path=path, project_root=project_root) for path in targets],
+            *target_arguments,
             "--no-pretty",
             "--show-column-numbers",
             "--show-error-end",
             "--show-error-codes",
-        ]
+        )
 
     def parse_output(
         self,
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
         diagnostics: list[CheckerDiagnostic] = []
         unrecognized_line: str | None = None
@@ -67,7 +72,7 @@ class ZubanAdapter(CheckerAdapter):
                 diagnostics.append(
                     CheckerDiagnostic(
                         tool=self.name,
-                        path=resolve_report_path(match.group("path"), project_root),
+                        path=resolve_report_path(match.group("path"), request),
                         code=match.group("code"),
                         message=match.group("message"),
                         severity=_severity_from_text(severity),
@@ -96,13 +101,6 @@ class ZubanAdapter(CheckerAdapter):
             )
         )
         return CheckerResult(diagnostics=tuple(diagnostics), failures=failures)
-
-
-def _target_arg(*, path: Path, project_root: Path) -> str:
-    try:
-        return str(path.relative_to(project_root))
-    except ValueError:
-        return str(path)
 
 
 def _severity_from_text(value: str) -> DiagnosticSeverity:

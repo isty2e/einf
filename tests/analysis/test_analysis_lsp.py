@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
+from einf.analysis.checkers import (
+    CheckerDiagnostic,
+    CheckerExecutionPolicy,
+    CheckerFailure,
+    CheckerResult,
+)
 from einf.analysis.lsp import (
     LspConfig,
     LspService,
@@ -23,6 +28,7 @@ def test_lsp_config_from_initialize_options_deduplicates_and_filters() -> None:
 
     assert config.parser == "libcst"
     assert config.checkers == ("basedpyright", "ty")
+    assert config.checker_execution_policy == CheckerExecutionPolicy()
 
 
 def test_lsp_config_defaults_for_invalid_initialize_options() -> None:
@@ -30,6 +36,38 @@ def test_lsp_config_defaults_for_invalid_initialize_options() -> None:
 
     assert config.parser == "ast"
     assert config.checkers == ()
+
+
+def test_lsp_config_normalizes_checker_execution_policy() -> None:
+    config = LspConfig.from_initialize_options(
+        {
+            "checkerTimeoutSeconds": 2.5,
+            "checkerMaxConcurrency": 3,
+        }
+    )
+
+    assert config.checker_execution_policy == CheckerExecutionPolicy(
+        timeout_seconds=2.5,
+        max_concurrency=3,
+    )
+
+    invalid = LspConfig.from_initialize_options(
+        {
+            "checkerTimeoutSeconds": float("inf"),
+            "checkerMaxConcurrency": 0,
+        }
+    )
+
+    assert invalid.checker_execution_policy == CheckerExecutionPolicy()
+
+    booleans = LspConfig.from_initialize_options(
+        {
+            "checkerTimeoutSeconds": True,
+            "checkerMaxConcurrency": True,
+        }
+    )
+
+    assert booleans.checker_execution_policy == CheckerExecutionPolicy()
 
 
 def test_path_from_uri_resolves_file_uri(tmp_path: Path) -> None:
@@ -42,7 +80,7 @@ def test_path_from_uri_resolves_file_uri(tmp_path: Path) -> None:
 
 def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
-    service = LspService(LspConfig())
+    service = LspService()
 
     opened = service.open_document(
         uri=target.resolve().as_uri(),
@@ -50,11 +88,11 @@ def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) 
         version=1,
     )
 
+    assert opened.report is opened.semantic_report
     assert opened.report.diagnostics == ()
     assert opened.report.failures == ()
     assert opened.report.checker_diagnostics == ()
-    assert opened.checker_failures == ()
-    assert opened.checker_fresh is False
+    assert opened.checker_result is None
     assert opened.report.axis_tokens
 
     changed = service.change_document(
@@ -65,21 +103,19 @@ def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) 
 
     assert len(changed.report.diagnostics) == 1
     assert changed.report.checker_diagnostics == ()
-    assert changed.checker_failures == ()
-    assert changed.checker_fresh is False
+    assert changed.checker_result is None
     assert service.get_document_state(uri=target.resolve().as_uri()) == changed
 
 
 def test_lsp_service_analysis_requires_explicit_state_commit(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     uri = target.resolve().as_uri()
-    service = LspService(LspConfig())
+    service = LspService()
 
     state = service.analyze_document(
         uri=uri,
         source=VALID_SOURCE,
         version=1,
-        include_checkers=False,
     )
 
     assert service.get_document_state(uri=uri) is None
@@ -94,7 +130,7 @@ def test_lsp_service_skips_deep_analysis_for_irrelevant_source(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.py"
-    service = LspService(LspConfig())
+    service = LspService()
 
     def fail_analyze_source(*, source, path, parser_backend):
         _ = source, path, parser_backend
@@ -117,7 +153,7 @@ def test_lsp_service_prefilter_keeps_supported_einf_alias_calls(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.py"
-    service = LspService(LspConfig())
+    service = LspService()
 
     state = service.open_document(
         uri=target.resolve().as_uri(),
@@ -137,7 +173,7 @@ def test_lsp_service_prefilter_keeps_supported_einf_module_chains(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.py"
-    service = LspService(LspConfig())
+    service = LspService()
 
     state = service.open_document(
         uri=target.resolve().as_uri(),
@@ -153,10 +189,8 @@ def test_lsp_service_prefilter_keeps_supported_einf_module_chains(
     assert state.report.failures == ()
 
 
-def test_lsp_service_save_refreshes_checkers(monkeypatch, tmp_path: Path) -> None:
+def test_lsp_document_state_projects_checker_result(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
-    target.write_text(VALID_SOURCE, encoding="utf-8")
-
     checker_diagnostic = CheckerDiagnostic(
         tool="basedpyright",
         path=target.resolve(),
@@ -168,40 +202,45 @@ def test_lsp_service_save_refreshes_checkers(monkeypatch, tmp_path: Path) -> Non
             end=TextPosition(line=2, column=3),
         ),
     )
+    other_diagnostic = CheckerDiagnostic(
+        tool="basedpyright",
+        path=(tmp_path / "other.py").resolve(),
+        code="reportCallIssue",
+        message="other file",
+        severity="error",
+        span=None,
+    )
     checker_failure = CheckerFailure(
         tool="basedpyright",
         kind="execution_error",
         message="checker failed",
     )
-
-    def fake_run_checker_adapters(*, targets, checker_adapters, project_root):
-        assert targets == (target.resolve(),)
-        assert project_root == target.resolve().parent
-        return (checker_failure,), {target.resolve(): (checker_diagnostic,)}
-
-    monkeypatch.setattr(
-        "einf.analysis.lsp.service.run_checker_adapters",
-        fake_run_checker_adapters,
-    )
-
-    service = LspService(LspConfig(checkers=("basedpyright",)))
-    state = service.save_document(
+    service = LspService()
+    semantic_state = service.open_document(
         uri=target.resolve().as_uri(),
         source=VALID_SOURCE,
         version=3,
     )
+    checked_state = semantic_state.with_checker_result(
+        CheckerResult(
+            diagnostics=(checker_diagnostic, other_diagnostic),
+            failures=(checker_failure,),
+        )
+    )
 
-    assert state.checker_fresh is True
-    assert state.checker_failures == (checker_failure,)
-    assert state.report.checker_diagnostics == (checker_diagnostic,)
+    assert semantic_state.checker_result is None
+    assert semantic_state.report is semantic_state.semantic_report
+    assert semantic_state.report.checker_diagnostics == ()
+    assert checked_state.checker_result is not None
+    assert checked_state.report is not checked_state.semantic_report
+    assert checked_state.checker_result.failures == (checker_failure,)
+    assert checked_state.report.checker_diagnostics == (checker_diagnostic,)
 
 
 def test_lsp_service_change_clears_stale_checker_diagnostics(
-    monkeypatch,
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.py"
-    target.write_text(VALID_SOURCE, encoding="utf-8")
     checker_diagnostic = CheckerDiagnostic(
         tool="basedpyright",
         path=target.resolve(),
@@ -210,31 +249,24 @@ def test_lsp_service_change_clears_stale_checker_diagnostics(
         severity="error",
         span=None,
     )
-
-    def fake_run_checker_adapters(*, targets, checker_adapters, project_root):
-        _ = targets, checker_adapters, project_root
-        return (), {target.resolve(): (checker_diagnostic,)}
-
-    monkeypatch.setattr(
-        "einf.analysis.lsp.service.run_checker_adapters",
-        fake_run_checker_adapters,
-    )
-
-    service = LspService(LspConfig(checkers=("basedpyright",)))
-    saved = service.save_document(
+    service = LspService()
+    opened = service.open_document(
         uri=target.resolve().as_uri(),
         source=VALID_SOURCE,
         version=1,
     )
+    checked = opened.with_checker_result(
+        CheckerResult(diagnostics=(checker_diagnostic,), failures=())
+    )
+    service.commit_document_state(checked)
     changed = service.change_document(
         uri=target.resolve().as_uri(),
         source=VALID_SOURCE,
         version=2,
     )
 
-    assert saved.checker_fresh is True
-    assert saved.report.checker_diagnostics == (checker_diagnostic,)
-    assert changed.checker_fresh is False
+    assert checked.report.checker_diagnostics == (checker_diagnostic,)
+    assert changed.checker_result is None
     assert changed.report.checker_diagnostics == ()
 
 

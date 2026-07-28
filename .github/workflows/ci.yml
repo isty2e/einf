@@ -25,11 +25,21 @@ jobs:
         run: >-
           basedpyright
           --pythonpath "$(which python)"
+          src/einf/analysis/checkers
+          src/einf/analysis/lsp/checker_coordinator.py
+          src/einf/analysis/lsp/config.py
           src/einf/analysis/lsp/service.py
           src/einf/analysis/lsp/change_debounce.py
+          src/einf/analysis/validator/cli.py
+          src/einf/analysis/validator/run.py
           benchmarks/profile/lsp_latency.py
+          tests/analysis/test_analysis_checkers.py
+          tests/analysis/test_analysis_lsp_checker_coordinator.py
           tests/analysis/test_analysis_lsp.py
           tests/analysis/test_analysis_lsp_debounce.py
+          tests/analysis/test_conformance_analysis.py
+          tests/analysis/test_analysis_validator.py
+          tests/analysis/test_checker_execution.py
           tests/benchmarks/test_benchmark_lsp_latency.py
       - name: Test
         run: pytest
@@ -57,7 +67,7 @@ jobs:
           src/einf/analysis/lsp/hover.py
           src/einf/analysis/lsp/inlay_hints.py
           tests/analysis/test_analysis_lsp_server.py
-          tests/analysis/test_conformance_analysis.py
+          tests/analysis/test_conformance_analysis_lsp.py
       - name: Test optional LSP transport
         run: >-
           pytest
@@ -65,3 +75,4 @@ jobs:
           tests/analysis/test_analysis_lsp_debounce.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis.py
+          tests/analysis/test_conformance_analysis_lsp.py

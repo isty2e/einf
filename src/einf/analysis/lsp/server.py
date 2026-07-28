@@ -1,12 +1,20 @@
+import asyncio
+
 from lsprotocol import types as lsp
 from pygls.lsp.server import LanguageServer
 
-from einf.analysis.checkers import CheckerFailure
+from einf.analysis.checkers import (
+    CheckerExecutor,
+    CheckerFailure,
+    CheckerResult,
+    build_checker_adapters,
+)
 from einf.analysis.model import DiagnosticSeverity, TextPosition, TextSpan
 from einf.analysis.validator.model import ValidationFileReport
 
 from .analysis_queue import DocumentAnalysisRequest, LspAnalysisQueue
 from .change_debounce import LspChangeDebouncer, PendingDocumentChange
+from .checker_coordinator import DocumentCheckerRequest, LspCheckerCoordinator
 from .config import InitializeOptions, LspConfig
 from .hover import build_hover
 from .inlay_hints import build_inlay_hints
@@ -27,7 +35,8 @@ class EinfLanguageServer(LanguageServer):
             version="0.1",
             text_document_sync_kind=lsp.TextDocumentSyncKind.Incremental,
         )
-        self.einf_service = LspService(LspConfig())
+        self.einf_config = LspConfig()
+        self.einf_service = LspService(self.einf_config.parser)
         self.einf_change_debouncer = LspChangeDebouncer(
             delay_seconds=_DEFAULT_CHANGE_DEBOUNCE_SECONDS
         )
@@ -35,6 +44,13 @@ class EinfLanguageServer(LanguageServer):
             worker_count=_DEFAULT_ANALYSIS_WORKER_COUNT,
             pending_limit=_DEFAULT_ANALYSIS_PENDING_LIMIT,
         )
+        self.einf_checker_coordinator = _build_checker_coordinator(self.einf_config)
+
+    def configure(self, config: LspConfig) -> None:
+        """Configure semantic and checker subsystems before document traffic."""
+        self.einf_config = config
+        self.einf_service = LspService(config.parser)
+        self.einf_checker_coordinator = _build_checker_coordinator(config)
 
 
 SEMANTIC_TOKENS_LEGEND = lsp.SemanticTokensLegend(
@@ -50,7 +66,7 @@ def build_server() -> EinfLanguageServer:
     @server.feature(lsp.INITIALIZE)
     def initialize(ls: EinfLanguageServer, params: lsp.InitializeParams) -> None:
         init_options = _coerce_initialize_options(params.initialization_options)
-        ls.einf_service = LspService(LspConfig.from_initialize_options(init_options))
+        ls.configure(LspConfig.from_initialize_options(init_options))
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
     async def did_open(
@@ -58,13 +74,13 @@ def build_server() -> EinfLanguageServer:
         params: lsp.DidOpenTextDocumentParams,
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
+        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
         await _analyze_document_request(
             ls,
             request=DocumentAnalysisRequest(
                 uri=text_document.uri,
                 source=text_document.source,
                 version=text_document.version,
-                include_checkers=False,
             ),
         )
 
@@ -73,6 +89,7 @@ def build_server() -> EinfLanguageServer:
         ls: EinfLanguageServer, params: lsp.DidChangeTextDocumentParams
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
+        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
         change = PendingDocumentChange(
             uri=text_document.uri,
             source=text_document.source,
@@ -86,7 +103,6 @@ def build_server() -> EinfLanguageServer:
                     uri=pending_change.uri,
                     source=pending_change.source,
                     version=pending_change.version,
-                    include_checkers=False,
                 ),
             )
 
@@ -99,22 +115,27 @@ def build_server() -> EinfLanguageServer:
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
         ls.einf_change_debouncer.cancel(text_document.uri)
-        await _analyze_document_request(
+        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
+        state = await _analyze_document_request(
             ls,
             request=DocumentAnalysisRequest(
                 uri=text_document.uri,
                 source=text_document.source,
                 version=text_document.version,
-                include_checkers=True,
             ),
         )
+        if state is not None:
+            await _check_document_state(ls, state=state)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
     async def did_close(
         ls: EinfLanguageServer, params: lsp.DidCloseTextDocumentParams
     ) -> None:
         ls.einf_change_debouncer.cancel(params.text_document.uri)
-        await ls.einf_analysis_queue.cancel(uri=params.text_document.uri)
+        await asyncio.gather(
+            ls.einf_analysis_queue.cancel(uri=params.text_document.uri),
+            ls.einf_checker_coordinator.cancel(uri=params.text_document.uri),
+        )
         ls.einf_service.close_document(uri=params.text_document.uri)
         ls.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(
@@ -126,7 +147,10 @@ def build_server() -> EinfLanguageServer:
     @server.feature(lsp.SHUTDOWN)
     async def shutdown(ls: EinfLanguageServer, *args: object) -> None:
         _ = args
-        await ls.einf_analysis_queue.close()
+        await asyncio.gather(
+            ls.einf_analysis_queue.close(),
+            ls.einf_checker_coordinator.close(),
+        )
 
     @server.feature(lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_LEGEND)
     async def semantic_tokens_full(
@@ -136,7 +160,9 @@ def build_server() -> EinfLanguageServer:
         state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return lsp.SemanticTokens(data=[])
-        return lsp.SemanticTokens(data=encode_semantic_tokens(state.report.axis_tokens))
+        return lsp.SemanticTokens(
+            data=encode_semantic_tokens(state.semantic_report.axis_tokens)
+        )
 
     @server.feature(lsp.TEXT_DOCUMENT_INLAY_HINT)
     async def inlay_hint(
@@ -147,7 +173,7 @@ def build_server() -> EinfLanguageServer:
         if state is None:
             return []
         return build_inlay_hints(
-            axis_tokens=state.report.axis_tokens,
+            axis_tokens=state.semantic_report.axis_tokens,
             visible_range=_span_from_lsp_range(params.range),
         )
 
@@ -160,7 +186,7 @@ def build_server() -> EinfLanguageServer:
         if state is None:
             return None
         return build_hover(
-            axis_tokens=state.report.axis_tokens,
+            axis_tokens=state.semantic_report.axis_tokens,
             position=_text_position_from_lsp_position(params.position),
         )
 
@@ -175,7 +201,7 @@ def _coerce_initialize_options(
     if not isinstance(initialize_options, dict):
         return None
 
-    options: dict[str, str | list[str] | None] = {}
+    options: dict[str, str | int | float | list[str] | None] = {}
     parser_value = initialize_options.get("parser")
     if parser_value is None or isinstance(parser_value, str):
         options["parser"] = parser_value
@@ -186,6 +212,14 @@ def _coerce_initialize_options(
         options["checkers"] = string_values
     elif checker_value is None or isinstance(checker_value, str):
         options["checkers"] = checker_value
+
+    timeout_value = initialize_options.get("checkerTimeoutSeconds")
+    if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
+        options["checkerTimeoutSeconds"] = timeout_value
+
+    concurrency_value = initialize_options.get("checkerMaxConcurrency")
+    if type(concurrency_value) is int:
+        options["checkerMaxConcurrency"] = concurrency_value
     return options
 
 
@@ -216,7 +250,6 @@ async def _get_or_open_document_state(
                 uri=pending_change.uri,
                 source=pending_change.source,
                 version=pending_change.version,
-                include_checkers=False,
             ),
         )
 
@@ -234,7 +267,6 @@ async def _get_or_open_document_state(
             uri=text_document.uri,
             source=text_document.source,
             version=text_document.version,
-            include_checkers=False,
         ),
     )
 
@@ -251,19 +283,57 @@ async def _analyze_document_request(
             uri=analysis_request.uri,
             source=analysis_request.source,
             version=analysis_request.version,
-            include_checkers=analysis_request.include_checkers,
         )
 
     def commit(state: LspDocumentState) -> None:
         service.commit_document_state(state)
         _publish_document_state(ls, state)
-        if state.checker_fresh:
-            _log_checker_failures(ls, state.checker_failures)
 
     return await ls.einf_analysis_queue.analyze(
         request,
         analyze=analyze,
         commit=commit,
+    )
+
+
+async def _check_document_state(
+    ls: EinfLanguageServer,
+    *,
+    state: LspDocumentState,
+) -> CheckerResult | None:
+    if state.path is None:
+        return None
+
+    service = ls.einf_service
+
+    def commit(request: DocumentCheckerRequest, result: CheckerResult) -> bool:
+        current = service.get_document_state(uri=request.uri)
+        if (
+            current is None
+            or current.path != request.path
+            or current.version != request.version
+        ):
+            return False
+        updated = current.with_checker_result(result)
+        service.commit_document_state(updated)
+        _publish_document_state(ls, updated)
+        _log_checker_failures(ls, result.failures)
+        return True
+
+    return await ls.einf_checker_coordinator.check(
+        DocumentCheckerRequest(
+            uri=state.uri,
+            path=state.path,
+            version=state.version,
+        ),
+        commit=commit,
+    )
+
+
+def _build_checker_coordinator(config: LspConfig) -> LspCheckerCoordinator:
+    return LspCheckerCoordinator(
+        adapters=build_checker_adapters(config.checkers),
+        executor=CheckerExecutor(config.checker_execution_policy),
     )
 
 

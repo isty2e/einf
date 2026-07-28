@@ -2,6 +2,7 @@
 """Measure `einf-lsp` semantic-analysis and cached feature latency."""
 
 import argparse
+import asyncio
 import json
 import platform
 from collections.abc import Callable
@@ -11,7 +12,17 @@ from time import perf_counter
 from typing import TypeAlias
 
 from benchmarks.shared import version_or_missing
-from einf.analysis.lsp import LspConfig, LspService, encode_semantic_tokens
+from einf.analysis.checkers import (
+    CheckerExecutionPolicy,
+    CheckerExecutor,
+    CheckerResult,
+    build_checker_adapters,
+)
+from einf.analysis.lsp import LspService, encode_semantic_tokens
+from einf.analysis.lsp.checker_coordinator import (
+    DocumentCheckerRequest,
+    LspCheckerCoordinator,
+)
 from einf.analysis.model import TextPosition
 from einf.analysis.validator.model import ValidationFileReport
 
@@ -148,14 +159,14 @@ def _measure_case(
     path.write_text(case.source, encoding="utf-8")
     uri = path.as_uri()
 
-    open_service = LspService(LspConfig(parser=parser))
+    open_service = LspService(parser)
 
     def open_document() -> None:
         _ = open_service.open_document(uri=uri, source=case.source, version=None)
 
     open_summary = _measure(repeats, open_document)
 
-    change_service = LspService(LspConfig(parser=parser))
+    change_service = LspService(parser)
     state = change_service.open_document(uri=uri, source=case.source, version=0)
     change_version = 0
 
@@ -181,16 +192,13 @@ def _measure_case(
 
     checker_summary = None
     if checkers:
-        checker_service = LspService(LspConfig(parser=parser, checkers=checkers))
-
-        def save_with_checkers() -> None:
-            _ = checker_service.save_document(
-                uri=uri,
-                source=case.source,
-                version=None,
-            )
-
-        checker_summary = _measure(repeats, save_with_checkers)
+        checker_summary = _measure_save_with_checkers(
+            parser=parser,
+            checkers=checkers,
+            path=path,
+            source=case.source,
+            repeats=repeats,
+        )
 
     return LspCaseLatency(
         name=case.name,
@@ -205,6 +213,57 @@ def _measure_case(
         hover=hover_summary,
         save_with_checkers=checker_summary,
     )
+
+
+def _measure_save_with_checkers(
+    *,
+    parser: str,
+    checkers: tuple[str, ...],
+    path: Path,
+    source: str,
+    repeats: int,
+) -> TimingSummary:
+    async def scenario() -> TimingSummary:
+        service = LspService(parser)
+        coordinator = LspCheckerCoordinator(
+            adapters=build_checker_adapters(checkers),
+            executor=CheckerExecutor(CheckerExecutionPolicy()),
+        )
+        uri = path.as_uri()
+        samples: list[float] = []
+
+        def commit(
+            request: DocumentCheckerRequest,
+            result: CheckerResult,
+        ) -> bool:
+            current = service.get_document_state(uri=request.uri)
+            if current is None or current.version != request.version:
+                return False
+            service.commit_document_state(current.with_checker_result(result))
+            return True
+
+        try:
+            for version in range(repeats):
+                started = perf_counter()
+                state = service.change_document(
+                    uri=uri,
+                    source=source,
+                    version=version,
+                )
+                await coordinator.check(
+                    DocumentCheckerRequest(
+                        uri=uri,
+                        path=path,
+                        version=state.version,
+                    ),
+                    commit=commit,
+                )
+                samples.append((perf_counter() - started) * 1000.0)
+        finally:
+            await coordinator.close()
+        return _summarize(samples)
+
+    return asyncio.run(scenario())
 
 
 def _measure_optional_feature_latency(

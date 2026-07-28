@@ -1,11 +1,11 @@
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 from einf.analysis.parser import AstParserBackend
-from einf.analysis.validator.cli import main
+from einf.analysis.validator.cli import build_argument_parser, main
 from einf.analysis.validator.run import run_validation
 
 VALID_SOURCE = """from einf import ax, axes, rearrange
@@ -159,6 +159,23 @@ def test_validator_cli_main_prints_json_and_returns_exit_code(
     assert payload["files"][0]["diagnostics"] == []
     assert payload["files"][0]["checker_diagnostics"] == []
     assert payload["files"][0]["failures"] == []
+
+
+def test_validator_cli_parses_checker_execution_policy() -> None:
+    arguments = build_argument_parser().parse_args(
+        [
+            "sample.py",
+            "--checker",
+            "basedpyright",
+            "--checker-timeout-seconds",
+            "2.5",
+            "--checker-max-concurrency",
+            "3",
+        ]
+    )
+
+    assert arguments.checker_timeout_seconds == 2.5
+    assert arguments.checker_max_concurrency == 3
 
 
 def test_validator_cli_subprocess_serializes_mixed_diagnostics(

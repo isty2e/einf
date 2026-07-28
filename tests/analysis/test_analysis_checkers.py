@@ -1,10 +1,13 @@
+import asyncio
 import sys
 from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter
+from einf.analysis.checkers.execution import CheckerExecutionPolicy, CheckerExecutor
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerRequest,
     CheckerResult,
 )
 from einf.analysis.checkers.pyrefly import PyreflyAdapter
@@ -18,32 +21,25 @@ from einf.analysis.validator.run import run_validation
 
 class _StubCheckerAdapter(CheckerAdapter):
     name = "stub"
-    executable = "stub"
+    executable = sys.executable
 
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
-        raise AssertionError("build_command should not be called in stub adapter")
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
+        _ = request
+        return (sys.executable, "-c", "")
 
     def parse_output(
         self,
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
-        raise AssertionError("parse_output should not be called in stub adapter")
-
-    def run(
-        self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> CheckerResult:
-        target = targets[0]
+        _ = stdout, stderr
+        target = request.targets[0]
         return CheckerResult(
             diagnostics=(
                 CheckerDiagnostic(
@@ -128,12 +124,35 @@ def _write_checker_executable(
     path.chmod(0o755)
 
 
+def _request(project_root: Path) -> CheckerRequest:
+    return CheckerRequest(
+        targets=(project_root / "sample.py",),
+        project_root=project_root,
+    )
+
+
+def _run_adapter(
+    adapter: CheckerAdapter,
+    *,
+    target: Path,
+    project_root: Path,
+) -> CheckerResult:
+    async def execute() -> CheckerResult:
+        executor = CheckerExecutor(CheckerExecutionPolicy())
+        return await executor.run(
+            adapter,
+            CheckerRequest(targets=(target,), project_root=project_root),
+        )
+
+    return asyncio.run(execute())
+
+
 def test_pyright_adapter_parses_json_output() -> None:
     adapter = PyrightAdapter(name="basedpyright", executable="basedpyright")
     result = adapter.parse_output(
         stdout=PYRIGHT_OUTPUT,
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.failures == ()
@@ -154,7 +173,7 @@ def test_pyrefly_adapter_parses_json_output() -> None:
     result = adapter.parse_output(
         stdout=PYREFLY_OUTPUT,
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.failures == ()
@@ -174,7 +193,7 @@ def test_ty_adapter_parses_concise_output() -> None:
     result = adapter.parse_output(
         stdout=TY_OUTPUT,
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.failures == ()
@@ -194,7 +213,7 @@ def test_zuban_adapter_parses_text_output() -> None:
     result = adapter.parse_output(
         stdout=ZUBAN_OUTPUT,
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.failures == ()
@@ -213,7 +232,7 @@ def test_ty_adapter_rejects_unrecognized_output() -> None:
     result = TyAdapter().parse_output(
         stdout="new ty diagnostic format\n",
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.diagnostics == ()
@@ -228,7 +247,7 @@ def test_ty_adapter_accepts_success_summary() -> None:
     result = TyAdapter().parse_output(
         stdout="All checks passed!\n",
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.diagnostics == ()
@@ -239,7 +258,7 @@ def test_zuban_adapter_rejects_unrecognized_output() -> None:
     result = ZubanAdapter().parse_output(
         stdout="new zuban diagnostic format\n",
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.diagnostics == ()
@@ -257,7 +276,7 @@ def test_zuban_adapter_normalizes_note_diagnostics() -> None:
             "Success: no issues found in 1 source file\n"
         ),
         stderr="",
-        project_root=Path("/tmp"),
+        request=_request(Path("/tmp")),
     )
 
     assert result.failures == ()
@@ -280,8 +299,9 @@ def test_ty_adapter_rejects_nonzero_summary_without_diagnostics(
     target = tmp_path / "sample.py"
     target.write_text("value: int = 1\n", encoding="utf-8")
 
-    result = TyAdapter(executable=str(executable)).run(
-        targets=(target,),
+    result = _run_adapter(
+        TyAdapter(executable=str(executable)),
+        target=target,
         project_root=tmp_path,
     )
 
@@ -302,8 +322,9 @@ def test_zuban_adapter_rejects_nonzero_summary_without_diagnostics(
     target = tmp_path / "sample.py"
     target.write_text("value: int = 1\n", encoding="utf-8")
 
-    result = ZubanAdapter(executable=str(executable)).run(
-        targets=(target,),
+    result = _run_adapter(
+        ZubanAdapter(executable=str(executable)),
+        target=target,
         project_root=tmp_path,
     )
 
@@ -341,8 +362,9 @@ def test_run_validation_merges_checker_diagnostics_and_failures(tmp_path: Path) 
 def test_checker_adapter_reports_unavailable_executable(tmp_path: Path) -> None:
     adapter = PyrightAdapter(name="pyright", executable="definitely-missing-checker")
 
-    result = adapter.run(
-        targets=(tmp_path / "sample.py",),
+    result = _run_adapter(
+        adapter,
+        target=tmp_path / "sample.py",
         project_root=tmp_path,
     )
 

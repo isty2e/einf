@@ -1,23 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from einf.analysis.checkers import (
-    CheckerAdapter,
-    CheckerDiagnostic,
-    CheckerFailure,
-    build_checker_adapters,
-)
+from einf.analysis.checkers import CheckerResult
 from einf.analysis.parser import ParserBackend, ParserUnavailableError
 from einf.analysis.validator.model import ValidationFailure, ValidationFileReport
-from einf.analysis.validator.run import (
-    analyze_source,
-    build_parser_backend,
-    run_checker_adapters,
-)
-
-from .config import LspConfig
+from einf.analysis.validator.run import analyze_source, build_parser_backend
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,9 +16,30 @@ class LspDocumentState:
     uri: str
     path: Path | None
     version: int | None
-    report: ValidationFileReport
-    checker_failures: tuple[CheckerFailure, ...]
-    checker_fresh: bool
+    semantic_report: ValidationFileReport
+    checker_result: CheckerResult | None = None
+
+    def __post_init__(self) -> None:
+        if self.semantic_report.checker_diagnostics:
+            raise ValueError("semantic report cannot contain checker diagnostics")
+
+    @property
+    def report(self) -> ValidationFileReport:
+        """Project semantic and checker state into one LSP-facing report."""
+        if self.checker_result is None or self.path is None:
+            return self.semantic_report
+
+        checker_diagnostics = self.checker_result.diagnostics_for(self.path)
+        if not checker_diagnostics:
+            return self.semantic_report
+        return replace(
+            self.semantic_report,
+            checker_diagnostics=checker_diagnostics,
+        )
+
+    def with_checker_result(self, result: CheckerResult) -> "LspDocumentState":
+        """Return this document state with one fresh checker result."""
+        return replace(self, checker_result=result)
 
 
 class LspService:
@@ -40,12 +50,9 @@ class LspService:
     setups, not the preferred integration path.
     """
 
-    def __init__(self, config: LspConfig) -> None:
-        self._config = config
-        self._parser_backend: ParserBackend = build_parser_backend(config.parser)
-        self._checker_adapters: tuple[CheckerAdapter, ...] = build_checker_adapters(
-            config.checkers
-        )
+    def __init__(self, parser: str = "ast") -> None:
+        self._parser = parser
+        self._parser_backend: ParserBackend = build_parser_backend(parser)
         try:
             self._parser_backend.validate_available()
         except ParserUnavailableError as error:
@@ -55,9 +62,9 @@ class LspService:
         self._states: dict[str, LspDocumentState] = {}
 
     @property
-    def config(self) -> LspConfig:
-        """Return the immutable session configuration."""
-        return self._config
+    def parser(self) -> str:
+        """Return the configured semantic parser name."""
+        return self._parser
 
     def open_document(
         self,
@@ -71,7 +78,6 @@ class LspService:
             uri=uri,
             source=source,
             version=version,
-            include_checkers=False,
         )
         self.commit_document_state(state)
         return state
@@ -88,24 +94,6 @@ class LspService:
             uri=uri,
             source=source,
             version=version,
-            include_checkers=False,
-        )
-        self.commit_document_state(state)
-        return state
-
-    def save_document(
-        self,
-        *,
-        uri: str,
-        source: str,
-        version: int | None,
-    ) -> LspDocumentState:
-        """Reanalyze one saved document and refresh fallback checker state."""
-        state = self.analyze_document(
-            uri=uri,
-            source=source,
-            version=version,
-            include_checkers=True,
         )
         self.commit_document_state(state)
         return state
@@ -116,35 +104,15 @@ class LspService:
         uri: str,
         source: str,
         version: int | None,
-        include_checkers: bool,
     ) -> LspDocumentState:
         """Analyze one document without making the result session-visible."""
         path = path_from_uri(uri)
         report = self._analyze_document(path=path, source=source)
-        checker_failures: tuple[CheckerFailure, ...] = ()
-        checker_diagnostics: tuple[CheckerDiagnostic, ...] = ()
-        checker_fresh = False
-
-        if include_checkers and path is not None and self._checker_adapters:
-            checker_failures, checker_diagnostics = self._run_document_checkers(
-                path=path
-            )
-            checker_fresh = True
-
-        merged_report = ValidationFileReport(
-            path=report.path,
-            diagnostics=report.diagnostics,
-            checker_diagnostics=checker_diagnostics,
-            axis_tokens=report.axis_tokens,
-            failures=report.failures,
-        )
         return LspDocumentState(
             uri=uri,
             path=path,
             version=version,
-            report=merged_report,
-            checker_failures=checker_failures,
-            checker_fresh=checker_fresh,
+            semantic_report=report,
         )
 
     def commit_document_state(self, state: LspDocumentState) -> None:
@@ -185,18 +153,6 @@ class LspService:
             path=path,
             parser_backend=self._parser_backend,
         )
-
-    def _run_document_checkers(
-        self,
-        *,
-        path: Path,
-    ) -> tuple[tuple[CheckerFailure, ...], tuple[CheckerDiagnostic, ...]]:
-        checker_failures, checker_diagnostics_by_path = run_checker_adapters(
-            targets=(path,),
-            checker_adapters=self._checker_adapters,
-            project_root=path.parent,
-        )
-        return checker_failures, checker_diagnostics_by_path.get(path, ())
 
 
 def path_from_uri(uri: str) -> Path | None:
