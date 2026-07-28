@@ -169,7 +169,9 @@ class TensorOpExecutionStrategy:
     def from_contract(cls, contract: TensorOpContract, /) -> Self:
         """Build one execution strategy from one immutable contract."""
         shape_free_context: RuntimeSpecializationContext | None = None
-        if not contract.abstract_plan.requires_input_shapes(contract.input_arity):
+        if not contract.abstract_plan.specialization_depends_on_input_shapes(
+            contract.input_arity
+        ):
             shape_free_context = RuntimeSpecializationContext(
                 input_shapes=tuple(() for _ in range(contract.input_arity)),
                 backend_profile=None,
@@ -462,14 +464,17 @@ class TensorOp:
                 tensors,
             )
 
+        input_shapes = extract_input_shapes(op_name=contract.name, tensors=tensors)
+        contract.abstract_plan.validate_input_shapes(input_shapes)
         runtime_type_key = self._runtime_type_key(tensors)
         if execution_strategy.call_mode is _CallMode.SHAPE_FREE_SINGLE:
             runner = runner_cache.shape_free_single_runners.get(runtime_type_key)
             if runner is None:
-                _ = extract_input_shapes(op_name=contract.name, tensors=tensors)
                 shape_free_context = execution_strategy.shape_free_context
                 if shape_free_context is None:
-                    raise RuntimeError("shape-free single mode requires runtime context")
+                    raise RuntimeError(
+                        "shape-free single mode requires runtime context"
+                    )
                 runner = contract.abstract_plan.resolve_single_output_runner(
                     shape_free_context,
                     tensors,
@@ -479,7 +484,6 @@ class TensorOp:
 
         tuple_runner = runner_cache.shape_free_tuple_runners.get(runtime_type_key)
         if tuple_runner is None:
-            _ = extract_input_shapes(op_name=contract.name, tensors=tensors)
             shape_free_context = execution_strategy.shape_free_context
             if shape_free_context is None:
                 raise RuntimeError("shape-free tuple mode requires runtime context")

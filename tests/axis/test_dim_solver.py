@@ -5,7 +5,7 @@ import pytest
 from array_api_compat import numpy as array_api_numpy
 
 from einf import ErrorCode, Signature, ValidationError, ax, axes, packs, view
-from einf.solver import solve_dimensions
+from einf.solver import solve_dimensions, validate_dimensions
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +101,23 @@ def test_solver_reports_ambiguous_scalar_solution_without_enough_constraints() -
 
     assert error.value.code == "ambiguous_dims"
     assert error.value.external_code == "AMBIGUOUS_DIMS"
+
+
+def test_dimension_validation_accepts_ambiguous_feasible_assignment() -> None:
+    h, w = axes("h", "w")
+    sig = Signature(inputs=(ax[(h * w)],), outputs=(ax[1],))
+
+    validate_dimensions(sig, input_shapes=((6,),))
+
+
+def test_dimension_validation_rejects_inconsistent_assignment() -> None:
+    (i,) = axes("i")
+    sig = Signature(inputs=(ax[i, i],), outputs=(ax[i],))
+
+    with pytest.raises(ValidationError) as error:
+        validate_dimensions(sig, input_shapes=((3, 4),))
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
 
 def test_solver_resolves_repeated_axis_equality_when_dims_match() -> None:

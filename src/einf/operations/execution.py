@@ -22,12 +22,14 @@ def execute_tensor_op_call(
         expected_input_arity=expected_input_arity,
         input_arity=input_arity,
     )
-    if abstract_plan.requires_input_shapes(input_arity):
-        input_shapes = extract_input_shapes(op_name=op_name, tensors=tensors)
+    input_shapes = extract_input_shapes(op_name=op_name, tensors=tensors)
+    abstract_plan.validate_input_shapes(input_shapes)
+    if abstract_plan.specialization_depends_on_input_shapes(input_arity):
+        specialization_input_shapes = input_shapes
     else:
-        input_shapes = tuple(() for _ in range(input_arity))
+        specialization_input_shapes = tuple(() for _ in range(input_arity))
     context = RuntimeSpecializationContext(
-        input_shapes=input_shapes,
+        input_shapes=specialization_input_shapes,
         backend_profile=None,
     )
     if expected_output_arity == 1:

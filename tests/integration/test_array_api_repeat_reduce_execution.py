@@ -103,7 +103,7 @@ def test_repeat_uses_solver_fast_path_for_expression_lhs_with_sizes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (a,) = axes("a_solver_ws")
-    op = repeat(ax[(1 + a)], ax[(1 + a), a]).with_sizes(a=2)
+    op = repeat(ax[(1 + a)], ax[(1 + a), a]).with_sizes(a_solver_ws=2)
     called = {"value": False}
     original_solve_expand_program_from_input_shape = (
         expand_step_module.solve_expand_program_from_input_shape
