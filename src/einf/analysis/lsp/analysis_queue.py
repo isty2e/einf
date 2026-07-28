@@ -42,6 +42,10 @@ class LspAnalysisQueue:
         self._pending: OrderedDict[str, _PendingAnalysis] = OrderedDict()
         self._running: dict[tuple[str, int], _PendingAnalysis] = {}
         self._generations: dict[str, int] = {}
+        # Submissions own generations; completions expose only admitted work.
+        self._latest_submissions: dict[
+            str, asyncio.Future[LspDocumentState | None]
+        ] = {}
         self._latest_completions: dict[
             str, asyncio.Future[LspDocumentState | None]
         ] = {}
@@ -69,8 +73,8 @@ class LspAnalysisQueue:
 
                 generation = self._generations.get(request.uri, 0) + 1
                 self._generations[request.uri] = generation
-                self._supersede_latest(request.uri)
-                self._latest_completions[request.uri] = completion
+                self._supersede_latest_submission(request.uri)
+                self._latest_submissions[request.uri] = completion
                 self._condition.notify_all()
 
                 previous_pending = self._pending.pop(request.uri, None)
@@ -94,6 +98,7 @@ class LspAnalysisQueue:
                     completion=completion,
                 )
                 self._pending[request.uri] = item
+                self._latest_completions[request.uri] = completion
                 self._condition.notify()
 
             return await asyncio.shield(completion)
@@ -126,6 +131,9 @@ class LspAnalysisQueue:
             if pending is not None:
                 _resolve_stale(pending.completion)
 
+            submission = self._latest_submissions.pop(uri, None)
+            if submission is not None:
+                _resolve_stale(submission)
             completion = self._latest_completions.pop(uri, None)
             if completion is not None:
                 _resolve_stale(completion)
@@ -147,9 +155,12 @@ class LspAnalysisQueue:
                 _resolve_stale(item.completion)
             for item in self._running.values():
                 _resolve_stale(item.completion)
+            for submission in self._latest_submissions.values():
+                _resolve_stale(submission)
             for completion in self._latest_completions.values():
                 _resolve_stale(completion)
             self._pending.clear()
+            self._latest_submissions.clear()
             self._latest_completions.clear()
 
             worker_tasks = self._worker_tasks
@@ -275,19 +286,24 @@ class LspAnalysisQueue:
             pending = self._pending.pop(uri, None)
             if pending is not None and pending.generation == generation:
                 _resolve_stale(pending.completion)
+            submission = self._latest_submissions.pop(uri, None)
+            if submission is not None:
+                _resolve_stale(submission)
             completion = self._latest_completions.pop(uri, None)
             if completion is not None:
                 _resolve_stale(completion)
             self._condition.notify_all()
             self._discard_generation_if_idle(uri)
 
-    def _supersede_latest(self, uri: str) -> None:
-        completion = self._latest_completions.get(uri)
-        if completion is not None:
-            _resolve_stale(completion)
+    def _supersede_latest_submission(self, uri: str) -> None:
+        submission = self._latest_submissions.get(uri)
+        if submission is not None:
+            _resolve_stale(submission)
 
     def _complete_generation(self, item: _PendingAnalysis) -> None:
         uri = item.request.uri
+        if self._latest_submissions.get(uri) is item.completion:
+            self._latest_submissions.pop(uri, None)
         if self._latest_completions.get(uri) is item.completion:
             self._latest_completions.pop(uri, None)
         self._discard_generation_if_idle(uri)
@@ -297,6 +313,7 @@ class LspAnalysisQueue:
         if (
             uri not in self._pending
             and not has_running
+            and uri not in self._latest_submissions
             and uri not in self._latest_completions
         ):
             self._generations.pop(uri, None)

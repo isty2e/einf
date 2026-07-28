@@ -426,6 +426,60 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
     asyncio.run(scenario())
 
 
+def test_backpressured_request_is_not_published_before_admission() -> None:
+    async def scenario() -> None:
+        active_started = threading.Event()
+        release_active = threading.Event()
+        queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
+
+        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+            if request.uri.endswith("active.py"):
+                active_started.set()
+                assert release_active.wait(timeout=2)
+            return _state(request)
+
+        def submit(uri: str) -> asyncio.Task[LspDocumentState | None]:
+            return asyncio.create_task(
+                queue.analyze(
+                    DocumentAnalysisRequest(
+                        uri=uri,
+                        source="source",
+                        version=1,
+                    ),
+                    analyze=analyze,
+                    commit=lambda state: None,
+                )
+            )
+
+        active_task = submit("file:///active.py")
+        pending_task: asyncio.Task[LspDocumentState | None] | None = None
+        backpressured_task: asyncio.Task[LspDocumentState | None] | None = None
+        try:
+            await _wait_until_set(active_started)
+            pending_task = submit("file:///pending.py")
+            await asyncio.sleep(0)
+            backpressured_task = submit("file:///backpressured.py")
+            await asyncio.sleep(0)
+
+            latest = await asyncio.wait_for(
+                queue.wait_for_latest(uri="file:///backpressured.py"),
+                timeout=0.1,
+            )
+
+            assert latest is None
+            assert backpressured_task.done() is False
+        finally:
+            release_active.set()
+            await active_task
+            if pending_task is not None:
+                await pending_task
+            if backpressured_task is not None:
+                await backpressured_task
+            await queue.close()
+
+    asyncio.run(scenario())
+
+
 def test_backpressured_request_is_replaced_before_capacity_is_available() -> None:
     async def scenario() -> None:
         active_started = threading.Event()
