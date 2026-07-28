@@ -26,12 +26,12 @@ from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
     import einops
-except Exception:
+except ImportError:
     einops = None
 
 try:
     import einx
-except Exception:
+except ImportError:
     einx = None
 
 

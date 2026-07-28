@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 
 try:
     import torch
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     torch = None
 
 if TYPE_CHECKING:
@@ -15,8 +15,6 @@ else:
 
     class TorchTensor:
         """Runtime placeholder type when torch is unavailable."""
-
-        pass
 
 
 BackendName: TypeAlias = Literal["numpy", "torch"]

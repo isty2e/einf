@@ -35,7 +35,7 @@ def _build_runtime_steps(
     allow_native_matmul: bool,
     chain_mode: bool = False,
 ) -> tuple[EinsumRuntimeStep, AxisSliceRuntimeStep]:
-    b, h, w, d, j = axes("b", "h", "w", "d", "j")
+    b, h, w, _d, j = axes("b", "h", "w", "d", "j")
     einsum_step = EinsumRuntimeStep(
         name="einsum",
         input_arity=2,
@@ -246,7 +246,6 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
     ) -> None:
         del equation, tensors, namespace
         events.append("native")
-        return None
 
     monkeypatch.setattr(
         einsum_step_module,

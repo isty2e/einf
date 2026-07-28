@@ -119,7 +119,7 @@ def test_tensorop_underflow_arity_raises_validation_error() -> None:
     op = contract((ax[b], ax[c]), ax[b])
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(op, "__call__")(x)
+        _ = op.__call__(x)
 
     assert error.value.code == ErrorCode.OP_ARITY_MISMATCH.value
     assert error.value.external_code == "OP_ARITY_MISMATCH"
@@ -305,7 +305,7 @@ def test_tensorop_overflow_arity_raises_validation_error() -> None:
     op = view(ax[b], ax[b])
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(op, "__call__")(x, x)
+        _ = op.__call__(x, x)
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value
     assert error.value.external_code == "MULTI_INPUT_NOT_ALLOWED"
@@ -317,15 +317,15 @@ def test_tensorop_inflate_overflow_arity_raises_multi_input_not_allowed() -> Non
     op = repeat(ax[b], ax[b, r]).with_sizes(r=2)
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(op, "__call__")(x, x)
+        _ = op.__call__(x, x)
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value
     assert error.value.external_code == "MULTI_INPUT_NOT_ALLOWED"
 
 
 def test_rearrange_constructor_normalizes_empty_axis_list_spelling() -> None:
-    op_single = getattr(rearrange, "__call__")((), ())
-    op_tuple = getattr(rearrange, "__call__")(((),), ((),))
+    op_single = rearrange.__call__((), ())
+    op_tuple = rearrange.__call__(((),), ((),))
 
     assert op_single.lhs == ((),)
     assert op_single.rhs == ((),)
@@ -435,7 +435,7 @@ def test_tensorop_reduce_by_on_non_reducer_op_raises_attribute_error() -> None:
     op = view(ax[b], ax[b])
 
     with pytest.raises(AttributeError, match="does not support .reduce_by"):
-        _ = getattr(op, "reduce_by")("sum")
+        _ = op.reduce_by("sum")
 
 
 def test_tensorop_does_not_expose_with_executor() -> None:

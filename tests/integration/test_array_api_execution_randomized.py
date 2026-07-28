@@ -135,7 +135,7 @@ def test_inflate_reduce_randomized_scaling_identity() -> None:
         inflate_op = repeat(ax[b, d], ax[b, d, r]).with_sizes(r=r_size)
         tensor = rng.randint(-4, 5, size=(b_size, d_size), dtype=np.int64)
 
-        collapsed = getattr(reduce_op, "__call__")(inflate_op(tensor))
+        collapsed = reduce_op.__call__(inflate_op(tensor))
         expected = tensor * r_size
 
         np.testing.assert_array_equal(collapsed, expected)
@@ -155,9 +155,9 @@ def test_reduce_randomized_default_sum_matches_ordered_phase_sums() -> None:
         d_size = int(rng.randint(0, 4))
         tensor = rng.randint(-6, 7, size=(b_size, h_size, d_size), dtype=np.int64)
 
-        default_out = getattr(default_op, "__call__")(tensor)
-        phase_hd_out = getattr(phase_hd_op, "__call__")(tensor)
-        phase_dh_out = getattr(phase_dh_op, "__call__")(tensor)
+        default_out = default_op.__call__(tensor)
+        phase_hd_out = phase_hd_op.__call__(tensor)
+        phase_dh_out = phase_dh_op.__call__(tensor)
 
         np.testing.assert_array_equal(default_out, phase_hd_out)
         np.testing.assert_array_equal(default_out, phase_dh_out)

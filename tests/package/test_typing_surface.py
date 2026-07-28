@@ -123,7 +123,7 @@ def _run_basedpyright(
 def _collect_revealed_types(output: dict[str, object]) -> tuple[str, ...]:
     diagnostics = output.get("generalDiagnostics")
     if not isinstance(diagnostics, list):
-        raise AssertionError("basedpyright output is missing diagnostics list")
+        pytest.fail("basedpyright output is missing diagnostics list")
 
     revealed: list[str] = []
     for diagnostic in diagnostics:
@@ -138,7 +138,7 @@ def _collect_revealed_types(output: dict[str, object]) -> tuple[str, ...]:
 def _collect_error_messages(output: dict[str, object]) -> tuple[str, ...]:
     diagnostics = output.get("generalDiagnostics")
     if not isinstance(diagnostics, list):
-        raise AssertionError("basedpyright output is missing diagnostics list")
+        pytest.fail("basedpyright output is missing diagnostics list")
 
     errors: list[str] = []
     for diagnostic in diagnostics:

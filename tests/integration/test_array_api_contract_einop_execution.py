@@ -26,7 +26,7 @@ from einf.tensor_types import TensorLike
 
 try:
     import torch
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     torch = None
 
 
@@ -51,7 +51,7 @@ def _single_tensor_output(
     /,
 ) -> TensorLike:
     if isinstance(result, tuple):
-        raise AssertionError("expected one tensor output")
+        raise TypeError("expected one tensor output")
     return result
 
 

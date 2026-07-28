@@ -74,7 +74,7 @@ class _ExplodingOpsNamespace:
         return tensors[0]
 
     @staticmethod
-    def asarray(value: bool | int | float | complex) -> object:
+    def asarray(value: bool | complex) -> object:
         return np.asarray(value)
 
     @staticmethod

@@ -127,7 +127,7 @@ def test_view_requires_unary_lhs_signature_in_v01() -> None:
     (b,) = axes("b")
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(view, "__call__")((ax[b], ax[b]), ax[b])
+        _ = view.__call__((ax[b], ax[b]), ax[b])
 
     _assert_validation_error(
         error=error.value,

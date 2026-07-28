@@ -83,7 +83,7 @@ def test_typed_signature_dsl_builds_multi_output_signature() -> None:
 def test_typed_signature_dsl_rejects_invalid_output_tuple() -> None:
     b, c = axes("b", "c")
     with pytest.raises(TypeError):
-        _ = getattr(Signature, "__call__")(inputs=(ax[b, c],), outputs=(ax[b], 3))
+        _ = Signature.__call__(inputs=(ax[b, c],), outputs=(ax[b], 3))
 
 
 def test_typed_signature_dsl_supports_axis_pack_terms() -> None:

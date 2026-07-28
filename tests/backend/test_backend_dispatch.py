@@ -130,7 +130,7 @@ class NamespaceWithNonStringModuleArray:
         class Namespace:
             def __init__(self) -> None:
                 self.__name__ = "fake"
-                setattr(self, "__module__", 123)
+                self.__module__ = 123
 
         return Namespace()
 
@@ -146,7 +146,7 @@ class NamespaceWithNoneModuleArray:
             __name__ = "fake.none_module"
 
             def __init__(self) -> None:
-                setattr(self, "__module__", None)
+                self.__module__ = None
 
         return Namespace()
 

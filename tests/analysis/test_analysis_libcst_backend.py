@@ -63,10 +63,10 @@ def test_libcst_backend_rejects_incomplete_optional_dependency(
     import einf.analysis.parser.libcst_backend as libcst_backend_module
 
     libcst = ModuleType("libcst")
-    setattr(libcst, "ParserSyntaxError", SyntaxError)
+    libcst.ParserSyntaxError = SyntaxError
     libcst_metadata = ModuleType("libcst.metadata")
-    setattr(libcst_metadata, "MetadataWrapper", type("MetadataWrapper", (), {}))
-    setattr(libcst_metadata, "PositionProvider", type("PositionProvider", (), {}))
+    libcst_metadata.MetadataWrapper = type("MetadataWrapper", (), {})
+    libcst_metadata.PositionProvider = type("PositionProvider", (), {})
 
     def _fake_import_module(name: str):
         if name == "libcst":

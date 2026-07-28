@@ -24,8 +24,8 @@ class DummyTensor:
 def _classify_h_w_multiplication_target(target: int) -> str:
     """Brute-force classify h*w=target over small non-negative domain."""
     solutions: list[tuple[int, int]] = []
-    for h in range(0, 33):
-        for w in range(0, 33):
+    for h in range(33):
+        for w in range(33):
             if h * w == target:
                 solutions.append((h, w))
                 if len(solutions) >= 2:
@@ -38,8 +38,8 @@ def _classify_h_w_multiplication_target(target: int) -> str:
 def _classify_h_w_addition_target(target: int) -> str:
     """Brute-force classify h+w=target over small non-negative domain."""
     solutions: list[tuple[int, int]] = []
-    for h in range(0, 33):
-        for w in range(0, 33):
+    for h in range(33):
+        for w in range(33):
             if h + w == target:
                 solutions.append((h, w))
                 if len(solutions) >= 2:
@@ -573,7 +573,7 @@ def test_solver_matches_bruteforce_classification_for_h_times_w_small_targets() 
     h, w = axes("h", "w")
     sig = Signature(inputs=(ax[(h * w)],), outputs=(ax[h, w],))
 
-    for target in range(0, 13):
+    for target in range(13):
         expected = _classify_h_w_multiplication_target(target)
         observed, _result = _solve_or_classify(sig, input_shapes=((target,),))
         assert observed == expected
@@ -583,7 +583,7 @@ def test_solver_matches_bruteforce_classification_for_h_plus_w_small_targets() -
     h, w = axes("h", "w")
     sig = Signature(inputs=(ax[(h + w)],), outputs=(ax[h, w],))
 
-    for target in range(0, 13):
+    for target in range(13):
         expected = _classify_h_w_addition_target(target)
         observed, _result = _solve_or_classify(sig, input_shapes=((target,),))
         assert observed == expected

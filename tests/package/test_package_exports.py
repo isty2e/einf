@@ -1,5 +1,4 @@
-import einf.analysis as analysis
-import einf.backend as backend
+from einf import analysis, backend
 from einf.analysis.parser import AstParserBackend, ParserBackend
 from einf.backend.memory_alias import tensor_numel
 from einf.backend.namespace import derive_namespace_id

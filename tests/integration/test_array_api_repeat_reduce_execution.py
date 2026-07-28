@@ -3,15 +3,15 @@ import pytest
 from numpy.typing import NDArray
 
 from einf import ErrorCode, ValidationError, ax, axes, reduce, repeat
+from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
 from einf.steps.reduce import step as reduce_step_module
-from einf.reduction.schema import CanonicalReducer
 from einf.tensor_types import TensorLike
 
 try:
     import torch
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     torch = None
 
 
@@ -23,7 +23,7 @@ def test_inflate_rejects_multi_input_lhs_with_diagnostic_code() -> None:
     (b,) = axes("b")
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(repeat, "__call__")((ax[b], ax[b]), ax[b])
+        _ = repeat.__call__((ax[b], ax[b]), ax[b])
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value
 
@@ -278,7 +278,7 @@ def test_reduce_compile_invariant_rejects_mismatched_output_terms(
         *,
         lhs_terms: reduce_build_module.ScalarAxisTerms,
         reduce_axes: reduce_build_module.AxisTerms,
-            reducer: CanonicalReducer,
+        reducer: CanonicalReducer,
         pack_sizes: dict[str, tuple[int, ...]],
         axis_sizes: dict[str, int],
         tensor: TensorLike,
@@ -522,7 +522,7 @@ def test_reduce_uninspectable_function_typeerror_is_not_swallowed() -> None:
         _ = axis
         raise TypeError("missing 1 required positional argument: 'x'")
 
-    setattr(reducer, "__signature__", object())
+    reducer.__signature__ = object()
     op = reduce(ax[b, h, d], ax[b]).reduce_by(reducer)
     tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
 

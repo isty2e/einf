@@ -117,20 +117,20 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     """Load one overhead raw JSON report with schema checks."""
     loaded = json.loads(path.read_text())
     if not isinstance(loaded, dict):
-        raise ValueError(f"invalid overhead report at {path}: expected object root")
+        raise TypeError(f"invalid overhead report at {path}: expected object root")
 
     meta_raw = loaded.get("meta")
     scenarios_raw = loaded.get("scenarios")
     if not isinstance(meta_raw, dict):
-        raise ValueError(f"invalid overhead report at {path}: missing object meta")
+        raise TypeError(f"invalid overhead report at {path}: missing object meta")
     if not isinstance(scenarios_raw, list):
-        raise ValueError(f"invalid overhead report at {path}: missing list scenarios")
+        raise TypeError(f"invalid overhead report at {path}: missing list scenarios")
 
     stages_raw = meta_raw.get("stages")
     if not isinstance(stages_raw, list) or not all(
         isinstance(stage_name, str) for stage_name in stages_raw
     ):
-        raise ValueError(
+        raise TypeError(
             f"invalid overhead report at {path}: meta.stages must be list[str]"
         )
 
@@ -147,37 +147,37 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     scenarios: list[OverheadScenarioDict] = []
     for scenario_raw in scenarios_raw:
         if not isinstance(scenario_raw, dict):
-            raise ValueError(
+            raise TypeError(
                 f"invalid overhead report at {path}: each scenario must be object"
             )
         cases_raw = scenario_raw.get("cases")
         if not isinstance(cases_raw, list):
-            raise ValueError(
+            raise TypeError(
                 f"invalid overhead report at {path}: scenario.cases must be list"
             )
 
         cases: list[OverheadCaseDict] = []
         for case_raw in cases_raw:
             if not isinstance(case_raw, dict):
-                raise ValueError(
+                raise TypeError(
                     f"invalid overhead report at {path}: each case must be object"
                 )
             stage_ms_raw = case_raw.get("stage_ms_per_call")
             if not isinstance(stage_ms_raw, dict):
-                raise ValueError(
+                raise TypeError(
                     f"invalid overhead report at {path}: case.stage_ms_per_call must be object"
                 )
 
             stage_ms: dict[str, float] = {}
             for stage_name, stage_value in stage_ms_raw.items():
                 if not isinstance(stage_name, str):
-                    raise ValueError(
+                    raise TypeError(
                         f"invalid overhead report at {path}: stage name must be string"
                     )
                 if isinstance(stage_value, bool) or not isinstance(
                     stage_value, (int, float)
                 ):
-                    raise ValueError(
+                    raise TypeError(
                         f"invalid overhead report at {path}: stage value must be numeric"
                     )
                 stage_ms[stage_name] = float(stage_value)
@@ -380,11 +380,11 @@ __all__ = [
     "CaseMetric",
     "MetricName",
     "OverheadReportDict",
-    "RepeatedRegressionFinding",
     "RegressionFinding",
+    "RepeatedRegressionFinding",
     "collect_case_metrics",
-    "compare_overhead_reports",
     "compare_overhead_report_trials",
+    "compare_overhead_reports",
     "load_overhead_report",
     "render_findings",
     "render_trial_findings",

@@ -1,5 +1,7 @@
+from collections.abc import Callable
+from queue import Empty, Queue
 from threading import Event, Thread
-from typing import Callable, TypeVar, cast
+from typing import TypeVar, cast
 
 import numpy as np
 
@@ -93,16 +95,11 @@ def _replace_last_hit_after_state_read(
 ) -> ResultT | None:
     """Replace a cache's last hit after its current state has been read."""
     cache.arm_last_hit_read(*state_attributes)
-    results: list[ResultT | None] = []
-    failures: list[Exception] = []
-
-    def run_getter() -> None:
-        try:
-            results.append(getter())
-        except Exception as error:
-            failures.append(error)
-
-    getter_thread = Thread(target=run_getter, daemon=True)
+    results: Queue[ResultT | None] = Queue(maxsize=1)
+    getter_thread = Thread(
+        target=lambda: results.put(getter()),
+        daemon=True,
+    )
     getter_thread.start()
     if not cache.wait_for_last_hit_read():
         cache.allow_last_hit_read_to_continue()
@@ -113,15 +110,16 @@ def _replace_last_hit_after_state_read(
         replace_last_hit()
     finally:
         cache.allow_last_hit_read_to_continue()
-    getter_thread.join(_INTERLEAVING_TIMEOUT_SECONDS)
 
-    assert not getter_thread.is_alive()
-    if failures:
+    getter_thread.join(_INTERLEAVING_TIMEOUT_SECONDS)
+    if getter_thread.is_alive():
+        raise AssertionError("cache getter did not finish during forced interleaving")
+    try:
+        return results.get_nowait()
+    except Empty as error:
         raise AssertionError(
             "cache getter failed during forced interleaving"
-        ) from failures[0]
-    assert len(results) == 1
-    return results[0]
+        ) from error
 
 
 def test_selection_cache_publishes_last_hit_atomically() -> None:

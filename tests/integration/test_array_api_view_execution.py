@@ -7,7 +7,7 @@ from einf import ErrorCode, ValidationError, ax, axes, view
 
 try:
     import torch
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     torch = None
 
 
@@ -241,6 +241,6 @@ def test_view_rejects_multi_input_lhs_with_diagnostic_code() -> None:
     (b,) = axes("b")
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(view, "__call__")((ax[b], ax[b]), ax[b])
+        _ = view.__call__((ax[b], ax[b]), ax[b])
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value

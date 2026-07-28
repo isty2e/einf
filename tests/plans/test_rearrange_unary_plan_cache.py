@@ -23,7 +23,6 @@ def _disable_symbolic_unary_plan(
     rhs_terms: AxisTerms,
 ) -> None:
     _ = (lhs_terms, rhs_terms)
-    return None
 
 
 def _disable_symbolic_fastpath_build(

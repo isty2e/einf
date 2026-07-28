@@ -94,7 +94,7 @@ def test_tensorop_overflow_arity_uses_validation_error() -> None:
     x = DummyTensor(shape=(3,))
 
     with pytest.raises(ValidationError) as error:
-        _ = getattr(op, "__call__")(x, x)
+        _ = op.__call__(x, x)
 
     assert error.value.code == "multi_input_not_allowed"
     assert error.value.external_code == "MULTI_INPUT_NOT_ALLOWED"
