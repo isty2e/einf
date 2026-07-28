@@ -40,8 +40,8 @@ are walked recursively for `*.py`.
 
 1. `0` — no diagnostics, no parse/read failures, no checker invocation
    failures.
-2. `1` — any file contains semantic diagnostics, parse failures, or read
-   failures; or any configured checker failed to execute.
+2. `1` — any file contains semantic or checker diagnostics, parse failures,
+   or read failures; or any configured checker failed to execute.
 
 ## Output contract
 
