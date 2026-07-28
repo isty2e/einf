@@ -2,9 +2,10 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from einf.analysis.model import TextPosition, TextSpan
 from einf.analysis.source import SourceText
 
-from .base import ParsedModule, ParsedNode, TextEdit
+from .base import ParsedModule, ParsedNode, ParserSyntaxError, TextEdit
 
 
 def _value_from_ast_node(node: ast.AST) -> str | None:
@@ -24,15 +25,47 @@ def _value_from_ast_node(node: ast.AST) -> str | None:
     return None
 
 
+def _syntax_error_span(error: SyntaxError) -> TextSpan | None:
+    line = error.lineno
+    column = error.offset
+    if line is None or column is None or line < 1 or column < 1:
+        return None
+
+    start = TextPosition(line=line, column=column - 1)
+    end_line = error.end_lineno if error.end_lineno is not None else line
+    end_column = error.end_offset if error.end_offset is not None else column + 1
+    if end_line < 1 or end_column < 1:
+        return TextSpan(
+            start=start,
+            end=TextPosition(line=start.line, column=start.column + 1),
+        )
+
+    end = TextPosition(
+        line=end_line,
+        column=max(start.column + 1, end_column - 1),
+    )
+    return TextSpan(start=start, end=end)
+
+
 @dataclass(frozen=True, slots=True)
 class AstParserBackend:
     """Parser backend based on Python stdlib ast."""
 
     name: str = "ast"
 
+    def validate_available(self) -> None:
+        """Confirm that the standard-library parser is available."""
+
     def parse(self, source: str, path: Path) -> ParsedModule:
         """Parse source text and normalize into ParsedModule."""
-        module_node = ast.parse(source, filename=str(path))
+        try:
+            module_node = ast.parse(source, filename=str(path))
+        except SyntaxError as error:
+            raise ParserSyntaxError(
+                message=str(error),
+                span=_syntax_error_span(error),
+            ) from error
+
         source_text = SourceText(source)
         nodes: list[ParsedNode] = []
 

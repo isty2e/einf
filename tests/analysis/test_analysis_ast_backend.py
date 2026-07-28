@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from einf.analysis.model import TextPosition, TextSpan
-from einf.analysis.parser import AstParserBackend, ParsedModule, ParsedNode, TextEdit
+from einf.analysis.parser import (
+    AstParserBackend,
+    ParsedModule,
+    ParsedNode,
+    ParserSyntaxError,
+    TextEdit,
+)
 
 
 def test_ast_backend_parse_graph_invariants() -> None:
@@ -160,10 +166,11 @@ def test_ast_backend_root_module_span_is_none() -> None:
     assert module.root().span is None
 
 
-def test_ast_backend_parse_invalid_source_raises_syntax_error() -> None:
+def test_ast_backend_parse_invalid_source_raises_canonical_syntax_error() -> None:
     backend = AstParserBackend()
-    with pytest.raises(SyntaxError):
+    with pytest.raises(ParserSyntaxError) as error_info:
         backend.parse(source="x =\n", path=Path("sample.py"))
+    assert error_info.value.span is not None
 
 
 def test_ast_backend_reparse_preserves_graph_navigation_contract() -> None:
@@ -216,15 +223,16 @@ def test_ast_backend_negative_float_constant_keeps_positive_literal_node_value()
     assert "0.5" in constant_values
 
 
-def test_ast_backend_reparse_invalid_source_raises_syntax_error() -> None:
+def test_ast_backend_reparse_invalid_source_raises_canonical_syntax_error() -> None:
     backend = AstParserBackend()
     previous = backend.parse(source="x = 1\n", path=Path("sample.py"))
-    with pytest.raises(SyntaxError):
+    with pytest.raises(ParserSyntaxError) as error_info:
         backend.reparse(
             previous=previous,
             edits=(),
             new_source="x =\n",
         )
+    assert error_info.value.span is not None
 
 
 def test_ast_backend_constant_leaf_node_has_no_children() -> None:

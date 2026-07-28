@@ -5,12 +5,21 @@ import pytest
 
 from einf.analysis.engine import analyze_module
 from einf.analysis.model import TextPosition, TextSpan
-from einf.analysis.parser import AstParserBackend, ParsedModule, ParsedNode, TextEdit
+from einf.analysis.parser import (
+    AstParserBackend,
+    ParsedModule,
+    ParsedNode,
+    ParserSyntaxError,
+    TextEdit,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class _StubParserBackend:
     name: str = "stub"
+
+    def validate_available(self) -> None:
+        pass
 
     def parse(self, source: str, path: Path) -> ParsedModule:
         root_node = ParsedNode(
@@ -58,10 +67,13 @@ def test_analyze_module_propagates_parser_failure() -> None:
     class _FailingParserBackend:
         name: str = "failing"
 
+        def validate_available(self) -> None:
+            pass
+
         def parse(self, source: str, path: Path) -> ParsedModule:
             _ = source
             _ = path
-            raise SyntaxError("bad source")
+            raise ParserSyntaxError(message="bad source", span=None)
 
         def reparse(
             self,
@@ -74,7 +86,7 @@ def test_analyze_module_propagates_parser_failure() -> None:
             _ = new_source
             raise NotImplementedError
 
-    with pytest.raises(SyntaxError, match="bad source"):
+    with pytest.raises(ParserSyntaxError, match="bad source"):
         analyze_module(
             source="x =",
             path=Path("sample.py"),

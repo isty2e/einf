@@ -4,7 +4,7 @@ from typing import Literal
 from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
 from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextSpan
 
-ValidationFailureKind = Literal["read_error", "parse_error"]
+ValidationFailureKind = Literal["read_error", "parse_error", "parser_unavailable"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,8 +3,13 @@ from pathlib import Path
 
 from einf.analysis.checkers import CheckerAdapter, CheckerDiagnostic, CheckerFailure
 from einf.analysis.engine import analyze_module
-from einf.analysis.model import TextPosition, TextSpan
-from einf.analysis.parser import AstParserBackend, LibCstParserBackend, ParserBackend
+from einf.analysis.parser import (
+    AstParserBackend,
+    LibCstParserBackend,
+    ParserBackend,
+    ParserSyntaxError,
+    ParserUnavailableError,
+)
 from einf.analysis.validator.model import (
     ValidationFailure,
     ValidationFileReport,
@@ -36,10 +41,18 @@ def run_validation(
     resolved_targets = _resolve_python_targets(targets)
     project_root = _infer_project_root(resolved_targets)
     checker_targets = tuple(path for path in resolved_targets if path.is_file())
-    analyzer_reports = {
-        path: analyze_path(path=path, parser_backend=parser_backend)
-        for path in resolved_targets
-    }
+    try:
+        parser_backend.validate_available()
+    except ParserUnavailableError as error:
+        analyzer_reports = {
+            path: _parser_unavailable_report(path=path, error=error)
+            for path in resolved_targets
+        }
+    else:
+        analyzer_reports = {
+            path: analyze_path(path=path, parser_backend=parser_backend)
+            for path in resolved_targets
+        }
     checker_failures, checker_diagnostics_by_path = run_checker_adapters(
         targets=checker_targets,
         checker_adapters=checker_adapters,
@@ -203,8 +216,10 @@ def analyze_source(
     """Analyze one in-memory source string as a single file report."""
     try:
         output = analyze_module(source=source, path=path, parser_backend=parser_backend)
-    except SyntaxError as error:
+    except ParserSyntaxError as error:
         return _parse_error_report(path=path, error=error)
+    except ParserUnavailableError as error:
+        return _parser_unavailable_report(path=path, error=error)
 
     return ValidationFileReport(
         path=str(path),
@@ -218,7 +233,7 @@ def analyze_source(
 def _parse_error_report(
     *,
     path: Path,
-    error: SyntaxError,
+    error: ParserSyntaxError,
 ) -> ValidationFileReport:
     return ValidationFileReport(
         path=str(path),
@@ -228,33 +243,31 @@ def _parse_error_report(
         failures=(
             ValidationFailure(
                 kind="parse_error",
-                message=str(error),
-                span=_syntax_error_span(error),
+                message=error.message,
+                span=error.span,
             ),
         ),
     )
 
 
-def _syntax_error_span(error: SyntaxError) -> TextSpan | None:
-    line = error.lineno
-    column = error.offset
-    if line is None or column is None or line < 1 or column < 1:
-        return None
-
-    start = TextPosition(line=line, column=column - 1)
-    end_line = error.end_lineno if error.end_lineno is not None else line
-    end_column = error.end_offset if error.end_offset is not None else column + 1
-    if end_line < 1 or end_column < 1:
-        return TextSpan(
-            start=start,
-            end=TextPosition(line=start.line, column=start.column + 1),
-        )
-
-    end = TextPosition(
-        line=end_line,
-        column=max(start.column + 1, end_column - 1),
+def _parser_unavailable_report(
+    *,
+    path: Path,
+    error: ParserUnavailableError,
+) -> ValidationFileReport:
+    return ValidationFileReport(
+        path=str(path),
+        diagnostics=(),
+        checker_diagnostics=(),
+        axis_tokens=(),
+        failures=(
+            ValidationFailure(
+                kind="parser_unavailable",
+                message=error.message,
+                span=None,
+            ),
+        ),
     )
-    return TextSpan(start=start, end=end)
 
 
 __all__ = ["SCHEMA_VERSION", "build_parser_backend", "run_validation"]

@@ -9,8 +9,8 @@ from einf.analysis.checkers import (
     CheckerFailure,
     build_checker_adapters,
 )
-from einf.analysis.parser import ParserBackend
-from einf.analysis.validator.model import ValidationFileReport
+from einf.analysis.parser import ParserBackend, ParserUnavailableError
+from einf.analysis.validator.model import ValidationFailure, ValidationFileReport
 from einf.analysis.validator.run import (
     analyze_source,
     build_parser_backend,
@@ -46,6 +46,12 @@ class LspService:
         self._checker_adapters: tuple[CheckerAdapter, ...] = build_checker_adapters(
             config.checkers
         )
+        try:
+            self._parser_backend.validate_available()
+        except ParserUnavailableError as error:
+            self._parser_unavailable_error: ParserUnavailableError | None = error
+        else:
+            self._parser_unavailable_error = None
         self._states: dict[str, LspDocumentState] = {}
 
     @property
@@ -152,6 +158,17 @@ class LspService:
     ) -> ValidationFileReport:
         if path is None:
             return _empty_file_report(path="")
+        if self._parser_unavailable_error is not None:
+            return _empty_file_report(
+                path=str(path),
+                failures=(
+                    ValidationFailure(
+                        kind="parser_unavailable",
+                        message=self._parser_unavailable_error.message,
+                        span=None,
+                    ),
+                ),
+            )
         if not _source_may_contain_einf_calls(source):
             return _empty_file_report(path=str(path))
         return analyze_source(
@@ -190,13 +207,17 @@ def _source_may_contain_einf_calls(source: str) -> bool:
     return "einf" in source
 
 
-def _empty_file_report(*, path: str) -> ValidationFileReport:
+def _empty_file_report(
+    *,
+    path: str,
+    failures: tuple[ValidationFailure, ...] = (),
+) -> ValidationFileReport:
     return ValidationFileReport(
         path=path,
         diagnostics=(),
         checker_diagnostics=(),
         axis_tokens=(),
-        failures=(),
+        failures=failures,
     )
 
 

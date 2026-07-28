@@ -1,18 +1,30 @@
 import importlib
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from einf.analysis.engine import analyze_module
-from einf.analysis.parser import AstParserBackend, LibCstParserBackend
+from einf.analysis.lsp.config import LspConfig
+from einf.analysis.lsp.service import LspService
+from einf.analysis.model import TextPosition, TextSpan
+from einf.analysis.parser import (
+    AstParserBackend,
+    LibCstParserBackend,
+    ParserSyntaxError,
+    ParserUnavailableError,
+)
 from einf.analysis.validator.cli import main
 
 _INVALID_DSL_SOURCE = """from einf import ax, axes, reduce
 b, n, z = axes("b", "n", "z")
 reduce(ax[b, n], ax[b, z])
 """
+_MALFORMED_SOURCE = "from einf import rearrange\nrearrange(\n"
 
 
 def test_libcst_backend_requires_optional_dependency() -> None:
@@ -20,8 +32,8 @@ def test_libcst_backend_requires_optional_dependency() -> None:
         pytest.skip("libcst is installed in this environment")
 
     backend = LibCstParserBackend()
-    with pytest.raises(RuntimeError, match=r"einf\[analysis\]"):
-        backend.parse(source="x = 1", path=Path("sample.py"))
+    with pytest.raises(ParserUnavailableError, match=r"einf\[analysis\]"):
+        backend.validate_available()
 
 
 def test_libcst_backend_reports_runtime_error_when_import_fails(
@@ -42,8 +54,111 @@ def test_libcst_backend_reports_runtime_error_when_import_fails(
         _fake_import_module,
     )
     backend = LibCstParserBackend()
-    with pytest.raises(RuntimeError, match=r"einf\[analysis\]"):
-        backend.parse(source="x = 1\n", path=Path("sample.py"))
+    with pytest.raises(ParserUnavailableError, match=r"einf\[analysis\]"):
+        backend.validate_available()
+
+
+def test_libcst_backend_rejects_incomplete_optional_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import einf.analysis.parser.libcst_backend as libcst_backend_module
+
+    libcst = ModuleType("libcst")
+    setattr(libcst, "ParserSyntaxError", SyntaxError)
+    libcst_metadata = ModuleType("libcst.metadata")
+    setattr(libcst_metadata, "MetadataWrapper", type("MetadataWrapper", (), {}))
+    setattr(libcst_metadata, "PositionProvider", type("PositionProvider", (), {}))
+
+    def _fake_import_module(name: str):
+        if name == "libcst":
+            return libcst
+        if name == "libcst.metadata":
+            return libcst_metadata
+        return importlib.import_module(name)
+
+    monkeypatch.setattr(
+        libcst_backend_module.importlib,
+        "import_module",
+        _fake_import_module,
+    )
+
+    with pytest.raises(ParserUnavailableError, match="dependencies are incomplete"):
+        LibCstParserBackend().validate_available()
+
+
+def test_libcst_validator_cli_reports_unavailable_parser(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    script = """
+import importlib
+import sys
+
+real_import_module = importlib.import_module
+
+def blocked_import_module(name, package=None):
+    if name == "libcst" or name.startswith("libcst."):
+        raise ModuleNotFoundError(name)
+    return real_import_module(name, package)
+
+importlib.import_module = blocked_import_module
+
+from einf.analysis.validator.cli import main
+
+raise SystemExit(main(["--parser", "libcst", sys.argv[1]]))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert payload["files"][0]["failures"] == [
+        {
+            "kind": "parser_unavailable",
+            "message": (
+                "libcst parser backend requires libcst; "
+                "install einf[analysis] to enable it"
+            ),
+            "span": None,
+        }
+    ]
+
+
+def test_libcst_lsp_reports_unavailable_parser_before_source_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import einf.analysis.parser.libcst_backend as libcst_backend_module
+
+    import_module = importlib.import_module
+
+    def _fake_import_module(name: str):
+        if name in {"libcst", "libcst.metadata"}:
+            raise ModuleNotFoundError(name)
+        return import_module(name)
+
+    monkeypatch.setattr(
+        libcst_backend_module.importlib,
+        "import_module",
+        _fake_import_module,
+    )
+
+    state = LspService(LspConfig(parser="libcst")).open_document(
+        uri=(tmp_path / "sample.py").as_uri(),
+        source="x = 1\n",
+        version=1,
+    )
+
+    assert tuple(failure.kind for failure in state.report.failures) == (
+        "parser_unavailable",
+    )
 
 
 def test_libcst_backend_parse_graph_invariants_when_installed() -> None:
@@ -107,6 +222,58 @@ def test_libcst_backend_matches_ast_diagnostics_and_tokens_when_installed() -> N
 
     assert libcst_output.diagnostics == ast_output.diagnostics
     assert libcst_output.axis_tokens == ast_output.axis_tokens
+
+
+def test_libcst_backend_normalizes_syntax_error_when_installed() -> None:
+    if importlib.util.find_spec("libcst") is None:
+        pytest.skip("libcst is not installed in this environment")
+
+    with pytest.raises(ParserSyntaxError) as error_info:
+        LibCstParserBackend().parse(
+            source=_MALFORMED_SOURCE,
+            path=Path("sample.py"),
+        )
+
+    assert error_info.value.span == TextSpan(
+        start=TextPosition(line=2, column=0),
+        end=TextPosition(line=2, column=1),
+    )
+
+
+def test_libcst_validator_cli_reports_malformed_source_when_installed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    if importlib.util.find_spec("libcst") is None:
+        pytest.skip("libcst is not installed in this environment")
+
+    target = tmp_path / "malformed.py"
+    target.write_text(_MALFORMED_SOURCE, encoding="utf-8")
+
+    exit_code = main(["--parser", "libcst", str(target)])
+    payload = json.loads(capsys.readouterr().out)
+    failure = payload["files"][0]["failures"][0]
+
+    assert exit_code == 1
+    assert failure["kind"] == "parse_error"
+    assert failure["span"]["start"] == {"line": 2, "column": 0}
+
+
+def test_libcst_lsp_reports_malformed_source_when_installed(tmp_path: Path) -> None:
+    if importlib.util.find_spec("libcst") is None:
+        pytest.skip("libcst is not installed in this environment")
+
+    state = LspService(LspConfig(parser="libcst")).open_document(
+        uri=(tmp_path / "malformed.py").as_uri(),
+        source=_MALFORMED_SOURCE,
+        version=1,
+    )
+
+    assert tuple(failure.kind for failure in state.report.failures) == ("parse_error",)
+    assert state.report.failures[0].span == TextSpan(
+        start=TextPosition(line=2, column=0),
+        end=TextPosition(line=2, column=1),
+    )
 
 
 def test_libcst_validator_cli_reports_invalid_dsl_when_installed(
