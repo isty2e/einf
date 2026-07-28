@@ -5,7 +5,12 @@ from threading import RLock
 from typing import Generic, TypeVar
 
 from ..axis import AxisSide, AxisTerms
-from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
+from ..reduction.schema import (
+    CanonicalReducer,
+    ReducerCallable,
+    ReducerName,
+    ReducerPlan,
+)
 from .kind import OperationKind
 
 KeyT = TypeVar("KeyT", bound=Hashable)
@@ -38,7 +43,7 @@ class ReducerCallableToken:
         return self.reducer is other.reducer
 
 
-ReducerToken = str | ReducerCallableToken
+ReducerToken = ReducerName | ReducerCallableToken
 ReducerPlanKey = tuple[tuple[AxisTerms, ReducerToken], ...]
 
 
@@ -69,9 +74,9 @@ def reducer_plan_to_cache_key(
     return tuple(phases)
 
 
-def _reducer_to_cache_token(reducer: Reducer, /) -> ReducerToken:
+def _reducer_to_cache_token(reducer: CanonicalReducer, /) -> ReducerToken:
     """Build stable configured-cache token for one reducer."""
-    if isinstance(reducer, str):
+    if isinstance(reducer, ReducerName):
         return reducer
     return ReducerCallableToken(reducer)
 

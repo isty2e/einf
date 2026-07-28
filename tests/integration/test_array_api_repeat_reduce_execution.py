@@ -6,6 +6,7 @@ from einf import ErrorCode, ValidationError, ax, axes, reduce, repeat
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
 from einf.steps.reduce import step as reduce_step_module
+from einf.reduction.schema import CanonicalReducer
 from einf.tensor_types import TensorLike
 
 try:
@@ -277,7 +278,7 @@ def test_reduce_compile_invariant_rejects_mismatched_output_terms(
         *,
         lhs_terms: reduce_build_module.ScalarAxisTerms,
         reduce_axes: reduce_build_module.AxisTerms,
-        reducer: reduce_build_module.Reducer,
+            reducer: CanonicalReducer,
         pack_sizes: dict[str, tuple[int, ...]],
         axis_sizes: dict[str, int],
         tensor: TensorLike,

@@ -6,6 +6,7 @@ from array_api_compat import numpy as array_api_numpy
 
 from einf import (
     ErrorCode,
+    ReducerName,
     ValidationError,
     ax,
     axes,
@@ -198,6 +199,33 @@ def test_tensorop_reduce_supports_ordered_phase_reducers() -> None:
         ReducerPhase(axes=(h,), reducer="sum"),
         ReducerPhase(axes=(d,), reducer="prod"),
     )
+
+
+def test_tensorop_reduce_normalizes_string_reducer_at_configuration() -> None:
+    b, h = axes("b", "h")
+
+    configured = reduce(ax[b, h], ax[b]).reduce_by("sum")
+
+    assert configured.reducer_plan is not None
+    assert configured.reducer_plan[0].reducer is ReducerName.SUM
+
+
+def test_tensorop_reduce_rejects_unknown_string_reducer_at_configuration() -> None:
+    b, h = axes("b", "h")
+
+    with pytest.raises(ValidationError) as error:
+        reduce(ax[b, h], ax[b]).reduce_by("median")
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+
+
+def test_tensorop_reduce_rejects_unknown_phased_reducer_at_configuration() -> None:
+    b, h = axes("b", "h")
+
+    with pytest.raises(ValidationError) as error:
+        reduce(ax[b, h], ax[b]).reduce_by((ax[h], "median"))
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
 
 def test_tensorop_reduce_rejects_dict_reducer_plan() -> None:
