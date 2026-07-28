@@ -1,0 +1,363 @@
+from collections.abc import Callable
+
+import numpy as np
+import pytest
+
+import einf.steps.einsum.step as einsum_step_module
+from einf import ErrorCode, ValidationError, ax, axes
+from einf.axis import AxisSide
+from einf.backend import BACKEND_RESOLVER
+from einf.backend.namespace import ArrayNamespaceLike
+from einf.plans.fusion import discover_step_fusion
+from einf.steps.axis_slice import (
+    AxisSliceRuntimeStep,
+    build_axis_slice_symbolic_program,
+)
+from einf.steps.einsum import EinsumRuntimeProgram, EinsumRuntimeStep
+from einf.steps.einsum.step import _EinsumEquationExecutor
+from einf.tensor_types import TensorLike
+
+_EINSUM_EQUATION = "bnd,dj->bnj"
+_FALLBACK_TIERS = ("cached", "matmul", "module", "namespace", "native", "opt")
+_EXPECTED_FALLBACK_EVENTS = {
+    "cached": ("cached",),
+    "matmul": ("matmul",),
+    "module": ("cached", "module"),
+    "namespace": ("cached", "module", "namespace"),
+    "native": ("cached", "module", "namespace", "native"),
+    "opt": ("cached", "module", "namespace", "native", "opt"),
+}
+
+
+def _build_runtime_steps(
+    *,
+    executor: _EinsumEquationExecutor,
+    allow_native_matmul: bool,
+    chain_mode: bool = False,
+) -> tuple[EinsumRuntimeStep, AxisSliceRuntimeStep]:
+    b, h, w, d, j = axes("b", "h", "w", "d", "j")
+    einsum_step = EinsumRuntimeStep(
+        name="einsum",
+        input_arity=2,
+        output_arity=1,
+        program=EinsumRuntimeProgram(
+            equations=(_EINSUM_EQUATION,),
+            chain_order=(1,) if chain_mode else (),
+            carrier_index=0 if chain_mode else None,
+            allow_native_matmul=allow_native_matmul,
+        ),
+        backend_profile=executor.profile,
+        executor=executor,
+    )
+    slice_program = build_axis_slice_symbolic_program(
+        AxisSide.from_spec(ax[b, (h + w), j], side_name="lhs"),
+        AxisSide.from_spec((ax[b, h, j], ax[b, w, j]), side_name="rhs"),
+    )
+    slice_step = AxisSliceRuntimeStep(
+        name="axis_slice",
+        input_arity=1,
+        output_arity=2,
+        program=slice_program,
+        explicit_sizes={"h": 2, "w": 1},
+        precomputed_split_sizes=(2, 1),
+    )
+    return einsum_step, slice_step
+
+
+def _run_unfused(
+    *,
+    einsum_step: EinsumRuntimeStep,
+    slice_step: AxisSliceRuntimeStep,
+    tensors: tuple[TensorLike, TensorLike],
+) -> tuple[TensorLike, ...]:
+    intermediate = einsum_step.run_binary(*tensors)
+    return slice_step.run((intermediate,))
+
+
+def _run_fused(
+    *,
+    einsum_step: EinsumRuntimeStep,
+    slice_step: AxisSliceRuntimeStep,
+    tensors: tuple[TensorLike, TensorLike],
+) -> tuple[TensorLike, ...]:
+    fusion = discover_step_fusion((einsum_step, slice_step))
+    assert fusion is not None
+    assert fusion.name == "einsum_axis_slice"
+    return fusion.tuple_runner(tensors)
+
+
+@pytest.mark.parametrize("successful_tier", _FALLBACK_TIERS)
+def test_einsum_axis_slice_fusion_preserves_fallback_order(
+    successful_tier: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
+    right = np.arange(5 * 4).reshape(5, 4)
+    expected = np.einsum(_EINSUM_EQUATION, left, right)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    events: list[str] = []
+
+    def tier_result(tier: str) -> np.ndarray:
+        events.append(tier)
+        if tier != successful_tier:
+            raise RuntimeError(f"{tier} unavailable")
+        return expected
+
+    def cached_contract_expression(
+        _equation: str,
+        _operand_shapes: tuple[tuple[int, ...], ...],
+    ) -> Callable[..., TensorLike]:
+        if successful_tier != "cached":
+            events.append("cached")
+            raise RuntimeError("cached unavailable")
+
+        def run_cached(*_operands: TensorLike) -> TensorLike:
+            return tier_result("cached")
+
+        return run_cached
+
+    def module_einsum(
+        _equation: str,
+        *_operands: TensorLike,
+    ) -> TensorLike:
+        return tier_result("module")
+
+    def namespace_einsum(
+        _equation: str,
+        *_operands: TensorLike,
+    ) -> TensorLike:
+        return tier_result("namespace")
+
+    def module_matmul(_lhs: TensorLike, _rhs: TensorLike) -> TensorLike:
+        return tier_result("matmul")
+
+    def native_contract(
+        *,
+        equation: str,
+        tensors: tuple[TensorLike, ...],
+        namespace: ArrayNamespaceLike,
+    ) -> TensorLike | None:
+        del equation, tensors, namespace
+        events.append("native")
+        if successful_tier == "native":
+            return expected
+        return None
+
+    def opt_contract(
+        _equation: str,
+        *_operands: TensorLike,
+        optimize: str,
+    ) -> TensorLike:
+        assert optimize == "auto"
+        return tier_result("opt")
+
+    monkeypatch.setattr(
+        einsum_step_module,
+        "_cached_contract_expression",
+        cached_contract_expression,
+    )
+    monkeypatch.setattr(
+        einsum_step_module,
+        "try_native_contract_einsum",
+        native_contract,
+    )
+    monkeypatch.setattr(einsum_step_module.opt_einsum, "contract", opt_contract)
+
+    executor = _EinsumEquationExecutor(
+        profile=profile,
+        native_namespace_einsum=namespace_einsum,
+        native_module_einsum=module_einsum,
+        native_module_matmul=module_matmul,
+    )
+    steps = _build_runtime_steps(
+        executor=executor,
+        allow_native_matmul=successful_tier == "matmul",
+    )
+    tensors = (left, right)
+
+    unfused_outputs = _run_unfused(
+        einsum_step=steps[0],
+        slice_step=steps[1],
+        tensors=tensors,
+    )
+    unfused_events = tuple(events)
+    assert unfused_events == _EXPECTED_FALLBACK_EVENTS[successful_tier]
+    events.clear()
+    fused_outputs = _run_fused(
+        einsum_step=steps[0],
+        slice_step=steps[1],
+        tensors=tensors,
+    )
+
+    assert tuple(events) == unfused_events
+    for fused_output, unfused_output in zip(
+        fused_outputs,
+        unfused_outputs,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(fused_output, unfused_output)
+
+
+@pytest.mark.parametrize("chain_mode", [False, True])
+def test_einsum_axis_slice_fusion_preserves_error_mapping(
+    chain_mode: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
+    right = np.arange(5 * 4).reshape(5, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    events: list[str] = []
+
+    def fail_cached_expression(
+        _equation: str,
+        _operand_shapes: tuple[tuple[int, ...], ...],
+    ) -> Callable[..., TensorLike]:
+        events.append("cached")
+        raise RuntimeError("backend failure")
+
+    def fail_module_einsum(
+        _equation: str,
+        *_operands: TensorLike,
+    ) -> TensorLike:
+        events.append("module")
+        raise RuntimeError("backend failure")
+
+    def fail_namespace_einsum(
+        _equation: str,
+        *_operands: TensorLike,
+    ) -> TensorLike:
+        events.append("namespace")
+        raise RuntimeError("backend failure")
+
+    def fail_opt_contract(
+        _equation: str,
+        *_operands: TensorLike,
+        optimize: str,
+    ) -> TensorLike:
+        assert optimize == "auto"
+        events.append("opt")
+        raise RuntimeError("backend failure")
+
+    def no_native_contract(
+        *,
+        equation: str,
+        tensors: tuple[TensorLike, ...],
+        namespace: ArrayNamespaceLike,
+    ) -> None:
+        del equation, tensors, namespace
+        events.append("native")
+        return None
+
+    monkeypatch.setattr(
+        einsum_step_module,
+        "_cached_contract_expression",
+        fail_cached_expression,
+    )
+    monkeypatch.setattr(
+        einsum_step_module,
+        "try_native_contract_einsum",
+        no_native_contract,
+    )
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        fail_opt_contract,
+    )
+
+    executor = _EinsumEquationExecutor(
+        profile=profile,
+        native_namespace_einsum=fail_namespace_einsum,
+        native_module_einsum=fail_module_einsum,
+        native_module_matmul=None,
+    )
+    steps = _build_runtime_steps(
+        executor=executor,
+        allow_native_matmul=False,
+        chain_mode=chain_mode,
+    )
+    tensors = (left, right)
+
+    with pytest.raises(ValidationError) as unfused_error:
+        _run_unfused(
+            einsum_step=steps[0],
+            slice_step=steps[1],
+            tensors=tensors,
+        )
+    unfused_events = tuple(events)
+    assert unfused_events == ("cached", "module", "namespace", "native", "opt")
+    events.clear()
+    with pytest.raises(ValidationError) as fused_error:
+        _run_fused(
+            einsum_step=steps[0],
+            slice_step=steps[1],
+            tensors=tensors,
+        )
+
+    assert tuple(events) == unfused_events
+    assert fused_error.value.code == ErrorCode.INCONSISTENT_DIMS
+    assert fused_error.value.message == unfused_error.value.message
+    assert fused_error.value.help == unfused_error.value.help
+    assert fused_error.value.related == unfused_error.value.related
+    assert fused_error.value.data == unfused_error.value.data
+
+
+def test_einsum_axis_slice_fusion_preserves_slice_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
+    right = np.arange(5 * 4).reshape(5, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    invalid_intermediate = np.zeros((2, 2, 4))
+
+    def cached_contract_expression(
+        _equation: str,
+        _operand_shapes: tuple[tuple[int, ...], ...],
+    ) -> Callable[..., TensorLike]:
+        def run_cached(*_operands: TensorLike) -> TensorLike:
+            return invalid_intermediate
+
+        return run_cached
+
+    monkeypatch.setattr(
+        einsum_step_module,
+        "_cached_contract_expression",
+        cached_contract_expression,
+    )
+    executor = _EinsumEquationExecutor(profile=profile)
+    steps = _build_runtime_steps(
+        executor=executor,
+        allow_native_matmul=False,
+    )
+    tensors = (left, right)
+
+    with pytest.raises(ValidationError) as unfused_error:
+        _run_unfused(
+            einsum_step=steps[0],
+            slice_step=steps[1],
+            tensors=tensors,
+        )
+    with pytest.raises(ValidationError) as fused_error:
+        _run_fused(
+            einsum_step=steps[0],
+            slice_step=steps[1],
+            tensors=tensors,
+        )
+
+    assert fused_error.value.code == ErrorCode.INCONSISTENT_DIMS
+    assert fused_error.value.message == unfused_error.value.message
+    assert fused_error.value.help == unfused_error.value.help
+    assert fused_error.value.related == unfused_error.value.related
+    assert fused_error.value.data == unfused_error.value.data
+
+
+def test_single_einsum_step_is_not_registered_as_pass_through_fusion() -> None:
+    left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
+    right = np.arange(5 * 4).reshape(5, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    executor = _EinsumEquationExecutor(profile=profile)
+    einsum_step, _ = _build_runtime_steps(
+        executor=executor,
+        allow_native_matmul=False,
+    )
+
+    assert discover_step_fusion((einsum_step,)) is None
