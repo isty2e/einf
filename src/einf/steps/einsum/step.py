@@ -493,11 +493,8 @@ class _EinsumEquationExecutor:
         operand_shapes = _operand_shapes_key(operands)
         if operand_shapes is not None:
             should_use_cached_expression = False
-            if (
-                len(operands) > 2
-                and not chain_mode
-                or len(operands) == 2
-                and not allow_native_matmul
+            if (len(operands) > 2 and not chain_mode) or (
+                len(operands) == 2 and not allow_native_matmul
             ):
                 should_use_cached_expression = True
             if should_use_cached_expression:

@@ -2,6 +2,11 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
 from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, CheckerExecutionPolicy
 from einf.analysis.validator.run import SUPPORTED_PARSER_NAMES
 
@@ -29,7 +34,7 @@ class LspConfig:
     def from_initialize_options(
         cls,
         initialize_options: InitializeOptions | None,
-    ) -> "LspConfig":
+    ) -> Self:
         """Build one canonical sidecar config from LSP initialize options."""
         if initialize_options is None:
             return cls()
