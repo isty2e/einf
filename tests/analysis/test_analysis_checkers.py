@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter
@@ -114,6 +115,19 @@ ZUBAN_OUTPUT = (
 )
 
 
+def _write_checker_executable(
+    *,
+    path: Path,
+    stdout: str,
+    exit_code: int,
+) -> None:
+    path.write_text(
+        f"#!{sys.executable}\nprint({stdout!r})\nraise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def test_pyright_adapter_parses_json_output() -> None:
     adapter = PyrightAdapter(name="basedpyright", executable="basedpyright")
     result = adapter.parse_output(
@@ -193,6 +207,109 @@ def test_zuban_adapter_parses_text_output() -> None:
         start=TextPosition(line=3, column=16),
         end=TextPosition(line=3, column=17),
     )
+
+
+def test_ty_adapter_rejects_unrecognized_output() -> None:
+    result = TyAdapter().parse_output(
+        stdout="new ty diagnostic format\n",
+        stderr="",
+        project_root=Path("/tmp"),
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].kind == "output_parse_error"
+    assert result.failures[0].message == (
+        "ty output contained an unrecognized line: new ty diagnostic format"
+    )
+
+
+def test_ty_adapter_accepts_success_summary() -> None:
+    result = TyAdapter().parse_output(
+        stdout="All checks passed!\n",
+        stderr="",
+        project_root=Path("/tmp"),
+    )
+
+    assert result.diagnostics == ()
+    assert result.failures == ()
+
+
+def test_zuban_adapter_rejects_unrecognized_output() -> None:
+    result = ZubanAdapter().parse_output(
+        stdout="new zuban diagnostic format\n",
+        stderr="",
+        project_root=Path("/tmp"),
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].kind == "output_parse_error"
+    assert result.failures[0].message == (
+        "zuban output contained an unrecognized line: new zuban diagnostic format"
+    )
+
+
+def test_zuban_adapter_normalizes_note_diagnostics() -> None:
+    result = ZubanAdapter().parse_output(
+        stdout=(
+            'sample.py:1:13:1:14: note: Revealed type is "Literal[1]?"\n'
+            "Success: no issues found in 1 source file\n"
+        ),
+        stderr="",
+        project_root=Path("/tmp"),
+    )
+
+    assert result.failures == ()
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert diagnostic.code is None
+    assert diagnostic.severity == "info"
+    assert diagnostic.message == 'Revealed type is "Literal[1]?"'
+
+
+def test_ty_adapter_rejects_nonzero_summary_without_diagnostics(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "ty"
+    _write_checker_executable(
+        path=executable,
+        stdout="Found 1 diagnostic",
+        exit_code=1,
+    )
+    target = tmp_path / "sample.py"
+    target.write_text("value: int = 1\n", encoding="utf-8")
+
+    result = TyAdapter(executable=str(executable)).run(
+        targets=(target,),
+        project_root=tmp_path,
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].kind == "output_parse_error"
+
+
+def test_zuban_adapter_rejects_nonzero_summary_without_diagnostics(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "zuban"
+    _write_checker_executable(
+        path=executable,
+        stdout="Found 1 error in 1 file (checked 1 source file)",
+        exit_code=1,
+    )
+    target = tmp_path / "sample.py"
+    target.write_text("value: int = 1\n", encoding="utf-8")
+
+    result = ZubanAdapter(executable=str(executable)).run(
+        targets=(target,),
+        project_root=tmp_path,
+    )
+
+    assert result.diagnostics == ()
+    assert len(result.failures) == 1
+    assert result.failures[0].kind == "output_parse_error"
 
 
 def test_run_validation_merges_checker_diagnostics_and_failures(tmp_path: Path) -> None:

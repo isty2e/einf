@@ -44,6 +44,20 @@ class CheckerAdapter(ABC):
             stderr=process.stderr,
             project_root=project_root,
         )
+        if process.returncode == 1 and not result.diagnostics and not result.failures:
+            return CheckerResult(
+                diagnostics=(),
+                failures=(
+                    CheckerFailure(
+                        tool=self.name,
+                        kind="output_parse_error",
+                        message=(
+                            f"{self.name} exited with code 1 without "
+                            "recognized diagnostics"
+                        ),
+                    ),
+                ),
+            )
         if process.returncode not in (0, 1) and not result.failures:
             message = process.stderr.strip() or process.stdout.strip()
             return CheckerResult(
