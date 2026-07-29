@@ -21,27 +21,10 @@ jobs:
         run: python -m pip install -e ".[dev,analysis,docs]"
       - name: Lint
         run: ruff check --extend-select I,UP src tests benchmarks
-      - name: Typecheck source surfaces
-        run: >-
-          basedpyright
-          --pythonpath "$(which python)"
-          src/einf/operations/api.pyi
-          src/einf/analysis/checkers
-          src/einf/analysis/lsp/checker_coordinator.py
-          src/einf/analysis/lsp/config.py
-          src/einf/analysis/lsp/service.py
-          src/einf/analysis/lsp/change_debounce.py
-          src/einf/analysis/validator/cli.py
-          src/einf/analysis/validator/run.py
-          benchmarks/profile/lsp_latency.py
-          tests/analysis/test_analysis_checkers.py
-          tests/analysis/test_analysis_lsp_checker_coordinator.py
-          tests/analysis/test_analysis_lsp.py
-          tests/analysis/test_analysis_lsp_debounce.py
-          tests/analysis/test_conformance_analysis.py
-          tests/analysis/test_analysis_validator.py
-          tests/analysis/test_checker_execution.py
-          tests/benchmarks/test_benchmark_lsp_latency.py
+      - name: Typecheck project
+        run: basedpyright --pythonpath "$(which python)"
+      - name: Typecheck profiling tool
+        run: basedpyright --pythonpath "$(which python)" benchmarks/profile/lsp_latency.py
       - name: Test
         run: pytest
       - name: Docs
