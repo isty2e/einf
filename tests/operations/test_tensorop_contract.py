@@ -16,6 +16,7 @@ from einf import (
     repeat,
     view,
 )
+from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.reduction.schema import ReducerPhase
 
 
@@ -117,6 +118,7 @@ def test_tensorop_underflow_arity_raises_validation_error() -> None:
     b, c = axes("b", "c")
     x = np.zeros((2,), dtype=np.float32)
     op = contract((ax[b], ax[c]), ax[b])
+    assert isinstance(op, RuntimeTensorOp)
 
     with pytest.raises(ValidationError) as error:
         _ = op.__call__(x)
@@ -303,6 +305,7 @@ def test_tensorop_overflow_arity_raises_validation_error() -> None:
     (b,) = axes("b")
     x = np.zeros((3,), dtype=np.float32)
     op = view(ax[b], ax[b])
+    assert isinstance(op, RuntimeTensorOp)
 
     with pytest.raises(ValidationError) as error:
         _ = op.__call__(x, x)
@@ -315,6 +318,7 @@ def test_tensorop_inflate_overflow_arity_raises_multi_input_not_allowed() -> Non
     b, r = axes("b", "r")
     x = np.zeros((3,), dtype=np.float32)
     op = repeat(ax[b], ax[b, r]).with_sizes(r=2)
+    assert isinstance(op, RuntimeTensorOp)
 
     with pytest.raises(ValidationError) as error:
         _ = op.__call__(x, x)
@@ -433,6 +437,7 @@ def test_tensorop_call_rejects_bool_input_shape_entries_with_validation_error() 
 def test_tensorop_reduce_by_on_non_reducer_op_raises_attribute_error() -> None:
     (b,) = axes("b")
     op = view(ax[b], ax[b])
+    assert isinstance(op, RuntimeTensorOp)
 
     with pytest.raises(AttributeError, match="does not support .reduce_by"):
         _ = op.reduce_by("sum")

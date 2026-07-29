@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Protocol, TypeVar
 
 import numpy as np
 import pytest
@@ -10,7 +11,6 @@ import einf.steps.einsum.step as einsum_step_impl
 import einf.steps.permute as permute_step_module
 from einf import (
     ErrorCode,
-    TensorOp,
     ValidationError,
     ax,
     axes,
@@ -28,6 +28,17 @@ try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None
+
+_BinaryTensorFamily = TypeVar("_BinaryTensorFamily", bound=TensorLike)
+
+
+class _BinaryTensorOp(Protocol):
+    def __call__(
+        self,
+        left: _BinaryTensorFamily,
+        right: _BinaryTensorFamily,
+        /,
+    ) -> _BinaryTensorFamily: ...
 
 
 def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
@@ -98,7 +109,7 @@ def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
 )
 def test_atomic_contract_equivalent_numpy_ops_prefer_native_matmul_path(
     monkeypatch: pytest.MonkeyPatch,
-    build_op: Callable[..., TensorOp],
+    build_op: Callable[..., _BinaryTensorOp],
 ) -> None:
     i, k, j = axes("i", "k", "j")
     op = build_op(i, k, j)
@@ -151,7 +162,7 @@ def test_contract_matrix_multiply_torch_uses_native_einsum_path(
 )
 def test_atomic_contract_equivalent_torch_ops_skip_opt_einsum_contract(
     monkeypatch: pytest.MonkeyPatch,
-    build_op: Callable[..., TensorOp],
+    build_op: Callable[..., _BinaryTensorOp],
 ) -> None:
     i, k, j = axes("i", "k", "j")
     op = build_op(i, k, j)
