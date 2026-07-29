@@ -31,6 +31,8 @@ jobs:
         run: mkdocs build --strict
       - name: Build
         run: python -m build
+      - name: Check shipped entry points
+        run: python tests/package/verify_wheel_entrypoints.py dist
       - name: Typecheck shipped wheel
         run: python tests/package/verify_wheel_typing.py dist
 
