@@ -2,8 +2,32 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
+from ..diagnostics import ErrorCode, ValidationError
 from .base import ScalarAxisTermBase
 from .terms import Axis, AxisExpr, AxisInt
+
+_MAX_CANONICAL_PRODUCT_CANDIDATES = 1_024
+
+
+def _canonical_product_limit_error(attempted: int) -> ValidationError:
+    """Build the stable diagnostic for excessive distributive expansion."""
+    return ValidationError(
+        code=ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX,
+        message=(
+            "axis expression canonicalization exceeded "
+            "the distributive product candidate limit"
+        ),
+        help=(
+            "reduce independent additive factors or split "
+            "the transformation into smaller operations"
+        ),
+        related=("axis expression canonicalization",),
+        data={
+            "complexity_kind": "distributive_product_candidates",
+            "limit": _MAX_CANONICAL_PRODUCT_CANDIDATES,
+            "attempted": attempted,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +121,13 @@ class CanonicalScalarExpr:
         return type(self)(self.monomials + other.monomials)
 
     def __mul__(self, other: "CanonicalScalarExpr") -> "CanonicalScalarExpr":
-        """Return canonical product."""
+        """Return canonical product within the distributive work limit."""
         if not self.monomials or not other.monomials:
             return type(self).zero()
+
+        attempted = len(self.monomials) * len(other.monomials)
+        if attempted > _MAX_CANONICAL_PRODUCT_CANDIDATES:
+            raise _canonical_product_limit_error(attempted)
 
         products: list[CanonicalMonomial] = []
         for left in self.monomials:
@@ -136,11 +164,35 @@ def _canonicalize_term(term: ScalarAxisTermBase) -> CanonicalScalarExpr:
     if isinstance(term, Axis):
         return CanonicalScalarExpr((CanonicalMonomial(1, (term.name,)),))
     if isinstance(term, AxisExpr):
-        left = _canonicalize_term(term.left)
-        right = _canonicalize_term(term.right)
         if term.operator == "+":
+            left = _canonicalize_term(term.left)
+            right = _canonicalize_term(term.right)
             return left + right
         if term.operator == "*":
+            if isinstance(term.right, AxisInt) and term.right.value == 0:
+                return CanonicalScalarExpr.zero()
+
+            try:
+                left = _canonicalize_term(term.left)
+            except ValidationError as error:
+                if error.code != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value:
+                    raise
+                try:
+                    right = _canonicalize_term(term.right)
+                except ValidationError as right_error:
+                    if (
+                        right_error.code
+                        != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+                    ):
+                        raise
+                    raise error from None
+                if not right.monomials:
+                    return CanonicalScalarExpr.zero()
+                raise
+
+            if not left.monomials:
+                return CanonicalScalarExpr.zero()
+            right = _canonicalize_term(term.right)
             return left * right
     raise TypeError("unsupported scalar term for canonicalization")
 

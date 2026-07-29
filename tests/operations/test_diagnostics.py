@@ -1,8 +1,21 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
 
-from einf import ErrorCode, ExecutionError, Signature, ValidationError, ax, axes, view
+import einf.axis.algebra as axis_algebra_module
+from einf import (
+    ErrorCode,
+    ExecutionError,
+    Signature,
+    ValidationError,
+    ax,
+    axes,
+    einop,
+    rearrange,
+    view,
+)
+from einf.axis import AxisTerms
 from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.solver import solve_dimensions
 
@@ -14,6 +27,34 @@ class DummyTensor:
     def __getitem__(self, key: object) -> "DummyTensor":
         _ = key
         return self
+
+
+@pytest.fixture
+def small_candidate_limit(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(
+        axis_algebra_module,
+        "_MAX_CANONICAL_PRODUCT_CANDIDATES",
+        4,
+    )
+    axis_algebra_module._canonicalize_term.cache_clear()
+    try:
+        yield
+    finally:
+        axis_algebra_module._canonicalize_term.cache_clear()
+
+
+def _complexity_terms(
+    *, prefix: str
+) -> tuple[AxisTerms, tuple[AxisTerms, AxisTerms], dict[str, int]]:
+    a, b, c, d, e, f = axes(*(f"{prefix}_{name}" for name in "abcdef"))
+    rest = (c + d) * (e + f)
+    whole = (a + b) * rest
+    parts = (ax[a * rest], ax[b * rest])
+    return (
+        ax[whole],
+        parts,
+        {axis.name: 1 for axis in (a, b, c, d, e, f)},
+    )
 
 
 def test_validation_error_exposes_structured_fields() -> None:
@@ -63,6 +104,88 @@ def test_dim_solver_ambiguity_contains_help_and_related_metadata() -> None:
     assert error.value.help is not None
     assert "with_sizes constraints" in error.value.help
     assert "dim solver" in error.value.related
+
+
+def test_dim_solver_preserves_axis_expression_complexity_diagnostic(
+    small_candidate_limit: None,
+) -> None:
+    _ = small_candidate_limit
+    a, b, c, d, e, f = axes(
+        "solver_limit_a",
+        "solver_limit_b",
+        "solver_limit_c",
+        "solver_limit_d",
+        "solver_limit_e",
+        "solver_limit_f",
+    )
+    expression = ((a + b) * (c + d)) * (e + f)
+    signature = Signature(inputs=(ax[expression],), outputs=(ax[a, b, c, d, e, f],))
+
+    with pytest.raises(ValidationError) as error:
+        solve_dimensions(signature, input_shapes=((8,),))
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
+
+
+def test_view_preserves_axis_expression_complexity_diagnostic(
+    small_candidate_limit: None,
+) -> None:
+    _ = small_candidate_limit
+    whole, parts, _ = _complexity_terms(prefix="view_limit")
+
+    with pytest.raises(ValidationError) as error:
+        _ = view(whole, parts)
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
+
+
+@pytest.mark.parametrize("concat", [False, True])
+def test_rearrange_preserves_axis_expression_complexity_diagnostic(
+    small_candidate_limit: None,
+    *,
+    concat: bool,
+) -> None:
+    _ = small_candidate_limit
+    whole, parts, _ = _complexity_terms(prefix="rearrange_limit")
+
+    with pytest.raises(ValidationError) as error:
+        if concat:
+            _ = rearrange(parts, whole)
+        else:
+            _ = rearrange(whole, parts)
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.external_code == "AXIS_EXPRESSION_TOO_COMPLEX"
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
+
+
+@pytest.mark.parametrize("concat", [False, True])
+def test_einop_layout_normalization_avoids_canonical_expansion(
+    small_candidate_limit: None,
+    *,
+    concat: bool,
+) -> None:
+    _ = small_candidate_limit
+    whole, parts, sizes = _complexity_terms(prefix="einop_limit")
+    op = einop(parts, whole) if concat else einop(whole, parts)
+    plan = op.with_sizes(**sizes).plan_dict()
+
+    assert plan["kind"] == "layout_normalized"
+    assert plan["executable_now"] is True
 
 
 def test_with_sizes_negative_binding_raises_inconsistent_dims_diagnostic() -> None:
