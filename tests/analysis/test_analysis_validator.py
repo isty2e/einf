@@ -193,6 +193,27 @@ def test_run_validation_reports_traversal_failures_in_sorted_order(
     assert report.exit_code() == 1
 
 
+def test_run_validation_follows_symlinked_directories_without_cycles(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "linked.py"
+    source.write_text(VALID_SOURCE, encoding="utf-8")
+    (package_dir / "linked").symlink_to(source_dir, target_is_directory=True)
+    (source_dir / "back").symlink_to(package_dir, target_is_directory=True)
+
+    report = run_validation(targets=(package_dir,), parser_backend=AstParserBackend())
+
+    assert tuple(file_report.path for file_report in report.files) == (
+        str(source.resolve()),
+    )
+    assert report.discovery_failures == ()
+    assert report.exit_code() == 0
+
+
 def test_validator_cli_main_prints_json_and_returns_exit_code(
     tmp_path: Path,
     capsys,

@@ -126,6 +126,7 @@ def _walk_python_files(
     candidates: list[Path] = []
     failures: list[ValidationDiscoveryFailure] = []
     pending_directories = [target]
+    visited_directories: set[tuple[int, int]] = set()
 
     def record_failure(error: OSError, *, fallback_path: Path) -> None:
         failed_path = (
@@ -143,37 +144,43 @@ def _walk_python_files(
 
     while pending_directories:
         directory = pending_directories.pop()
+        # Follow directory symlinks for rglob parity while bounding cycles by identity.
         try:
-            with os.scandir(directory) as entries:
-                directory_entries = sorted(entries, key=lambda entry: entry.name)
+            directory_stat = directory.stat()
         except OSError as error:
             record_failure(error, fallback_path=directory)
             continue
+        directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
+        if directory_identity in visited_directories:
+            continue
+        visited_directories.add(directory_identity)
 
-        child_directories: list[Path] = []
-        for entry in directory_entries:
-            entry_path = Path(entry.path)
-            try:
-                is_directory = entry.is_dir(follow_symlinks=False)
-            except OSError as error:
-                record_failure(error, fallback_path=entry_path)
-                continue
-            if is_directory:
-                child_directories.append(entry_path)
-                continue
-            if not entry.name.endswith(".py"):
-                continue
-            try:
-                is_file = entry.is_file()
-            except OSError as error:
-                record_failure(error, fallback_path=entry_path)
-                continue
-            if is_file:
-                candidates.append(entry_path)
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    entry_path = Path(entry.path)
+                    try:
+                        is_directory = entry.is_dir()
+                    except OSError as error:
+                        record_failure(error, fallback_path=entry_path)
+                        continue
+                    if is_directory:
+                        pending_directories.append(entry_path)
+                        continue
+                    if not entry.name.endswith(".py"):
+                        continue
+                    try:
+                        is_file = entry.is_file()
+                    except OSError as error:
+                        record_failure(error, fallback_path=entry_path)
+                        continue
+                    if is_file:
+                        candidates.append(entry_path)
+        except OSError as error:
+            record_failure(error, fallback_path=directory)
 
-        pending_directories.extend(reversed(child_directories))
-
-    return tuple(sorted(candidates)), tuple(failures)
+    candidates.sort()
+    return tuple(candidates), tuple(failures)
 
 
 def _infer_project_root(targets: tuple[Path, ...]) -> Path:
