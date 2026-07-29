@@ -62,3 +62,29 @@ jobs:
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis.py
           tests/analysis/test_conformance_analysis_lsp.py
+
+  torch:
+    name: torch-extra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Typecheck optional PyTorch integration
+        run: >-
+          basedpyright
+          --pythonpath "$(which python)"
+          tests/integration/test_array_api_contract_einop_execution.py
+          tests/integration/test_array_api_repeat_reduce_execution.py
+          tests/integration/test_array_api_view_execution.py
+      - name: Test optional PyTorch integration
+        run: >-
+          pytest
+          tests/integration/test_array_api_contract_einop_execution.py
+          tests/integration/test_array_api_repeat_reduce_execution.py
+          tests/integration/test_array_api_view_execution.py
