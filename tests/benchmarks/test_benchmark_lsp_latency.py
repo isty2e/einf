@@ -1,5 +1,11 @@
 from pathlib import Path
 
+import pytest
+
+lsprotocol = pytest.importorskip("lsprotocol")
+pygls = pytest.importorskip("pygls")
+_ = lsprotocol, pygls
+
 from benchmarks.profile.lsp_latency import (
     TimingSummary,
     _build_report,

@@ -58,6 +58,7 @@ jobs:
           tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis_lsp.py
+          tests/benchmarks/test_benchmark_lsp_latency.py
       - name: Test optional LSP transport
         run: >-
           pytest
@@ -67,6 +68,7 @@ jobs:
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis.py
           tests/analysis/test_conformance_analysis_lsp.py
+          tests/benchmarks/test_benchmark_lsp_latency.py
 
   torch:
     name: torch-extra
