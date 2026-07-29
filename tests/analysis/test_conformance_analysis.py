@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pytest
+from lsprotocol import types as lsp
 
 from einf.analysis.lsp import LspService, encode_semantic_tokens
+from einf.analysis.lsp.position_codec import LspPositionCodec
 from einf.analysis.validator.run import build_parser_backend, run_validation
 from tests.analysis.conformance_analysis_cases import LSP_CASES, VALIDATOR_CASES
 
@@ -50,6 +52,12 @@ def test_lsp_service_conformance_open_cases(tmp_path: Path, case) -> None:
     )
     assert state.checker_result is None
     assert len(state.report.axis_tokens) == case.expected_axis_token_count
-    assert len(encode_semantic_tokens(state.report.axis_tokens)) == (
-        case.expected_semantic_token_int_count
-    )
+    assert len(
+        encode_semantic_tokens(
+            state.report.axis_tokens,
+            position_codec=LspPositionCodec(
+                lines=state.source_lines,
+                encoding=lsp.PositionEncodingKind.Utf16,
+            ),
+        )
+    ) == (case.expected_semantic_token_int_count)

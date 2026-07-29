@@ -9,7 +9,7 @@ from einf.analysis.checkers import (
     CheckerResult,
     build_checker_adapters,
 )
-from einf.analysis.model import DiagnosticSeverity, TextPosition, TextSpan
+from einf.analysis.model import DiagnosticSeverity, TextSpan
 from einf.analysis.validator.model import ValidationFileReport
 
 from .analysis_queue import DocumentAnalysisRequest, LspAnalysisQueue
@@ -18,6 +18,7 @@ from .checker_coordinator import DocumentCheckerRequest, LspCheckerCoordinator
 from .config import InitializeOptions, LspConfig
 from .hover import build_hover
 from .inlay_hints import build_inlay_hints
+from .position_codec import LspPositionCodec
 from .semantic_tokens import TOKEN_MODIFIERS, TOKEN_TYPES, encode_semantic_tokens
 from .service import LspDocumentState, LspService
 
@@ -45,12 +46,22 @@ class EinfLanguageServer(LanguageServer):
             pending_limit=_DEFAULT_ANALYSIS_PENDING_LIMIT,
         )
         self.einf_checker_coordinator = _build_checker_coordinator(self.einf_config)
+        self.einf_position_encoding: lsp.PositionEncodingKind | str = (
+            lsp.PositionEncodingKind.Utf16
+        )
 
     def configure(self, config: LspConfig) -> None:
         """Configure semantic and checker subsystems before document traffic."""
         self.einf_config = config
         self.einf_service = LspService(config.parser)
         self.einf_checker_coordinator = _build_checker_coordinator(config)
+
+    def position_codec(self, state: LspDocumentState) -> LspPositionCodec:
+        """Bind the negotiated wire encoding to one document source snapshot."""
+        return LspPositionCodec(
+            lines=state.source_lines,
+            encoding=self.einf_position_encoding,
+        )
 
 
 SEMANTIC_TOKENS_LEGEND = lsp.SemanticTokensLegend(
@@ -67,6 +78,12 @@ def build_server() -> EinfLanguageServer:
     def initialize(ls: EinfLanguageServer, params: lsp.InitializeParams) -> None:
         init_options = _coerce_initialize_options(params.initialization_options)
         ls.configure(LspConfig.from_initialize_options(init_options))
+        position_encoding = ls.workspace.position_encoding
+        ls.einf_position_encoding = (
+            position_encoding
+            if position_encoding is not None
+            else lsp.PositionEncodingKind.Utf16
+        )
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_OPEN)
     async def did_open(
@@ -160,8 +177,12 @@ def build_server() -> EinfLanguageServer:
         state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return lsp.SemanticTokens(data=[])
+        position_codec = ls.position_codec(state)
         return lsp.SemanticTokens(
-            data=encode_semantic_tokens(state.semantic_report.axis_tokens)
+            data=encode_semantic_tokens(
+                state.semantic_report.axis_tokens,
+                position_codec=position_codec,
+            )
         )
 
     @server.feature(lsp.TEXT_DOCUMENT_INLAY_HINT)
@@ -172,9 +193,11 @@ def build_server() -> EinfLanguageServer:
         state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return []
+        position_codec = ls.position_codec(state)
         return build_inlay_hints(
             axis_tokens=state.semantic_report.axis_tokens,
-            visible_range=_span_from_lsp_range(params.range),
+            visible_range=position_codec.from_lsp_range(params.range),
+            position_codec=position_codec,
         )
 
     @server.feature(lsp.TEXT_DOCUMENT_HOVER)
@@ -185,9 +208,10 @@ def build_server() -> EinfLanguageServer:
         state = await _get_or_open_document_state(ls, uri=params.text_document.uri)
         if state is None:
             return None
+        position_codec = ls.position_codec(state)
         return build_hover(
             axis_tokens=state.semantic_report.axis_tokens,
-            position=_text_position_from_lsp_position(params.position),
+            position=position_codec.from_lsp_position(params.position),
         )
 
     return server
@@ -227,7 +251,10 @@ def _publish_document_state(
     ls: EinfLanguageServer,
     state: LspDocumentState,
 ) -> None:
-    diagnostics = _build_diagnostics(state.report)
+    diagnostics = _build_diagnostics(
+        state.report,
+        position_codec=ls.position_codec(state),
+    )
     ls.text_document_publish_diagnostics(
         lsp.PublishDiagnosticsParams(
             uri=state.uri,
@@ -337,12 +364,19 @@ def _build_checker_coordinator(config: LspConfig) -> LspCheckerCoordinator:
     )
 
 
-def _build_diagnostics(report: ValidationFileReport) -> list[lsp.Diagnostic]:
+def _build_diagnostics(
+    report: ValidationFileReport,
+    *,
+    position_codec: LspPositionCodec,
+) -> list[lsp.Diagnostic]:
     diagnostics: list[lsp.Diagnostic] = []
     for diagnostic in report.diagnostics:
         diagnostics.append(
             lsp.Diagnostic(
-                range=_range_from_span(diagnostic.span),
+                range=_range_from_span(
+                    diagnostic.span,
+                    position_codec=position_codec,
+                ),
                 message=diagnostic.message,
                 severity=_diagnostic_severity(diagnostic.severity),
                 code=diagnostic.code,
@@ -352,7 +386,10 @@ def _build_diagnostics(report: ValidationFileReport) -> list[lsp.Diagnostic]:
     for checker_diagnostic in report.checker_diagnostics:
         diagnostics.append(
             lsp.Diagnostic(
-                range=_range_from_span(checker_diagnostic.span),
+                range=_range_from_span(
+                    checker_diagnostic.span,
+                    position_codec=position_codec,
+                ),
                 message=checker_diagnostic.message,
                 severity=_diagnostic_severity(checker_diagnostic.severity),
                 code=checker_diagnostic.code,
@@ -362,7 +399,10 @@ def _build_diagnostics(report: ValidationFileReport) -> list[lsp.Diagnostic]:
     for failure in report.failures:
         diagnostics.append(
             lsp.Diagnostic(
-                range=_range_from_span(failure.span),
+                range=_range_from_span(
+                    failure.span,
+                    position_codec=position_codec,
+                ),
                 message=failure.message,
                 severity=lsp.DiagnosticSeverity.Error,
                 code=failure.kind,
@@ -382,33 +422,17 @@ def _diagnostic_severity(severity: DiagnosticSeverity) -> lsp.DiagnosticSeverity
             return lsp.DiagnosticSeverity.Error
 
 
-def _range_from_span(span: TextSpan | None) -> lsp.Range:
+def _range_from_span(
+    span: TextSpan | None,
+    *,
+    position_codec: LspPositionCodec,
+) -> lsp.Range:
     if span is None:
         return lsp.Range(
             start=lsp.Position(line=0, character=0),
             end=lsp.Position(line=0, character=1),
         )
-    return lsp.Range(
-        start=lsp.Position(
-            line=span.start.line - 1,
-            character=span.start.column,
-        ),
-        end=lsp.Position(
-            line=span.end.line - 1,
-            character=span.end.column,
-        ),
-    )
-
-
-def _text_position_from_lsp_position(position: lsp.Position) -> TextPosition:
-    return TextPosition(line=position.line + 1, column=position.character)
-
-
-def _span_from_lsp_range(lsp_range: lsp.Range) -> TextSpan:
-    return TextSpan(
-        start=_text_position_from_lsp_position(lsp_range.start),
-        end=_text_position_from_lsp_position(lsp_range.end),
-    )
+    return position_codec.to_lsp_range(span)
 
 
 def _log_checker_failures(

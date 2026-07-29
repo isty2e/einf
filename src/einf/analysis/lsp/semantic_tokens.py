@@ -1,7 +1,11 @@
 from functools import reduce
 from operator import or_
+from typing import TYPE_CHECKING
 
 from einf.analysis.model import AxisToken
+
+if TYPE_CHECKING:
+    from .position_codec import LspPositionCodec
 
 TOKEN_TYPES = (
     "parameter",
@@ -20,7 +24,11 @@ ROLE_TO_MODIFIER_INDEX = {
 }
 
 
-def encode_semantic_tokens(axis_tokens: tuple[AxisToken, ...]) -> list[int]:
+def encode_semantic_tokens(
+    axis_tokens: tuple[AxisToken, ...],
+    *,
+    position_codec: "LspPositionCodec",
+) -> list[int]:
     """Encode axis tokens into LSP semantic token integer data."""
     data: list[int] = []
     previous_line = 0
@@ -37,9 +45,11 @@ def encode_semantic_tokens(axis_tokens: tuple[AxisToken, ...]) -> list[int]:
             token.group,
         ),
     ):
-        start_line = axis_token.span.start.line - 1
-        start_column = axis_token.span.start.column
-        length = max(1, axis_token.span.end.column - axis_token.span.start.column)
+        start = position_codec.to_lsp_position(axis_token.span.start)
+        end = position_codec.to_lsp_position(axis_token.span.end)
+        start_line = start.line
+        start_column = start.character
+        length = max(1, end.character - start.character)
         token_type_index = axis_token.group % len(TOKEN_TYPES)
         modifier_mask = reduce(
             or_,

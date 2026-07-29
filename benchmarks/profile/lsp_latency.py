@@ -11,6 +11,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import TypeAlias
 
+from lsprotocol import types as lsp
+
 from benchmarks.shared import version_or_missing
 from einf.analysis.checkers import (
     CheckerExecutionPolicy,
@@ -23,6 +25,7 @@ from einf.analysis.lsp.checker_coordinator import (
     DocumentCheckerRequest,
     LspCheckerCoordinator,
 )
+from einf.analysis.lsp.position_codec import LspPositionCodec
 from einf.analysis.model import TextPosition
 from einf.analysis.validator.model import ValidationFileReport
 
@@ -168,6 +171,10 @@ def _measure_case(
 
     change_service = LspService(parser)
     state = change_service.open_document(uri=uri, source=case.source, version=0)
+    position_codec = LspPositionCodec(
+        lines=state.source_lines,
+        encoding=lsp.PositionEncodingKind.Utf16,
+    )
     change_version = 0
 
     def change_document() -> None:
@@ -182,11 +189,15 @@ def _measure_case(
     change_summary = _measure(repeats, change_document)
 
     def encode_tokens() -> None:
-        _ = encode_semantic_tokens(state.report.axis_tokens)
+        _ = encode_semantic_tokens(
+            state.report.axis_tokens,
+            position_codec=position_codec,
+        )
 
     semantic_summary = _measure(repeats, encode_tokens)
     inlay_summary, hover_summary = _measure_optional_feature_latency(
         report=state.report,
+        position_codec=position_codec,
         repeats=repeats,
     )
 
@@ -269,6 +280,7 @@ def _measure_save_with_checkers(
 def _measure_optional_feature_latency(
     *,
     report: ValidationFileReport,
+    position_codec: LspPositionCodec,
     repeats: int,
 ) -> tuple[TimingSummary | None, TimingSummary | None]:
     try:
@@ -283,6 +295,7 @@ def _measure_optional_feature_latency(
         _ = build_inlay_hints(
             axis_tokens=report.axis_tokens,
             visible_range=None,
+            position_codec=position_codec,
         )
 
     def build_hover_at_position() -> None:

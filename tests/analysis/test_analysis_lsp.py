@@ -12,6 +12,7 @@ from einf.analysis.lsp import (
     encode_semantic_tokens,
     path_from_uri,
 )
+from einf.analysis.lsp.position_codec import LspPositionCodec
 from einf.analysis.model import AxisToken, TextPosition, TextSpan
 
 VALID_SOURCE = """from einf import ax, axes, rearrange\nb = axes(\"b\")[0]\nrearrange(ax[b], ax[b])\n"""
@@ -94,6 +95,7 @@ def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) 
     assert opened.report.checker_diagnostics == ()
     assert opened.checker_result is None
     assert opened.report.axis_tokens
+    assert opened.source == VALID_SOURCE
 
     changed = service.change_document(
         uri=target.resolve().as_uri(),
@@ -102,6 +104,7 @@ def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) 
     )
 
     assert len(changed.report.diagnostics) == 1
+    assert changed.source == INVALID_SOURCE
     assert changed.report.checker_diagnostics == ()
     assert changed.checker_result is None
     assert service.get_document_state(uri=target.resolve().as_uri()) == changed
@@ -292,7 +295,10 @@ def test_encode_semantic_tokens_uses_fixed_palette_and_modifiers() -> None:
         ),
     )
 
-    assert encode_semantic_tokens(tokens) == [
+    assert encode_semantic_tokens(
+        tokens,
+        position_codec=LspPositionCodec(lines=("\n", "        \n")),
+    ) == [
         1,
         4,
         1,

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -11,15 +11,26 @@ from einf.analysis.validator.run import analyze_source, build_parser_backend
 
 @dataclass(frozen=True, slots=True)
 class LspDocumentState:
-    """Current in-memory LSP analysis state for one document URI."""
+    """Current in-memory LSP analysis snapshot for one document URI."""
 
     uri: str
     path: Path | None
     version: int | None
+    source: str
     semantic_report: ValidationFileReport
     checker_result: CheckerResult | None = None
+    source_lines: tuple[str, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source_lines",
+            tuple(self.source.splitlines(keepends=True)),
+        )
         if self.semantic_report.checker_diagnostics:
             raise ValueError("semantic report cannot contain checker diagnostics")
 
@@ -112,6 +123,7 @@ class LspService:
             uri=uri,
             path=path,
             version=version,
+            source=source,
             semantic_report=report,
         )
 
