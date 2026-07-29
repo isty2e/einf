@@ -1,13 +1,17 @@
 # LSP sidecar
 
 `einf` ships a minimal external language server sidecar for editor
-integration. It is packaged as the `einf-lsp` console entry point and
-installed by the `lsp` extra.
+integration. Every installation exposes the `einf-lsp` console entry point;
+the `lsp` extra installs the optional dependencies required to run it.
 
 ```bash
 pip install "einf[lsp] @ git+https://github.com/isty2e/einf.git"
 einf-lsp
 ```
+
+A base-only installation keeps the command discoverable for editor
+configuration, but invoking it reports the required `einf[lsp]` installation
+instead of starting the server.
 
 ## Recommended editor model
 
