@@ -164,11 +164,35 @@ def _canonicalize_term(term: ScalarAxisTermBase) -> CanonicalScalarExpr:
     if isinstance(term, Axis):
         return CanonicalScalarExpr((CanonicalMonomial(1, (term.name,)),))
     if isinstance(term, AxisExpr):
-        left = _canonicalize_term(term.left)
-        right = _canonicalize_term(term.right)
         if term.operator == "+":
+            left = _canonicalize_term(term.left)
+            right = _canonicalize_term(term.right)
             return left + right
         if term.operator == "*":
+            if isinstance(term.right, AxisInt) and term.right.value == 0:
+                return CanonicalScalarExpr.zero()
+
+            try:
+                left = _canonicalize_term(term.left)
+            except ValidationError as error:
+                if error.code != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value:
+                    raise
+                try:
+                    right = _canonicalize_term(term.right)
+                except ValidationError as right_error:
+                    if (
+                        right_error.code
+                        != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+                    ):
+                        raise
+                    raise error from None
+                if not right.monomials:
+                    return CanonicalScalarExpr.zero()
+                raise
+
+            if not left.monomials:
+                return CanonicalScalarExpr.zero()
+            right = _canonicalize_term(term.right)
             return left * right
     raise TypeError("unsupported scalar term for canonicalization")
 

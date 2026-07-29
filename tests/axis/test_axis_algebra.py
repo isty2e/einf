@@ -1,8 +1,15 @@
+from collections.abc import Iterator
+
 import pytest
 
 import einf.axis.algebra as axis_algebra_module
 from einf import ErrorCode, ValidationError, axes
-from einf.axis import CanonicalMonomial, CanonicalScalarExpr, ScalarAxisTermBase
+from einf.axis import (
+    AxisExpr,
+    CanonicalMonomial,
+    CanonicalScalarExpr,
+    ScalarAxisTermBase,
+)
 
 
 def _distinct_monomials(count: int, *, prefix: str) -> tuple[CanonicalMonomial, ...]:
@@ -10,6 +17,25 @@ def _distinct_monomials(count: int, *, prefix: str) -> tuple[CanonicalMonomial, 
         CanonicalMonomial(coefficient=1, factors=(f"{prefix}{index:04d}",))
         for index in range(count)
     )
+
+
+def _eight_candidate_expression(*, prefix: str) -> AxisExpr:
+    a, b, c, d, e, f = axes(*(f"{prefix}_{name}" for name in "abcdef"))
+    return ((a + b) * (c + d)) * (e + f)
+
+
+@pytest.fixture
+def small_candidate_limit(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(
+        axis_algebra_module,
+        "_MAX_CANONICAL_PRODUCT_CANDIDATES",
+        4,
+    )
+    axis_algebra_module._canonicalize_term.cache_clear()
+    try:
+        yield
+    finally:
+        axis_algebra_module._canonicalize_term.cache_clear()
 
 
 def test_canonical_scalar_expr_matches_distributive_equivalence() -> None:
@@ -104,12 +130,68 @@ def test_canonical_scalar_expr_does_not_limit_large_linear_sum() -> None:
     assert len(expression.monomials) == candidate_limit + 1
 
 
-def test_canonical_scalar_expr_zero_product_bypasses_candidate_limit() -> None:
+@pytest.mark.parametrize("zero_on_left", [False, True])
+def test_canonical_scalar_expr_zero_product_bypasses_candidate_limit(
+    *,
+    zero_on_left: bool,
+) -> None:
     candidate_limit = axis_algebra_module._MAX_CANONICAL_PRODUCT_CANDIDATES
     large = CanonicalScalarExpr(
         _distinct_monomials(candidate_limit + 1, prefix="large")
     )
+    zero = CanonicalScalarExpr.zero()
 
-    product = large * CanonicalScalarExpr.zero()
+    product = zero * large if zero_on_left else large * zero
 
-    assert product == CanonicalScalarExpr.zero()
+    assert product == zero
+
+
+@pytest.mark.parametrize(
+    ("zero_on_left", "nested"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_canonical_scalar_expr_ast_zero_short_circuits_over_limit_operand(
+    small_candidate_limit: None,
+    *,
+    zero_on_left: bool,
+    nested: bool,
+) -> None:
+    _ = small_candidate_limit
+    zero_axis = axes("zero_axis")[0]
+    over_limit = _eight_candidate_expression(prefix="zero")
+    if nested:
+        zero_operand = zero_axis * 0
+        expression = (
+            zero_operand * over_limit if zero_on_left else over_limit * zero_operand
+        )
+    else:
+        expression = 0 * over_limit if zero_on_left else over_limit * 0
+
+    canonical = CanonicalScalarExpr.from_term(expression)
+
+    assert canonical == CanonicalScalarExpr.zero()
+
+
+@pytest.mark.parametrize("right_fails", [False, True])
+def test_canonical_scalar_expr_preserves_left_failure_after_zero_probe(
+    small_candidate_limit: None,
+    *,
+    right_fails: bool,
+) -> None:
+    _ = small_candidate_limit
+    left = _eight_candidate_expression(prefix="left_probe")
+    if right_fails:
+        a, b, c, d, e = axes(*(f"right_probe_{name}" for name in "abcde"))
+        right = ((a + b) + c) * (d + e)
+    else:
+        right = axes("nonzero_probe")[0]
+
+    with pytest.raises(ValidationError) as error:
+        CanonicalScalarExpr.from_term(left * right)
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
