@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 from einf import ErrorCode, ExecutionError, Signature, ValidationError, ax, axes, view
+from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.solver import solve_dimensions
 
 
@@ -92,6 +93,7 @@ def test_tensorop_overflow_arity_uses_validation_error() -> None:
     b = axes("b")[0]
     op = view(ax[b], ax[b])
     x = DummyTensor(shape=(3,))
+    assert isinstance(op, RuntimeTensorOp)
 
     with pytest.raises(ValidationError) as error:
         _ = op.__call__(x, x)

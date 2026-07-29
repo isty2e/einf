@@ -510,7 +510,9 @@ def test_reduce_uninspectable_callable_typeerror_with_binding_like_message_is_no
         _ = op(tensor)
 
 
-def test_reduce_uninspectable_function_typeerror_is_not_swallowed() -> None:
+def test_reduce_uninspectable_function_typeerror_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     b, h, d = axes("b", "h", "d")
 
     def reducer(
@@ -522,7 +524,7 @@ def test_reduce_uninspectable_function_typeerror_is_not_swallowed() -> None:
         _ = axis
         raise TypeError("missing 1 required positional argument: 'x'")
 
-    reducer.__signature__ = object()
+    monkeypatch.setattr(reducer, "__signature__", object(), raising=False)
     op = reduce(ax[b, h, d], ax[b]).reduce_by(reducer)
     tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
 

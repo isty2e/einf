@@ -126,13 +126,12 @@ class NamespaceWithNonStringModuleArray:
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
         _ = api_version
-
-        class Namespace:
-            def __init__(self) -> None:
-                self.__name__ = "fake"
-                self.__module__ = 123
-
-        return Namespace()
+        namespace_type = type(
+            "Namespace",
+            (),
+            {"__name__": "fake", "__module__": 123},
+        )
+        return namespace_type()
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,14 +140,12 @@ class NamespaceWithNoneModuleArray:
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
         _ = api_version
-
-        class Namespace:
-            __name__ = "fake.none_module"
-
-            def __init__(self) -> None:
-                self.__module__ = None
-
-        return Namespace()
+        namespace_type = type(
+            "Namespace",
+            (),
+            {"__name__": "fake.none_module", "__module__": None},
+        )
+        return namespace_type()
 
 
 @dataclass(frozen=True, slots=True)
