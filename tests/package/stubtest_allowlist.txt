@@ -1,0 +1,6 @@
+# The public protocol intentionally omits concrete construction and capability details.
+einf\.operations\.api\.TensorOp$
+einf\.operations\.api\.TensorOp\.__match_args__
+einf\.operations\.api\.TensorOp\.__post_init__
+einf\.operations\.api\.TensorOp\.from_base_spec
+einf\.operations\.api\.TensorOp\.reduce_by
