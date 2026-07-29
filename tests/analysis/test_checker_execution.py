@@ -125,7 +125,10 @@ def _write_blocking_checker(path: Path) -> None:
         "from pathlib import Path\n"
         "import sys\n"
         "import time\n"
-        "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "pid_path = Path(sys.argv[1])\n"
+        "pending_path = pid_path.with_suffix('.tmp')\n"
+        "pending_path.write_text(str(os.getpid()), encoding='utf-8')\n"
+        "pending_path.replace(pid_path)\n"
         "time.sleep(60)\n",
         encoding="utf-8",
     )

@@ -9,6 +9,7 @@ class ErrorCode(str, Enum):
     """Canonical internal diagnostic codes."""
 
     DIM_SOLVE_ERROR = "dim_solve_error"
+    DIM_SOLVE_TOO_COMPLEX = "dim_solve_too_complex"
     INCONSISTENT_DIMS = "inconsistent_dims"
     AMBIGUOUS_DIMS = "ambiguous_dims"
     AXIS_EXPRESSION_TOO_COMPLEX = "axis_expression_too_complex"
