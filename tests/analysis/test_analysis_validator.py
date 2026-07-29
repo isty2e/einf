@@ -1,8 +1,12 @@
+import errno
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 from einf.analysis.parser import AstParserBackend
 from einf.analysis.validator.cli import build_argument_parser, main
@@ -72,7 +76,7 @@ def test_run_validation_reports_semantic_diagnostics(tmp_path: Path) -> None:
 
     report = run_validation(targets=(target,), parser_backend=AstParserBackend())
 
-    assert report.schema_version == "0.1"
+    assert report.schema_version == "0.2"
     assert report.parser_backend == "ast"
     assert len(report.files) == 1
     file_report = report.files[0]
@@ -82,6 +86,7 @@ def test_run_validation_reports_semantic_diagnostics(tmp_path: Path) -> None:
     assert file_report.diagnostics[0].code == "ANALYSIS_AXIS_NOT_IN_INPUT"
     assert file_report.failures == ()
     assert report.checker_failures == ()
+    assert report.discovery_failures == ()
     assert report.exit_code() == 1
 
 
@@ -136,6 +141,76 @@ def test_run_validation_recurses_directories_in_sorted_order(tmp_path: Path) -> 
     )
     assert all(file_report.checker_diagnostics == () for file_report in report.files)
     assert report.checker_failures == ()
+    assert report.discovery_failures == ()
+    assert report.exit_code() == 0
+
+
+def test_run_validation_reports_traversal_failures_in_sorted_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    source = package_dir / "visible.py"
+    source.write_text(VALID_SOURCE, encoding="utf-8")
+    blocked_directories = (
+        package_dir / "z_blocked",
+        package_dir / "a_blocked",
+    )
+    for blocked_directory in blocked_directories:
+        blocked_directory.mkdir()
+        (blocked_directory / "hidden.py").write_text(VALID_SOURCE, encoding="utf-8")
+
+    original_scandir = os.scandir
+    blocked_paths = {path.resolve() for path in blocked_directories}
+
+    def fail_blocked_scandir(
+        path: str | os.PathLike[str],
+    ) -> Iterator[os.DirEntry[str]]:
+        if Path(path).resolve() in blocked_paths:
+            raise PermissionError(
+                errno.EACCES,
+                "permission denied",
+                path,
+            )
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fail_blocked_scandir)
+
+    report = run_validation(targets=(package_dir,), parser_backend=AstParserBackend())
+
+    assert tuple(file_report.path for file_report in report.files) == (
+        str(source.resolve()),
+    )
+    assert tuple(failure.path for failure in report.discovery_failures) == (
+        str((package_dir / "a_blocked").resolve()),
+        str((package_dir / "z_blocked").resolve()),
+    )
+    assert all(
+        failure.kind == "directory_traversal_error"
+        for failure in report.discovery_failures
+    )
+    assert report.exit_code() == 1
+
+
+def test_run_validation_follows_symlinked_directories_without_cycles(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "linked.py"
+    source.write_text(VALID_SOURCE, encoding="utf-8")
+    (package_dir / "linked").symlink_to(source_dir, target_is_directory=True)
+    (source_dir / "back").symlink_to(package_dir, target_is_directory=True)
+
+    report = run_validation(targets=(package_dir,), parser_backend=AstParserBackend())
+
+    assert tuple(file_report.path for file_report in report.files) == (
+        str(source.resolve()),
+    )
+    assert report.discovery_failures == ()
     assert report.exit_code() == 0
 
 
@@ -151,9 +226,10 @@ def test_validator_cli_main_prints_json_and_returns_exit_code(
     payload = json.loads(captured.out)
 
     assert exit_code == 0
-    assert payload["schema_version"] == "0.1"
+    assert payload["schema_version"] == "0.2"
     assert payload["parser_backend"] == "ast"
     assert payload["checker_failures"] == []
+    assert payload["discovery_failures"] == []
     assert len(payload["files"]) == 1
     assert payload["files"][0]["path"] == str(target.resolve())
     assert payload["files"][0]["diagnostics"] == []

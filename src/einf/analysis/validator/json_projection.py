@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
 from einf.analysis.checkers.model import CheckerFailureKind
@@ -10,6 +10,7 @@ from einf.analysis.model import (
     TextSpan,
 )
 from einf.analysis.validator.model import (
+    ValidationDiscoveryFailure,
     ValidationFailure,
     ValidationFailureKind,
     ValidationFileReport,
@@ -49,6 +50,12 @@ class _CheckerFailureJson(TypedDict):
     message: str
 
 
+class _ValidationDiscoveryFailureJson(TypedDict):
+    path: str
+    kind: Literal["directory_traversal_error"]
+    message: str
+
+
 class _AxisTokenJson(TypedDict):
     name: str
     span: _TextSpanJson
@@ -76,6 +83,7 @@ class ValidationReportJson(TypedDict):
     schema_version: str
     parser_backend: str
     checker_failures: list[_CheckerFailureJson]
+    discovery_failures: list[_ValidationDiscoveryFailureJson]
     files: list[_ValidationFileReportJson]
 
 
@@ -123,6 +131,16 @@ def _project_checker_diagnostic(
 def _project_checker_failure(failure: CheckerFailure) -> _CheckerFailureJson:
     return {
         "tool": failure.tool,
+        "kind": failure.kind,
+        "message": failure.message,
+    }
+
+
+def _project_discovery_failure(
+    failure: ValidationDiscoveryFailure,
+) -> _ValidationDiscoveryFailureJson:
+    return {
+        "path": failure.path,
         "kind": failure.kind,
         "message": failure.message,
     }
@@ -176,6 +194,9 @@ def project_validation_report(report: ValidationReport) -> ValidationReportJson:
         "parser_backend": report.parser_backend,
         "checker_failures": [
             _project_checker_failure(failure) for failure in report.checker_failures
+        ],
+        "discovery_failures": [
+            _project_discovery_failure(failure) for failure in report.discovery_failures
         ],
         "files": [_project_file_report(file_report) for file_report in report.files],
     }
