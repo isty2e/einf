@@ -194,22 +194,20 @@ def _build_equation_from_scalar_terms(
     output_axis_terms: ScalarAxisTerms,
 ) -> str:
     """Build one deterministic einsum equation from scalarized axis terms."""
-    total_terms = sum(len(terms) for terms in input_axis_terms) + len(output_axis_terms)
-    if total_terms > len(_EINSUM_SYMBOLS):
-        raise ValidationError(
-            code=ErrorCode.INCONSISTENT_DIMS,
-            message="inconsistent dims: too many scalar axes for einsum symbol budget",
-            help="use fewer distinct scalar axes in one contraction step",
-            related=("einsum equation",),
-            data={},
-        )
-
     key_to_symbol: dict[str, str] = {}
 
     def symbol_for(term_key: str) -> str:
         existing = key_to_symbol.get(term_key)
         if existing is not None:
             return existing
+        if len(key_to_symbol) >= len(_EINSUM_SYMBOLS):
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message="inconsistent dims: too many scalar axes for einsum symbol budget",
+                help="use fewer distinct scalar axes in one contraction step",
+                related=("einsum equation",),
+                data={},
+            )
         assigned = _EINSUM_SYMBOLS[len(key_to_symbol)]
         key_to_symbol[term_key] = assigned
         return assigned

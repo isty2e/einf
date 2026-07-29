@@ -12,6 +12,14 @@ def _symbol_for(
     existing = key_to_symbol.get(key)
     if existing is not None:
         return existing
+    if len(key_to_symbol) >= len(symbols):
+        raise ValidationError(
+            code=ErrorCode.INCONSISTENT_DIMS,
+            message="inconsistent dims: too many atomic axes for einsum symbol budget",
+            help="use fewer distinct atomic axis symbols in one einop output",
+            related=("einop equation",),
+            data={"operation": "einop"},
+        )
     assigned = symbols[len(key_to_symbol)]
     key_to_symbol[key] = assigned
     return assigned
@@ -105,17 +113,6 @@ def build_einop_equations(
     for output_axis_list in output_axis_lists:
         key_to_symbol: dict[str, str] = {}
         symbols = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-        if sum(
-            len(axis_list) for axis_list in input_axis_lists + (output_axis_list,)
-        ) > len(symbols):
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message="inconsistent dims: too many atomic axes for einsum symbol budget",
-                help="use fewer distinct atomic axis symbols in one einop output",
-                related=("einop equation",),
-                data={"operation": "einop"},
-            )
 
         input_subscripts: list[str] = []
         input_term_keys: set[str] = set()

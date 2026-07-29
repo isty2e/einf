@@ -10,22 +10,20 @@ def build_contract_equation(
     """Build deterministic einsum equation for one atomic contract."""
     key_to_symbol: dict[str, str] = {}
     symbols = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    if sum(
-        len(axis_list) for axis_list in input_axis_lists + (output_axis_list,)
-    ) > len(symbols):
-        raise ValidationError(
-            code=ErrorCode.INCONSISTENT_DIMS,
-            message="inconsistent dims: too many atomic axes for einsum symbol budget",
-            help="use fewer distinct atomic axis symbols in one contract call",
-            related=("contract equation",),
-            data={},
-        )
 
     def symbol_for(key: str) -> str:
         existing = key_to_symbol.get(key)
         if existing is not None:
             return existing
 
+        if len(key_to_symbol) >= len(symbols):
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message="inconsistent dims: too many atomic axes for einsum symbol budget",
+                help="use fewer distinct atomic axis symbols in one contract call",
+                related=("contract equation",),
+                data={},
+            )
         assigned = symbols[len(key_to_symbol)]
         key_to_symbol[key] = assigned
         return assigned
