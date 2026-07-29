@@ -3,10 +3,11 @@ from pathlib import Path
 import pytest
 
 lsprotocol = pytest.importorskip("lsprotocol")
-_ = lsprotocol
+pygls = pytest.importorskip("pygls")
+_ = lsprotocol, pygls
 from lsprotocol import types as lsp
 
-from einf.analysis.lsp import LspService
+from einf.analysis.lsp import LspService, encode_semantic_tokens
 from einf.analysis.lsp.hover import build_hover
 from einf.analysis.lsp.inlay_hints import build_inlay_hints
 from einf.analysis.lsp.position_codec import LspPositionCodec
@@ -26,6 +27,13 @@ def test_lsp_presentation_conformance_cases(tmp_path: Path, case) -> None:
         lines=state.source_lines,
         encoding=lsp.PositionEncodingKind.Utf16,
     )
+
+    assert len(
+        encode_semantic_tokens(
+            state.report.axis_tokens,
+            position_codec=position_codec,
+        )
+    ) == case.expected_semantic_token_int_count
 
     if case.expected_inlay_labels:
         assert (

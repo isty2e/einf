@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+
+lsprotocol = pytest.importorskip("lsprotocol")
+pygls = pytest.importorskip("pygls")
+_ = lsprotocol, pygls
 from lsprotocol import types as lsp
 
 from einf.analysis.lsp import (
@@ -26,6 +30,45 @@ _ENCODING_CASES = (
     (lsp.PositionEncodingKind.Utf16, 3, 7),
     (lsp.PositionEncodingKind.Utf32, 2, 6),
 )
+
+
+def test_encode_semantic_tokens_uses_fixed_palette_and_modifiers() -> None:
+    tokens = (
+        AxisToken(
+            name="b",
+            span=TextSpan(
+                start=TextPosition(line=2, column=4),
+                end=TextPosition(line=2, column=5),
+            ),
+            group=0,
+            roles=("introduced",),
+        ),
+        AxisToken(
+            name="n",
+            span=TextSpan(
+                start=TextPosition(line=2, column=7),
+                end=TextPosition(line=2, column=8),
+            ),
+            group=9,
+            roles=("contracted", "pack"),
+        ),
+    )
+
+    assert encode_semantic_tokens(
+        tokens,
+        position_codec=LspPositionCodec(lines=("\n", "        \n")),
+    ) == [
+        1,
+        4,
+        1,
+        0,
+        1,
+        0,
+        3,
+        1,
+        1,
+        (1 << 2) | (1 << 3),
+    ]
 
 
 def _initialize_server(

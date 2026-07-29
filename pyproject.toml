@@ -79,7 +79,9 @@ exclude = [
   "src/einf/analysis/lsp/cli.py",
   "src/einf/analysis/lsp/hover.py",
   "src/einf/analysis/lsp/inlay_hints.py",
+  "src/einf/analysis/lsp/position_codec.py",
   "src/einf/analysis/lsp/server.py",
+  "tests/analysis/test_analysis_lsp_position_encoding.py",
   "tests/analysis/test_analysis_lsp_server.py",
   "tests/analysis/test_conformance_analysis_lsp.py",
   # Checked by the optional PyTorch integration job.

@@ -54,6 +54,9 @@ jobs:
           src/einf/analysis/lsp/server.py
           src/einf/analysis/lsp/hover.py
           src/einf/analysis/lsp/inlay_hints.py
+          src/einf/analysis/lsp/position_codec.py
+          src/einf/analysis/lsp/semantic_tokens.py
+          tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis_lsp.py
       - name: Test optional LSP transport
@@ -61,6 +64,7 @@ jobs:
           pytest
           tests/analysis/test_analysis_lsp.py
           tests/analysis/test_analysis_lsp_debounce.py
+          tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis.py
           tests/analysis/test_conformance_analysis_lsp.py

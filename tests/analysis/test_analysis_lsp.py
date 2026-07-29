@@ -9,11 +9,9 @@ from einf.analysis.checkers import (
 from einf.analysis.lsp import (
     LspConfig,
     LspService,
-    encode_semantic_tokens,
     path_from_uri,
 )
-from einf.analysis.lsp.position_codec import LspPositionCodec
-from einf.analysis.model import AxisToken, TextPosition, TextSpan
+from einf.analysis.model import TextPosition, TextSpan
 
 VALID_SOURCE = """from einf import ax, axes, rearrange\nb = axes(\"b\")[0]\nrearrange(ax[b], ax[b])\n"""
 INVALID_SOURCE = """from einf import ax, axes, reduce\nb, n, z = axes(\"b\", \"n\", \"z\")\nreduce(ax[b, n], ax[b, z])\n"""
@@ -271,42 +269,3 @@ def test_lsp_service_change_clears_stale_checker_diagnostics(
     assert checked.report.checker_diagnostics == (checker_diagnostic,)
     assert changed.checker_result is None
     assert changed.report.checker_diagnostics == ()
-
-
-def test_encode_semantic_tokens_uses_fixed_palette_and_modifiers() -> None:
-    tokens = (
-        AxisToken(
-            name="b",
-            span=TextSpan(
-                start=TextPosition(line=2, column=4),
-                end=TextPosition(line=2, column=5),
-            ),
-            group=0,
-            roles=("introduced",),
-        ),
-        AxisToken(
-            name="n",
-            span=TextSpan(
-                start=TextPosition(line=2, column=7),
-                end=TextPosition(line=2, column=8),
-            ),
-            group=9,
-            roles=("contracted", "pack"),
-        ),
-    )
-
-    assert encode_semantic_tokens(
-        tokens,
-        position_codec=LspPositionCodec(lines=("\n", "        \n")),
-    ) == [
-        1,
-        4,
-        1,
-        0,
-        1,
-        0,
-        3,
-        1,
-        1,
-        (1 << 2) | (1 << 3),
-    ]
