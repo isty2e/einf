@@ -34,13 +34,22 @@ class DimSearch:
         self.seen_solutions.add(key)
         self.solutions.append(result)
 
-    def _search_operands(self, index: int, state: PartialState) -> None:
-        """Depth-first operand matching with early-exit on second solution."""
-        if len(self.solutions) >= 2:
+    def _search_operands(
+        self,
+        index: int,
+        state: PartialState,
+        *,
+        solution_limit: int,
+    ) -> None:
+        """Depth-first operand matching up to the requested solution count."""
+        if len(self.solutions) >= solution_limit:
             return
 
         if index == self.signature.input_arity:
-            finalization = self.equation_solver.finalize_state(state=state)
+            finalization = self.equation_solver.finalize_state(
+                state=state,
+                solution_limit=solution_limit,
+            )
             if finalization.status == "inconsistent":
                 return
             if finalization.status == "unresolved_pack":
@@ -52,7 +61,7 @@ class DimSearch:
 
             for result in finalization.results:
                 self._commit_solution(result)
-                if len(self.solutions) >= 2:
+                if len(self.solutions) >= solution_limit:
                     return
             return
 
@@ -65,13 +74,17 @@ class DimSearch:
             term_index=0,
             dim_index=0,
         ):
-            if len(self.solutions) >= 2:
+            if len(self.solutions) >= solution_limit:
                 return
-            self._search_operands(index + 1, matched_state)
+            self._search_operands(
+                index + 1,
+                matched_state,
+                solution_limit=solution_limit,
+            )
 
     def has_feasible_assignment(self) -> bool:
         """Return whether at least one consistent assignment exists."""
-        self._search_operands(0, self.initial_state)
+        self._search_operands(0, self.initial_state, solution_limit=1)
         return bool(
             self.solutions
             or self.unresolved_pack_ambiguity
@@ -80,7 +93,7 @@ class DimSearch:
 
     def run(self) -> DimSolveResult:
         """Run search and return one unique solve result or raise."""
-        self._search_operands(0, self.initial_state)
+        self._search_operands(0, self.initial_state, solution_limit=2)
 
         if self.unresolved_pack_ambiguity:
             raise ValidationError(
