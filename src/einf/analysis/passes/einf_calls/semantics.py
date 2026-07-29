@@ -6,8 +6,9 @@ from einf.analysis.passes.call_resolution import EINF_OP_NAMES, CallBindings
 from einf.analysis.source import SourceText
 from einf.axis import AxisSide
 from einf.diagnostics import ValidationError
-from einf.operations import TensorOp, contract, einop, rearrange, reduce, repeat, view
+from einf.operations import contract, einop, rearrange, reduce, repeat, view
 from einf.operations.kind import OperationKind
+from einf.operations.tensor_op import TensorOp
 from einf.operations.validation import validate_contract_atomic_terms
 from einf.signature import Signature
 

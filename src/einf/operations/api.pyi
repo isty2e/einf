@@ -1,4 +1,5 @@
-from typing import Protocol, TypeAlias, TypeVar, overload
+from collections.abc import Callable
+from typing import ClassVar, Protocol, TypeAlias, TypeVar, overload
 
 from typing_extensions import Self, Unpack
 
@@ -33,21 +34,33 @@ _Side7Plus: TypeAlias = tuple[
     Unpack[tuple[AxisTerms, ...]],
 ]
 
-class _TensorOpSurface(Protocol):
-    signature: Signature
-    abstract_plan: AbstractPlan
-    lhs: AxisSide
-    rhs: AxisSide
-    sizes: dict[str, int]
-    reducer_plan: ReducerPlan | None
+class TensorOp(Protocol):
+    @property
+    def name(self) -> str: ...
+    @property
+    def signature(self) -> Signature: ...
+    @property
+    def abstract_plan(self) -> AbstractPlan: ...
+    @property
+    def lhs(self) -> AxisSide: ...
+    @property
+    def rhs(self) -> AxisSide: ...
+    @property
+    def sizes(self) -> dict[str, int]: ...
+    @property
+    def sizes_items(self) -> tuple[tuple[str, int], ...]: ...
+    @property
+    def supports_reducer(self) -> bool: ...
+    @property
+    def reducer_plan(self) -> ReducerPlan | None: ...
+
+    __call__: ClassVar[Callable[..., object]]
 
     def with_sizes(self, **sizes: int) -> Self: ...
     def plan(self) -> str: ...
     def plan_dict(self) -> PlanDict: ...
 
-class TensorOp(_TensorOpSurface, Protocol): ...
-
-class _ReducerTensorOpSurface(_TensorOpSurface, Protocol):
+class _ReducerTensorOpSurface(Protocol):
     @overload
     def reduce_by(self, reducer: str) -> Self: ...
     @overload
@@ -69,32 +82,32 @@ class _ReducerTensorOpSurface(_TensorOpSurface, Protocol):
         *phases: tuple[AxisTerms, str | ReducerCallable],
     ) -> Self: ...
 
-class _TensorOp_1_1(_TensorOpSurface, Protocol):
+class _TensorOp_1_1(TensorOp, Protocol):
     def __call__(self, x1: _TensorFamily, /) -> _TensorFamily: ...
 
 class _ReduceTensorOp_1_1(_TensorOp_1_1, _ReducerTensorOpSurface, Protocol): ...
 
-class _TensorOp_1_2(_TensorOpSurface, Protocol):
+class _TensorOp_1_2(TensorOp, Protocol):
     def __call__(self, x1: _TensorFamily, /) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_1_3(_TensorOpSurface, Protocol):
+class _TensorOp_1_3(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_1_4(_TensorOpSurface, Protocol):
+class _TensorOp_1_4(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_1_5(_TensorOpSurface, Protocol):
+class _TensorOp_1_5(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, /
     ) -> tuple[
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_1_6(_TensorOpSurface, Protocol):
+class _TensorOp_1_6(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, /
     ) -> tuple[
@@ -106,32 +119,32 @@ class _TensorOp_1_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_2_1(_TensorOpSurface, Protocol):
+class _TensorOp_2_1(TensorOp, Protocol):
     def __call__(self, x1: _TensorFamily, x2: _TensorFamily, /) -> _TensorFamily: ...
 
-class _TensorOp_2_2(_TensorOpSurface, Protocol):
+class _TensorOp_2_2(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_2_3(_TensorOpSurface, Protocol):
+class _TensorOp_2_3(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_2_4(_TensorOpSurface, Protocol):
+class _TensorOp_2_4(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_2_5(_TensorOpSurface, Protocol):
+class _TensorOp_2_5(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /
     ) -> tuple[
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_2_6(_TensorOpSurface, Protocol):
+class _TensorOp_2_6(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /
     ) -> tuple[
@@ -143,34 +156,34 @@ class _TensorOp_2_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_3_1(_TensorOpSurface, Protocol):
+class _TensorOp_3_1(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> _TensorFamily: ...
 
-class _TensorOp_3_2(_TensorOpSurface, Protocol):
+class _TensorOp_3_2(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_3_3(_TensorOpSurface, Protocol):
+class _TensorOp_3_3(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_3_4(_TensorOpSurface, Protocol):
+class _TensorOp_3_4(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_3_5(_TensorOpSurface, Protocol):
+class _TensorOp_3_5(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> tuple[
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_3_6(_TensorOpSurface, Protocol):
+class _TensorOp_3_6(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, x3: _TensorFamily, /
     ) -> tuple[
@@ -182,7 +195,7 @@ class _TensorOp_3_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_4_1(_TensorOpSurface, Protocol):
+class _TensorOp_4_1(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -192,7 +205,7 @@ class _TensorOp_4_1(_TensorOpSurface, Protocol):
         /,
     ) -> _TensorFamily: ...
 
-class _TensorOp_4_2(_TensorOpSurface, Protocol):
+class _TensorOp_4_2(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -202,7 +215,7 @@ class _TensorOp_4_2(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_4_3(_TensorOpSurface, Protocol):
+class _TensorOp_4_3(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -212,7 +225,7 @@ class _TensorOp_4_3(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_4_4(_TensorOpSurface, Protocol):
+class _TensorOp_4_4(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -222,7 +235,7 @@ class _TensorOp_4_4(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_4_5(_TensorOpSurface, Protocol):
+class _TensorOp_4_5(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -234,7 +247,7 @@ class _TensorOp_4_5(_TensorOpSurface, Protocol):
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_4_6(_TensorOpSurface, Protocol):
+class _TensorOp_4_6(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -251,7 +264,7 @@ class _TensorOp_4_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_5_1(_TensorOpSurface, Protocol):
+class _TensorOp_5_1(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -262,7 +275,7 @@ class _TensorOp_5_1(_TensorOpSurface, Protocol):
         /,
     ) -> _TensorFamily: ...
 
-class _TensorOp_5_2(_TensorOpSurface, Protocol):
+class _TensorOp_5_2(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -273,7 +286,7 @@ class _TensorOp_5_2(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_5_3(_TensorOpSurface, Protocol):
+class _TensorOp_5_3(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -284,7 +297,7 @@ class _TensorOp_5_3(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_5_4(_TensorOpSurface, Protocol):
+class _TensorOp_5_4(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -295,7 +308,7 @@ class _TensorOp_5_4(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_5_5(_TensorOpSurface, Protocol):
+class _TensorOp_5_5(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -308,7 +321,7 @@ class _TensorOp_5_5(_TensorOpSurface, Protocol):
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_5_6(_TensorOpSurface, Protocol):
+class _TensorOp_5_6(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -326,7 +339,7 @@ class _TensorOp_5_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_6_1(_TensorOpSurface, Protocol):
+class _TensorOp_6_1(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -338,7 +351,7 @@ class _TensorOp_6_1(_TensorOpSurface, Protocol):
         /,
     ) -> _TensorFamily: ...
 
-class _TensorOp_6_2(_TensorOpSurface, Protocol):
+class _TensorOp_6_2(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -350,7 +363,7 @@ class _TensorOp_6_2(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_6_3(_TensorOpSurface, Protocol):
+class _TensorOp_6_3(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -362,7 +375,7 @@ class _TensorOp_6_3(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_6_4(_TensorOpSurface, Protocol):
+class _TensorOp_6_4(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -374,7 +387,7 @@ class _TensorOp_6_4(_TensorOpSurface, Protocol):
         /,
     ) -> tuple[_TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily]: ...
 
-class _TensorOp_6_5(_TensorOpSurface, Protocol):
+class _TensorOp_6_5(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -388,7 +401,7 @@ class _TensorOp_6_5(_TensorOpSurface, Protocol):
         _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily, _TensorFamily
     ]: ...
 
-class _TensorOp_6_6(_TensorOpSurface, Protocol):
+class _TensorOp_6_6(TensorOp, Protocol):
     def __call__(
         self,
         x1: _TensorFamily,
@@ -407,15 +420,15 @@ class _TensorOp_6_6(_TensorOpSurface, Protocol):
         _TensorFamily,
     ]: ...
 
-class _TensorOp_1_N(_TensorOpSurface, Protocol):
+class _TensorOp_1_N(TensorOp, Protocol):
     def __call__(self, x1: _TensorFamily, /) -> tuple[_TensorFamily, ...]: ...
 
-class _TensorOp_N_1(_TensorOpSurface, Protocol):
+class _TensorOp_N_1(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /, *xs: _TensorFamily
     ) -> _TensorFamily: ...
 
-class _TensorOp_N_N(_TensorOpSurface, Protocol):
+class _TensorOp_N_N(TensorOp, Protocol):
     def __call__(
         self, x1: _TensorFamily, x2: _TensorFamily, /, *xs: _TensorFamily
     ) -> tuple[_TensorFamily, ...]: ...
@@ -646,7 +659,5 @@ def einop(lhs: _Side1, rhs: _Side7Plus) -> _EinopTensorOp_1_N: ...
 def einop(lhs: _Side7Plus, rhs: _Side1) -> _EinopTensorOp_N_1: ...
 @overload
 def einop(lhs: _Side7Plus, rhs: _Side7Plus) -> _EinopTensorOp_N_N: ...
-def view(lhs: object, rhs: object) -> _TensorOp_N_N: ...
-def rearrange(lhs: object, rhs: object) -> _TensorOp_N_N: ...
-def contract(lhs: object, rhs: object) -> _TensorOp_N_N: ...
-def einop(lhs: object, rhs: object) -> _EinopTensorOp_N_N: ...
+
+__all__ = ["TensorOp", "contract", "einop", "rearrange", "reduce", "repeat", "view"]

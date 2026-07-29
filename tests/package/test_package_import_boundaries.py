@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from importlib.util import resolve_name
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = PROJECT_ROOT / "src"
-PACKAGE_ROOT = SOURCE_ROOT / "einf"
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,10 +179,52 @@ def test_import_boundary_scanner_normalizes_relative_imports() -> None:
     assert "einf.steps.context" in references
 
 
-def _find_boundary_violations() -> tuple[BoundaryViolation, ...]:
+def test_import_boundary_scanner_detects_forbidden_import(tmp_path: Path) -> None:
+    path = tmp_path / "src" / "einf" / "steps" / "sample.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("from einf.plans import AbstractPlan\n", encoding="utf-8")
+
+    assert _find_boundary_violations(tmp_path) == (
+        BoundaryViolation(
+            path="src/einf/steps/sample.py",
+            line=1,
+            imported_module="einf.plans",
+            rule_name="steps-must-not-import-plans",
+        ),
+    )
+
+
+def test_import_boundary_scanner_rejects_missing_package_root(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AssertionError, match="package source root does not exist"):
+        _find_boundary_violations(tmp_path)
+
+
+def test_import_boundary_scanner_rejects_empty_package_root(tmp_path: Path) -> None:
+    (tmp_path / "src" / "einf").mkdir(parents=True)
+
+    with pytest.raises(AssertionError, match="found no Python files"):
+        _find_boundary_violations(tmp_path)
+
+
+def _find_boundary_violations(
+    project_root: Path = PROJECT_ROOT, /
+) -> tuple[BoundaryViolation, ...]:
+    source_root = project_root / "src"
+    package_root = source_root / "einf"
+    if not package_root.is_dir():
+        raise AssertionError(f"package source root does not exist: {package_root}")
+
+    paths = tuple(sorted(package_root.rglob("*.py")))
+    if not paths:
+        raise AssertionError(
+            f"package boundary scan found no Python files: {package_root}"
+        )
+
     violations: set[BoundaryViolation] = set()
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        module_name = _module_name_for_path(path)
+    for path in paths:
+        module_name = _module_name_for_path(path, source_root=source_root)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for reference in _import_references(
             tree=tree, module_name=module_name, path=path
@@ -193,7 +235,7 @@ def _find_boundary_violations() -> tuple[BoundaryViolation, ...]:
                 ) and _matches_prefix(reference.module, rule.target_prefix):
                     violations.add(
                         BoundaryViolation(
-                            path=_relative_posix(path),
+                            path=_relative_posix(path, project_root=project_root),
                             line=reference.line,
                             imported_module=reference.module,
                             rule_name=rule.name,
@@ -234,8 +276,8 @@ def _resolve_import_from_module(
     return resolve_name(relative_module, package_name)
 
 
-def _module_name_for_path(path: Path) -> str:
-    relative = path.relative_to(SOURCE_ROOT).with_suffix("")
+def _module_name_for_path(path: Path, *, source_root: Path) -> str:
+    relative = path.relative_to(source_root).with_suffix("")
     parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
     return ".".join(parts)
 
@@ -246,8 +288,8 @@ def _package_name_for_imports(*, module_name: str, path: Path) -> str:
     return module_name.rpartition(".")[0]
 
 
-def _relative_posix(path: Path) -> str:
-    return path.relative_to(PROJECT_ROOT).as_posix()
+def _relative_posix(path: Path, *, project_root: Path) -> str:
+    return path.relative_to(project_root).as_posix()
 
 
 def _matches_any_prefix(module_name: str, prefixes: tuple[str, ...]) -> bool:

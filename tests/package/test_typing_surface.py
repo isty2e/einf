@@ -6,7 +6,7 @@ from subprocess import CompletedProcess, run
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 _DUMMY_TENSOR_SNIPPET = """
 from collections.abc import Iterator
 from types import EllipsisType
@@ -84,11 +84,13 @@ def basedpyright_bin() -> str:
 
 @pytest.fixture
 def pyright_env() -> dict[str, str]:
-    """Build environment with src path for external type-check process."""
+    """Build deterministic environment for the external type-check process."""
     env = dict(os.environ)
     src_path = str(REPO_ROOT / "src")
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = src_path if not existing else f"{src_path}:{existing}"
+    env["LANG"] = "C"
+    env["LC_ALL"] = "C"
     return env
 
 
@@ -255,3 +257,57 @@ reveal_type(ok)
 
     error_messages = _collect_error_messages(output)
     assert any("reduce_by" in message for message in error_messages)
+
+
+def test_exact_arity_result_is_a_public_tensor_op(
+    basedpyright_bin: str, pyright_env: dict[str, str], tmp_path: Path
+) -> None:
+    output = _run_basedpyright(
+        binary=basedpyright_bin,
+        env=pyright_env,
+        tmp_path=tmp_path,
+        source="""
+from collections.abc import Callable
+
+from einf import TensorOp, ax, axes, rearrange
+
+b, n = axes("b", "n")
+exact = rearrange(ax[b, n], ax[n, b])
+public: TensorOp = exact
+callable_op: Callable[..., object] = public
+
+reveal_type(public.name)
+reveal_type(public.sizes)
+reveal_type(public.sizes_items)
+reveal_type(public.supports_reducer)
+""",
+    )
+
+    messages = _collect_revealed_types(output)
+    assert 'Type of "public.name" is "str"' in messages
+    assert 'Type of "public.sizes" is "dict[str, int]"' in messages
+    assert 'Type of "public.sizes_items" is "tuple[tuple[str, int], ...]"' in messages
+    assert 'Type of "public.supports_reducer" is "bool"' in messages
+
+
+def test_public_tensor_op_metadata_is_read_only(
+    basedpyright_bin: str, pyright_env: dict[str, str], tmp_path: Path
+) -> None:
+    output = _run_basedpyright(
+        binary=basedpyright_bin,
+        env=pyright_env,
+        tmp_path=tmp_path,
+        expect_success=False,
+        source="""
+from einf import TensorOp
+
+def mutate(op: TensorOp) -> None:
+    op.name = "other"
+    op.sizes = {}
+    op.supports_reducer = False
+""",
+    )
+
+    error_messages = _collect_error_messages(output)
+    for property_name in ("name", "sizes", "supports_reducer"):
+        assert any(property_name in message for message in error_messages)

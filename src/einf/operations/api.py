@@ -90,4 +90,4 @@ def einop(
     )
 
 
-__all__ = ["contract", "einop", "rearrange", "reduce", "repeat", "view"]
+__all__ = ["TensorOp", "contract", "einop", "rearrange", "reduce", "repeat", "view"]

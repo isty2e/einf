@@ -21,9 +21,11 @@ dev = [
   "build>=1.2",
   "einx",
   "einops",
+  "mypy>=1.19",
   "numpy>=1.26",
   "pytest>=8.0",
   "ruff==0.16.0",
+  "ty>=0.0.64",
 ]
 analysis = [
   "libcst>=1.0",

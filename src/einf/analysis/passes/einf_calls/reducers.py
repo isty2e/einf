@@ -2,7 +2,7 @@ import ast
 
 from einf.analysis.model import AnalysisDiagnostic
 from einf.diagnostics import ValidationError
-from einf.operations import TensorOp
+from einf.operations.tensor_op import TensorOp
 from einf.reduction.schema import Reducer
 from einf.tensor_types import TensorLike
 

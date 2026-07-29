@@ -6,7 +6,7 @@ from einf.analysis.model import AnalysisDiagnostic, TextPosition, TextSpan
 from einf.analysis.passes.call_resolution import CallBindings
 from einf.analysis.source import SourceText
 from einf.axis import AxisSide, AxisTerms
-from einf.operations import TensorOp
+from einf.operations.tensor_op import TensorOp
 from einf.reduction.schema import Reducer
 
 _CallSide = Literal["lhs", "rhs"]
