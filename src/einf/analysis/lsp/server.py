@@ -251,9 +251,14 @@ def _publish_document_state(
     ls: EinfLanguageServer,
     state: LspDocumentState,
 ) -> None:
-    diagnostics = _build_diagnostics(
-        state.report,
-        position_codec=ls.position_codec(state),
+    report = state.report
+    diagnostics = (
+        _build_diagnostics(
+            report,
+            position_codec=ls.position_codec(state),
+        )
+        if report.has_errors()
+        else []
     )
     ls.text_document_publish_diagnostics(
         lsp.PublishDiagnosticsParams(

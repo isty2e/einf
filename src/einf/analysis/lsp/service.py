@@ -19,20 +19,26 @@ class LspDocumentState:
     source: str
     semantic_report: ValidationFileReport
     checker_result: CheckerResult | None = None
-    source_lines: tuple[str, ...] = field(
+    _source_lines: tuple[str, ...] | None = field(
+        default=None,
         init=False,
         repr=False,
         compare=False,
     )
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "source_lines",
-            tuple(self.source.splitlines(keepends=True)),
-        )
         if self.semantic_report.checker_diagnostics:
             raise ValueError("semantic report cannot contain checker diagnostics")
+
+    @property
+    def source_lines(self) -> tuple[str, ...]:
+        """Return lazily indexed lines for this immutable source snapshot."""
+        existing = self._source_lines
+        if existing is not None:
+            return existing
+        lines = tuple(self.source.splitlines(keepends=True))
+        object.__setattr__(self, "_source_lines", lines)
+        return lines
 
     @property
     def report(self) -> ValidationFileReport:

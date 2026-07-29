@@ -264,3 +264,37 @@ def test_server_features_share_the_negotiated_position_codec(
         start=lsp.Position(line=0, character=wire_start),
         end=lsp.Position(line=0, character=wire_end),
     )
+
+
+def test_empty_diagnostic_publish_skips_position_indexing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = build_server()
+    state = LspDocumentState(
+        uri="file:///workspace/irrelevant.py",
+        path=Path("/workspace/irrelevant.py"),
+        version=1,
+        source="value = 1\n",
+        semantic_report=ValidationFileReport(
+            path="/workspace/irrelevant.py",
+            diagnostics=(),
+            checker_diagnostics=(),
+            axis_tokens=(),
+            failures=(),
+        ),
+    )
+    published: list[lsp.PublishDiagnosticsParams] = []
+    monkeypatch.setattr(
+        server,
+        "position_codec",
+        lambda state: pytest.fail(f"unexpected position indexing for {state.uri}"),
+    )
+    monkeypatch.setattr(
+        server,
+        "text_document_publish_diagnostics",
+        published.append,
+    )
+
+    _publish_document_state(server, state)
+
+    assert published[0].diagnostics == []
