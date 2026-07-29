@@ -23,8 +23,6 @@ jobs:
         run: ruff check --extend-select I,UP src tests benchmarks
       - name: Typecheck project
         run: basedpyright --pythonpath "$(which python)"
-      - name: Typecheck profiling tool
-        run: basedpyright --pythonpath "$(which python)" benchmarks/profile/lsp_latency.py
       - name: Test
         run: pytest
       - name: Docs
@@ -50,6 +48,7 @@ jobs:
         run: >-
           basedpyright
           --pythonpath "$(which python)"
+          benchmarks/profile/lsp_latency.py
           src/einf/analysis/lsp/cli.py
           src/einf/analysis/lsp/server.py
           src/einf/analysis/lsp/hover.py
