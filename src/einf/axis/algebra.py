@@ -2,8 +2,32 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
+from ..diagnostics import ErrorCode, ValidationError
 from .base import ScalarAxisTermBase
 from .terms import Axis, AxisExpr, AxisInt
+
+_MAX_CANONICAL_PRODUCT_CANDIDATES = 1_024
+
+
+def _canonical_product_limit_error(attempted: int) -> ValidationError:
+    """Build the stable diagnostic for excessive distributive expansion."""
+    return ValidationError(
+        code=ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX,
+        message=(
+            "axis expression canonicalization exceeded "
+            "the distributive product candidate limit"
+        ),
+        help=(
+            "reduce independent additive factors or split "
+            "the transformation into smaller operations"
+        ),
+        related=("axis expression canonicalization",),
+        data={
+            "complexity_kind": "distributive_product_candidates",
+            "limit": _MAX_CANONICAL_PRODUCT_CANDIDATES,
+            "attempted": attempted,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +121,13 @@ class CanonicalScalarExpr:
         return type(self)(self.monomials + other.monomials)
 
     def __mul__(self, other: "CanonicalScalarExpr") -> "CanonicalScalarExpr":
-        """Return canonical product."""
+        """Return canonical product within the distributive work limit."""
         if not self.monomials or not other.monomials:
             return type(self).zero()
+
+        attempted = len(self.monomials) * len(other.monomials)
+        if attempted > _MAX_CANONICAL_PRODUCT_CANDIDATES:
+            raise _canonical_product_limit_error(attempted)
 
         products: list[CanonicalMonomial] = []
         for left in self.monomials:

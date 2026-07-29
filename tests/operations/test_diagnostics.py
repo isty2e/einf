@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
+import einf.axis.algebra as axis_algebra_module
 from einf import ErrorCode, ExecutionError, Signature, ValidationError, ax, axes, view
 from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.solver import solve_dimensions
@@ -63,6 +64,76 @@ def test_dim_solver_ambiguity_contains_help_and_related_metadata() -> None:
     assert error.value.help is not None
     assert "with_sizes constraints" in error.value.help
     assert "dim solver" in error.value.related
+
+
+def test_dim_solver_preserves_axis_expression_complexity_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a, b, c, d, e, f = axes(
+        "solver_limit_a",
+        "solver_limit_b",
+        "solver_limit_c",
+        "solver_limit_d",
+        "solver_limit_e",
+        "solver_limit_f",
+    )
+    expression = ((a + b) * (c + d)) * (e + f)
+    signature = Signature(inputs=(ax[expression],), outputs=(ax[a, b, c, d, e, f],))
+    monkeypatch.setattr(
+        axis_algebra_module,
+        "_MAX_CANONICAL_PRODUCT_CANDIDATES",
+        4,
+    )
+    axis_algebra_module._canonicalize_term.cache_clear()
+
+    try:
+        with pytest.raises(ValidationError) as error:
+            solve_dimensions(signature, input_shapes=((8,),))
+    finally:
+        axis_algebra_module._canonicalize_term.cache_clear()
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
+
+
+def test_view_preserves_axis_expression_complexity_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a, b, c, d, e, f = axes(
+        "view_limit_a",
+        "view_limit_b",
+        "view_limit_c",
+        "view_limit_d",
+        "view_limit_e",
+        "view_limit_f",
+    )
+    rest = (c + d) * (e + f)
+    monkeypatch.setattr(
+        axis_algebra_module,
+        "_MAX_CANONICAL_PRODUCT_CANDIDATES",
+        4,
+    )
+    axis_algebra_module._canonicalize_term.cache_clear()
+
+    try:
+        with pytest.raises(ValidationError) as error:
+            _ = view(
+                ax[(a + b) * rest],
+                (ax[a * rest], ax[b * rest]),
+            )
+    finally:
+        axis_algebra_module._canonicalize_term.cache_clear()
+
+    assert error.value.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
+    assert error.value.data == {
+        "complexity_kind": "distributive_product_candidates",
+        "limit": 4,
+        "attempted": 8,
+    }
 
 
 def test_with_sizes_negative_binding_raises_inconsistent_dims_diagnostic() -> None:

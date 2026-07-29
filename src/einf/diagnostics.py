@@ -11,6 +11,7 @@ class ErrorCode(str, Enum):
     DIM_SOLVE_ERROR = "dim_solve_error"
     INCONSISTENT_DIMS = "inconsistent_dims"
     AMBIGUOUS_DIMS = "ambiguous_dims"
+    AXIS_EXPRESSION_TOO_COMPLEX = "axis_expression_too_complex"
     NUMEL_MISMATCH_GROW = "numel_mismatch_grow"
     NUMEL_MISMATCH_SHRINK = "numel_mismatch_shrink"
     CONTRACT_NON_ATOMIC_AXIS = "contract_non_atomic_axis"

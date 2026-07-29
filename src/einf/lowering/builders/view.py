@@ -202,6 +202,8 @@ def build_view_symbolic_plan(
             reducer_plan=None,
         )
     except ValidationError as error:
+        if error.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value:
+            raise
         raise _not_a_view_lowering_error() from error
 
     view_safe_plan = _build_view_safe_plan_from_rearrange(rearrange_plan)
