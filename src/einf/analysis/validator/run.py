@@ -19,12 +19,13 @@ from einf.analysis.parser import (
     ParserUnavailableError,
 )
 from einf.analysis.validator.model import (
+    ValidationDiscoveryFailure,
     ValidationFailure,
     ValidationFileReport,
     ValidationReport,
 )
 
-SCHEMA_VERSION = "0.1"
+SCHEMA_VERSION = "0.2"
 SUPPORTED_PARSER_NAMES = ("ast", "libcst")
 
 
@@ -47,7 +48,7 @@ def run_validation(
     checker_execution_policy: CheckerExecutionPolicy | None = None,
 ) -> ValidationReport:
     """Analyze Python targets and return one stable validation report."""
-    resolved_targets = _resolve_python_targets(targets)
+    resolved_targets, discovery_failures = _resolve_python_targets(targets)
     project_root = _infer_project_root(resolved_targets)
     checker_targets = tuple(path for path in resolved_targets if path.is_file())
     try:
@@ -73,6 +74,7 @@ def run_validation(
         schema_version=SCHEMA_VERSION,
         parser_backend=parser_backend.name,
         checker_failures=checker_result.failures,
+        discovery_failures=discovery_failures,
         files=tuple(
             _merge_file_report(
                 path=path,
@@ -87,15 +89,17 @@ def run_validation(
     )
 
 
-def _resolve_python_targets(targets: tuple[Path, ...]) -> tuple[Path, ...]:
+def _resolve_python_targets(
+    targets: tuple[Path, ...],
+) -> tuple[tuple[Path, ...], tuple[ValidationDiscoveryFailure, ...]]:
     resolved: list[Path] = []
+    discovery_failures: list[ValidationDiscoveryFailure] = []
     seen: set[Path] = set()
 
     for target in targets:
         if target.is_dir():
-            candidates = tuple(
-                sorted(path for path in target.rglob("*.py") if path.is_file())
-            )
+            candidates, target_failures = _walk_python_files(target)
+            discovery_failures.extend(target_failures)
         else:
             candidates = (target,)
         for candidate in candidates:
@@ -105,7 +109,71 @@ def _resolve_python_targets(targets: tuple[Path, ...]) -> tuple[Path, ...]:
             seen.add(normalized)
             resolved.append(normalized)
 
-    return tuple(resolved)
+    return (
+        tuple(resolved),
+        tuple(
+            sorted(
+                set(discovery_failures),
+                key=lambda failure: (failure.path, failure.kind, failure.message),
+            )
+        ),
+    )
+
+
+def _walk_python_files(
+    target: Path,
+) -> tuple[tuple[Path, ...], tuple[ValidationDiscoveryFailure, ...]]:
+    candidates: list[Path] = []
+    failures: list[ValidationDiscoveryFailure] = []
+    pending_directories = [target]
+
+    def record_failure(error: OSError, *, fallback_path: Path) -> None:
+        failed_path = (
+            fallback_path
+            if error.filename is None
+            else Path(os.fsdecode(error.filename))
+        )
+        failures.append(
+            ValidationDiscoveryFailure(
+                path=str(failed_path.resolve(strict=False)),
+                kind="directory_traversal_error",
+                message=str(error),
+            )
+        )
+
+    while pending_directories:
+        directory = pending_directories.pop()
+        try:
+            with os.scandir(directory) as entries:
+                directory_entries = sorted(entries, key=lambda entry: entry.name)
+        except OSError as error:
+            record_failure(error, fallback_path=directory)
+            continue
+
+        child_directories: list[Path] = []
+        for entry in directory_entries:
+            entry_path = Path(entry.path)
+            try:
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError as error:
+                record_failure(error, fallback_path=entry_path)
+                continue
+            if is_directory:
+                child_directories.append(entry_path)
+                continue
+            if not entry.name.endswith(".py"):
+                continue
+            try:
+                is_file = entry.is_file()
+            except OSError as error:
+                record_failure(error, fallback_path=entry_path)
+                continue
+            if is_file:
+                candidates.append(entry_path)
+
+        pending_directories.extend(reversed(child_directories))
+
+    return tuple(sorted(candidates)), tuple(failures)
 
 
 def _infer_project_root(targets: tuple[Path, ...]) -> Path:

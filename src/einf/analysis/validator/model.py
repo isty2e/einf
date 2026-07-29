@@ -17,6 +17,15 @@ class ValidationFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidationDiscoveryFailure:
+    """Failure encountered while discovering files under one validation target."""
+
+    path: str
+    kind: Literal["directory_traversal_error"]
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationFileReport:
     """Machine-readable validation result for one analyzed path."""
 
@@ -38,16 +47,18 @@ class ValidationReport:
     schema_version: str
     parser_backend: str
     checker_failures: tuple[CheckerFailure, ...]
+    discovery_failures: tuple[ValidationDiscoveryFailure, ...]
     files: tuple[ValidationFileReport, ...]
 
     def exit_code(self) -> int:
         """Return process exit code for this validation report."""
-        if self.checker_failures:
+        if self.checker_failures or self.discovery_failures:
             return 1
         return 1 if any(file_report.has_errors() for file_report in self.files) else 0
 
 
 __all__ = [
+    "ValidationDiscoveryFailure",
     "ValidationFailure",
     "ValidationFailureKind",
     "ValidationFileReport",

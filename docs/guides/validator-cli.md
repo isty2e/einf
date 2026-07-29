@@ -38,10 +38,11 @@ are walked recursively for `*.py`.
 
 ## Exit codes
 
-1. `0` — no diagnostics, no parse/read failures, no checker invocation
-   failures.
+1. `0` — no diagnostics, no discovery/parse/read failures, no checker
+   invocation failures.
 2. `1` — any file contains semantic or checker diagnostics, parse failures,
-   or read failures; or any configured checker failed to execute.
+   or read failures; any target directory cannot be traversed completely; or
+   any configured checker failed to execute.
 
 ## Output contract
 
@@ -51,6 +52,7 @@ are walked recursively for `*.py`.
 - `parser_backend` — the parser that produced the report,
 - `checker_failures[]` — external checker invocation failures
   (unavailable executable, spawn failure, timeout, malformed output, etc.),
+- `discovery_failures[]` — directories that could not be traversed completely,
 - `files[]` — per-file report.
 
 Each file entry:
