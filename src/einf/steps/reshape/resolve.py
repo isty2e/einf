@@ -79,7 +79,7 @@ def _evaluate_symbolic_term(
     """Evaluate one scalar symbolic axis term with bound axis sizes."""
     try:
         return term_size(term, axis_sizes)
-    except Exception:
+    except (KeyError, TypeError):
         return None
 
 

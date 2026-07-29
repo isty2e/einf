@@ -300,22 +300,22 @@ From the repo root, in an environment with `einf`, `einops`, `einx`,
 and `torch` installed:
 
 ```bash
-python benchmarks/compare/einf_einops_einx.py \
+python -m benchmarks.compare.einf_einops_einx \
   --backend torch --scale medium \
   --rounds 6 --cold-repeats 3 --warmup 4 --warm-repeats 5 --warm-iterations 60 \
   --output artifacts/bench/bench-torch-medium.md
 
-python benchmarks/compare/einf_einops_einx.py \
+python -m benchmarks.compare.einf_einops_einx \
   --backend torch --scale large \
   --rounds 6 --cold-repeats 3 --warmup 4 --warm-repeats 5 --warm-iterations 60 \
   --output artifacts/bench/bench-torch-large.md
 
-python benchmarks/compare/einf_einops_einx_dynamic.py \
+python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch --scale medium \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
   --output artifacts/bench/bench-torch-medium-dynamic.md
 
-python benchmarks/compare/einf_einops_einx_dynamic.py \
+python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch --scale large \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
   --output artifacts/bench/bench-torch-large-dynamic.md

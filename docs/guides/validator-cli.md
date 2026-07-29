@@ -21,6 +21,7 @@ einf-validate src/
 einf-validate src/ --parser ast
 einf-validate src/ --parser libcst
 einf-validate src/ --checker basedpyright --checker pyrefly
+einf-validate src/ --checker basedpyright --checker-timeout-seconds 60
 ```
 
 Positional arguments accept any mix of files and directories. Directories
@@ -32,13 +33,15 @@ are walked recursively for `*.py`.
 | --- | --- | --- | --- |
 | `--parser` | `ast`, `libcst` | `ast` | Parser backend. `libcst` needs the `analysis` extra. |
 | `--checker` | `pyright`, `basedpyright`, `zuban`, `ty`, `pyrefly` | none | External type checker to invoke alongside semantic analysis. Repeatable. |
+| `--checker-timeout-seconds` | finite positive number | `30` | Maximum runtime for each checker process. |
+| `--checker-max-concurrency` | positive integer | `1` | Maximum number of checker processes running concurrently. |
 
 ## Exit codes
 
 1. `0` — no diagnostics, no parse/read failures, no checker invocation
    failures.
-2. `1` — any file contains semantic diagnostics, parse failures, or read
-   failures; or any configured checker failed to execute.
+2. `1` — any file contains semantic or checker diagnostics, parse failures,
+   or read failures; or any configured checker failed to execute.
 
 ## Output contract
 
@@ -47,7 +50,7 @@ are walked recursively for `*.py`.
 - `schema_version` — output contract version,
 - `parser_backend` — the parser that produced the report,
 - `checker_failures[]` — external checker invocation failures
-  (unavailable executable, malformed output, etc.),
+  (unavailable executable, spawn failure, timeout, malformed output, etc.),
 - `files[]` — per-file report.
 
 Each file entry:

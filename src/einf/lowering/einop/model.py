@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 from einf.axis import AxisTerms
 
+from .layout import EinopLayoutNormalization
+
 
 @dataclass(frozen=True, slots=True)
 class EinopLoweringPlan:
@@ -13,6 +15,7 @@ class EinopLoweringPlan:
     carrier_index: int | None = None
     chain_order: tuple[int, ...] = ()
     tail_kind: str | None = None
+    layout_normalization: EinopLayoutNormalization | None = None
 
 
 __all__ = ["EinopLoweringPlan"]

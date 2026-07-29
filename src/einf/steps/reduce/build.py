@@ -11,8 +11,8 @@ from einf.backend import (
 )
 from einf.backend.namespace import derive_namespace_id
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import expand_pack_terms
-from einf.reduction.schema import Reducer
+from einf.reduction.schema import CanonicalReducer, ReducerName
+from einf.steps.context import expand_pack_terms
 from einf.tensor_types import TensorLike
 
 from .runtime import REDUCER_COMPILER, CompiledReducer
@@ -149,7 +149,7 @@ def build_reduce_compiled_program(
     pack_sizes: dict[str, tuple[int, ...]],
     pack_ranks: tuple[tuple[str, int], ...],
     reduce_axes: AxisTerms,
-    reducer: Reducer,
+    reducer: CanonicalReducer,
     backend_profile: BackendProfile,
 ) -> ReduceCompiledProgram:
     """Build one unary reduce runtime program from canonical terms and sizes."""
@@ -231,7 +231,7 @@ def _compile_reduce_runtime_phase(
     *,
     lhs_terms: ScalarAxisTerms,
     reduce_axes: AxisTerms,
-    reducer: Reducer,
+    reducer: CanonicalReducer,
     pack_sizes: dict[str, tuple[int, ...]],
     axis_sizes: dict[str, int],
     tensor: TensorLike,
@@ -261,7 +261,7 @@ def _build_reduce_compile_key(
     lhs_terms: ScalarAxisTerms,
     reduce_axes: AxisTerms,
     pack_ranks: tuple[tuple[str, int], ...],
-    reducer: Reducer,
+    reducer: CanonicalReducer,
     xp: ArrayNamespace,
 ) -> _ReduceCompileKey:
     """Build one structural cache key for unary reduce phase compilation."""
@@ -276,10 +276,10 @@ def _build_reduce_compile_key(
     )
 
 
-def _reducer_cache_token(reducer: Reducer) -> tuple[str, str | int]:
+def _reducer_cache_token(reducer: CanonicalReducer) -> tuple[str, str | int]:
     """Build stable cache token for one reducer."""
-    if isinstance(reducer, str):
-        return "string", reducer
+    if isinstance(reducer, ReducerName):
+        return "string", reducer.value
     return "callable", id(reducer)
 
 

@@ -225,7 +225,7 @@ def _to_markdown(report: WarmCallTreeReport, /) -> str:
         "## Repro",
         "",
         "```bash",
-        "PYTHONPATH=src python benchmarks/profile/warm_calltree.py \\",
+        "python -m benchmarks.profile.warm_calltree \\",
         f"  --backend {report.backend} \\",
         f"  --mode {report.mode} \\",
         f"  --scale {report.scale} \\",
@@ -292,7 +292,9 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260215)
     parser.add_argument("--warmup", type=int, default=32)
     parser.add_argument("--loops", type=int, default=256)
-    parser.add_argument("--sort", choices=("cumtime", "tottime", "ncalls"), default="cumtime")
+    parser.add_argument(
+        "--sort", choices=("cumtime", "tottime", "ncalls"), default="cumtime"
+    )
     parser.add_argument("--top", type=int, default=40)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--raw-output", type=Path, default=None)

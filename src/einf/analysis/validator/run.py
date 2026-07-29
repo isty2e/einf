@@ -1,10 +1,23 @@
+import asyncio
 import os
 from pathlib import Path
 
-from einf.analysis.checkers import CheckerAdapter, CheckerDiagnostic, CheckerFailure
+from einf.analysis.checkers import (
+    CheckerAdapter,
+    CheckerDiagnostic,
+    CheckerExecutionPolicy,
+    CheckerExecutor,
+    CheckerRequest,
+    CheckerResult,
+)
 from einf.analysis.engine import analyze_module
-from einf.analysis.model import TextPosition, TextSpan
-from einf.analysis.parser import AstParserBackend, LibCstParserBackend, ParserBackend
+from einf.analysis.parser import (
+    AstParserBackend,
+    LibCstParserBackend,
+    ParserBackend,
+    ParserSyntaxError,
+    ParserUnavailableError,
+)
 from einf.analysis.validator.model import (
     ValidationFailure,
     ValidationFileReport,
@@ -31,33 +44,44 @@ def run_validation(
     targets: tuple[Path, ...],
     parser_backend: ParserBackend,
     checker_adapters: tuple[CheckerAdapter, ...] = (),
+    checker_execution_policy: CheckerExecutionPolicy | None = None,
 ) -> ValidationReport:
     """Analyze Python targets and return one stable validation report."""
     resolved_targets = _resolve_python_targets(targets)
     project_root = _infer_project_root(resolved_targets)
     checker_targets = tuple(path for path in resolved_targets if path.is_file())
-    analyzer_reports = {
-        path: analyze_path(path=path, parser_backend=parser_backend)
-        for path in resolved_targets
-    }
-    checker_failures, checker_diagnostics_by_path = run_checker_adapters(
+    try:
+        parser_backend.validate_available()
+    except ParserUnavailableError as error:
+        analyzer_reports = {
+            path: _parser_unavailable_report(path=path, error=error)
+            for path in resolved_targets
+        }
+    else:
+        analyzer_reports = {
+            path: analyze_path(path=path, parser_backend=parser_backend)
+            for path in resolved_targets
+        }
+    checker_result = _run_checker_adapters(
         targets=checker_targets,
         checker_adapters=checker_adapters,
         project_root=project_root,
+        execution_policy=checker_execution_policy or CheckerExecutionPolicy(),
     )
 
     return ValidationReport(
         schema_version=SCHEMA_VERSION,
         parser_backend=parser_backend.name,
-        checker_failures=checker_failures,
+        checker_failures=checker_result.failures,
         files=tuple(
             _merge_file_report(
                 path=path,
                 analyzer_report=analyzer_reports.get(path),
-                checker_diagnostics=checker_diagnostics_by_path.get(path, ()),
+                checker_diagnostics=checker_result.diagnostics_for(path),
             )
             for path in sorted(
-                set(analyzer_reports) | set(checker_diagnostics_by_path),
+                set(analyzer_reports)
+                | {diagnostic.path for diagnostic in checker_result.diagnostics},
             )
         ),
     )
@@ -91,59 +115,23 @@ def _infer_project_root(targets: tuple[Path, ...]) -> Path:
     return Path(os.path.commonpath([str(root) for root in roots]))
 
 
-def run_checker_adapters(
+def _run_checker_adapters(
     *,
     targets: tuple[Path, ...],
     checker_adapters: tuple[CheckerAdapter, ...],
     project_root: Path,
-) -> tuple[
-    tuple[CheckerFailure, ...],
-    dict[Path, tuple[CheckerDiagnostic, ...]],
-]:
+    execution_policy: CheckerExecutionPolicy,
+) -> CheckerResult:
     if not targets or not checker_adapters:
-        return (), {}
+        return CheckerResult(diagnostics=(), failures=())
 
-    checker_failures: list[CheckerFailure] = []
-    checker_diagnostics_by_path: dict[Path, list[CheckerDiagnostic]] = {}
-    for checker_adapter in checker_adapters:
-        checker_result = checker_adapter.run(
-            targets=targets,
-            project_root=project_root,
-        )
-        checker_failures.extend(checker_result.failures)
-        for checker_diagnostic in checker_result.diagnostics:
-            checker_diagnostics_by_path.setdefault(
-                checker_diagnostic.path,
-                [],
-            ).append(checker_diagnostic)
-    return (
-        tuple(checker_failures),
-        {
-            path: _sort_checker_diagnostics(tuple(diagnostics))
-            for path, diagnostics in checker_diagnostics_by_path.items()
-        },
-    )
+    request = CheckerRequest(targets=targets, project_root=project_root)
 
+    async def execute() -> CheckerResult:
+        executor = CheckerExecutor(execution_policy)
+        return await executor.run_all(checker_adapters, request)
 
-def _sort_checker_diagnostics(
-    checker_diagnostics: tuple[CheckerDiagnostic, ...],
-) -> tuple[CheckerDiagnostic, ...]:
-    return tuple(
-        sorted(
-            checker_diagnostics,
-            key=lambda checker_diagnostic: (
-                checker_diagnostic.span.start.line
-                if checker_diagnostic.span is not None
-                else -1,
-                checker_diagnostic.span.start.column
-                if checker_diagnostic.span is not None
-                else -1,
-                checker_diagnostic.tool,
-                checker_diagnostic.code or "",
-                checker_diagnostic.message,
-            ),
-        )
-    )
+    return asyncio.run(execute())
 
 
 def _merge_file_report(
@@ -203,8 +191,10 @@ def analyze_source(
     """Analyze one in-memory source string as a single file report."""
     try:
         output = analyze_module(source=source, path=path, parser_backend=parser_backend)
-    except SyntaxError as error:
+    except ParserSyntaxError as error:
         return _parse_error_report(path=path, error=error)
+    except ParserUnavailableError as error:
+        return _parser_unavailable_report(path=path, error=error)
 
     return ValidationFileReport(
         path=str(path),
@@ -218,7 +208,7 @@ def analyze_source(
 def _parse_error_report(
     *,
     path: Path,
-    error: SyntaxError,
+    error: ParserSyntaxError,
 ) -> ValidationFileReport:
     return ValidationFileReport(
         path=str(path),
@@ -228,33 +218,31 @@ def _parse_error_report(
         failures=(
             ValidationFailure(
                 kind="parse_error",
-                message=str(error),
-                span=_syntax_error_span(error),
+                message=error.message,
+                span=error.span,
             ),
         ),
     )
 
 
-def _syntax_error_span(error: SyntaxError) -> TextSpan | None:
-    line = error.lineno
-    column = error.offset
-    if line is None or column is None or line < 1 or column < 1:
-        return None
-
-    start = TextPosition(line=line, column=column - 1)
-    end_line = error.end_lineno if error.end_lineno is not None else line
-    end_column = error.end_offset if error.end_offset is not None else column + 1
-    if end_line < 1 or end_column < 1:
-        return TextSpan(
-            start=start,
-            end=TextPosition(line=start.line, column=start.column + 1),
-        )
-
-    end = TextPosition(
-        line=end_line,
-        column=max(start.column + 1, end_column - 1),
+def _parser_unavailable_report(
+    *,
+    path: Path,
+    error: ParserUnavailableError,
+) -> ValidationFileReport:
+    return ValidationFileReport(
+        path=str(path),
+        diagnostics=(),
+        checker_diagnostics=(),
+        axis_tokens=(),
+        failures=(
+            ValidationFailure(
+                kind="parser_unavailable",
+                message=error.message,
+                span=None,
+            ),
+        ),
     )
-    return TextSpan(start=start, end=end)
 
 
 __all__ = ["SCHEMA_VERSION", "build_parser_backend", "run_validation"]

@@ -122,9 +122,7 @@ def _compile_reshape_compiled_program(
             rhs_fast_shape_eval_fns.append(fast_shape_eval_fn)
 
     return ReshapeCompiledProgram(
-        lhs_terms=tuple(
-            ScalarAxisTermBase.coerce(term) for term in scalar_lhs_terms
-        ),
+        lhs_terms=tuple(ScalarAxisTermBase.coerce(term) for term in scalar_lhs_terms),
         lhs_axis_names=tuple(lhs_axis_names),
         lhs_literal_dims=tuple(lhs_literal_dims),
         lhs_axis_equal_checks=tuple(lhs_axis_equal_checks),

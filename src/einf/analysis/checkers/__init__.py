@@ -1,12 +1,16 @@
 from .base import CheckerAdapter
-from .model import CheckerDiagnostic, CheckerFailure, CheckerResult
+from .execution import CheckerExecutionPolicy, CheckerExecutor
+from .model import CheckerDiagnostic, CheckerFailure, CheckerRequest, CheckerResult
 from .registry import SUPPORTED_CHECKER_NAMES, build_checker_adapters
 
 __all__ = [
+    "SUPPORTED_CHECKER_NAMES",
     "CheckerAdapter",
     "CheckerDiagnostic",
+    "CheckerExecutionPolicy",
+    "CheckerExecutor",
     "CheckerFailure",
+    "CheckerRequest",
     "CheckerResult",
-    "SUPPORTED_CHECKER_NAMES",
     "build_checker_adapters",
 ]

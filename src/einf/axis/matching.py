@@ -147,7 +147,7 @@ def collect_axis_mappings(
 
 __all__ = [
     "AtomicAxisToken",
-    "collect_axis_mappings",
     "PieceMapping",
+    "collect_axis_mappings",
     "scalar_terms_to_atomic_tokens",
 ]

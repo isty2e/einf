@@ -1,11 +1,11 @@
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerRequest,
     CheckerResult,
 )
 from einf.analysis.model import DiagnosticSeverity, TextSpan
@@ -20,18 +20,21 @@ class PyrightAdapter(CheckerAdapter):
 
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
-        return [self.executable, "--outputjson", *[str(path) for path in targets]]
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
+        return (
+            self.executable,
+            "--outputjson",
+            *[str(path) for path in request.targets],
+        )
 
     def parse_output(
         self,
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
         if not stdout.strip():
             if stderr.strip():
@@ -100,7 +103,7 @@ class PyrightAdapter(CheckerAdapter):
             diagnostics.append(
                 CheckerDiagnostic(
                     tool=self.name,
-                    path=resolve_report_path(file_path, project_root),
+                    path=resolve_report_path(file_path, request),
                     code=code,
                     message=message,
                     severity=severity,

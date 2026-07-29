@@ -5,6 +5,24 @@ from typing import Protocol
 from einf.analysis.model import TextSpan
 
 
+class ParserSyntaxError(Exception):
+    """Backend-neutral syntax failure raised while parsing source text."""
+
+    def __init__(self, *, message: str, span: TextSpan | None) -> None:
+        self.message = message
+        self.span = span
+        super().__init__(message)
+
+
+class ParserUnavailableError(RuntimeError):
+    """Parser configuration failure caused by an unavailable backend."""
+
+    def __init__(self, *, backend: str, message: str) -> None:
+        self.backend = backend
+        self.message = message
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class TextEdit:
     """One incremental text edit."""
@@ -70,6 +88,10 @@ class ParserBackend(Protocol):
     @property
     def name(self) -> str:
         """Return parser backend identifier."""
+        ...
+
+    def validate_available(self) -> None:
+        """Raise ParserUnavailableError if this backend cannot run."""
         ...
 
     def parse(self, source: str, path: Path) -> ParsedModule:

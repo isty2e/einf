@@ -7,7 +7,7 @@ are imported directly from the top-level `einf` namespace.
 from einf import ax, axes, packs, symbols
 from einf import rearrange, reduce, contract, einop, repeat, view
 from einf import TensorOp, Signature, Axis, AxisPack, AxisExpr, AxisInt
-from einf import TensorLike, Reducer, ReducerCallable
+from einf import TensorLike, Reducer, ReducerCallable, ReducerName
 from einf import ValidationError, ExecutionError, ErrorCode
 ```
 
@@ -97,6 +97,10 @@ called with concrete tensors and reused across calls.
       show_root_heading: true
 
 ::: einf.ReducerCallable
+    options:
+      show_root_heading: true
+
+::: einf.ReducerName
     options:
       show_root_heading: true
 

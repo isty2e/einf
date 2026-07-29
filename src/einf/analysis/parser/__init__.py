@@ -1,5 +1,12 @@
 from .ast_backend import AstParserBackend
-from .base import ParsedModule, ParsedNode, ParserBackend, TextEdit
+from .base import (
+    ParsedModule,
+    ParsedNode,
+    ParserBackend,
+    ParserSyntaxError,
+    ParserUnavailableError,
+    TextEdit,
+)
 from .libcst_backend import LibCstParserBackend
 
 __all__ = [
@@ -8,5 +15,7 @@ __all__ = [
     "ParsedModule",
     "ParsedNode",
     "ParserBackend",
+    "ParserSyntaxError",
+    "ParserUnavailableError",
     "TextEdit",
 ]

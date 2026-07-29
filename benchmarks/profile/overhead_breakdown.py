@@ -36,7 +36,7 @@ from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repea
 
 try:
     import torch
-except Exception:
+except ImportError:
     torch = None
 
 Array = NDArray[np.float32]
@@ -64,18 +64,18 @@ STAGES = (
 
 STAGE_TARGETS: dict[str, tuple[str, ...]] = {
     "input_shape": (
-        "einf.plans.entrypoint.extract_input_shapes",
-        "einf.plans.entrypoint._extract_input_shape",
+        "einf.operations.execution.extract_input_shapes",
+        "einf.operations.execution._extract_input_shape",
     ),
     "solve": (
         "einf.solver.api.solve_dimensions",
         "einf.solver.solve_dimensions",
-        "einf.plans.context.solve_dimensions",
+        "einf.steps.context.solve_dimensions",
         "einf.steps.expand.solve.solve_dimensions",
     ),
     "normalize_context": (
-        "einf.plans.context.build_runtime_execution_context",
-        "einf.plans.context.expand_pack_terms",
+        "einf.steps.context.build_runtime_execution_context",
+        "einf.steps.context.expand_pack_terms",
     ),
     "backend_checks": (
         "einf.plans.abstract.AbstractPlan.resolve_backend_profile",
@@ -124,7 +124,7 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
         "einf.plans.fusion.engine.discover_step_fusions",
     ),
     "step_run": (
-        "einf.plans.entrypoint._execute_abstract_plan",
+        "einf.operations.execution._execute_abstract_plan",
         "einf.plans.abstract.AbstractPlan.execute",
         "einf.plans.symbolic.SymbolicPlan.execute",
         "einf.plans.symbolic.SymbolicPlan._run_runtime_steps",
@@ -424,12 +424,10 @@ def _profile_case(case: OverheadCase, /) -> CaseResult:
         repeats=5,
     )
     instrumented_invoke = case.build_invoke()
-    stage_ms, instrumented_call_ms, residual_ms_per_call = (
-        _measure_stage_ms_per_call(
-            invoke=instrumented_invoke,
-            loops=case.loops,
-            warmup=warmup,
-        )
+    stage_ms, instrumented_call_ms, residual_ms_per_call = _measure_stage_ms_per_call(
+        invoke=instrumented_invoke,
+        loops=case.loops,
+        warmup=warmup,
     )
     return CaseResult(
         name=case.name,
@@ -474,6 +472,53 @@ def _build_cycled_invoke(
         payload = batches[cursor]
         cursor = (cursor + 1) % len(batches)
         return op(*payload)
+
+    return invoke
+
+
+def _build_fixed_unary_invoke(
+    *,
+    op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]],
+    tensor: _TensorFamily,
+) -> Callable[[], _TensorFamily | tuple[_TensorFamily, ...]]:
+    """Build one fixed unary invoke with operation construction outside timing."""
+
+    def invoke(
+        op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]] = op,
+    ) -> _TensorFamily | tuple[_TensorFamily, ...]:
+        return op(tensor)
+
+    return invoke
+
+
+def _build_fixed_binary_invoke(
+    *,
+    op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]],
+    lhs: _TensorFamily,
+    rhs: _TensorFamily,
+) -> Callable[[], _TensorFamily | tuple[_TensorFamily, ...]]:
+    """Build one fixed binary invoke with operation construction outside timing."""
+
+    def invoke(
+        op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]] = op,
+    ) -> _TensorFamily | tuple[_TensorFamily, ...]:
+        return op(lhs, rhs)
+
+    return invoke
+
+
+def _build_prebound_unary_invoke(
+    *,
+    op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]],
+    tensor: _TensorFamily,
+) -> Callable[[], _TensorFamily | tuple[_TensorFamily, ...]]:
+    """Build one unary invoke with operation and tensor bound as call defaults."""
+
+    def invoke(
+        op: Callable[..., _TensorFamily | tuple[_TensorFamily, ...]] = op,
+        tensor: _TensorFamily = tensor,
+    ) -> _TensorFamily | tuple[_TensorFamily, ...]:
+        return op(tensor)
 
     return invoke
 
@@ -566,57 +611,59 @@ def _fixed_cases(
         OverheadCase(
             name="rearrange_flatten",
             call_repr="rearrange(ax[b, h, w, d], ax[b, (h * w), d])(x)",
-            build_invoke=lambda: (
-                lambda op=rearrange(ax[b, h, w, d], ax[b, (h * w), d]): op(x_bhwd)
+            build_invoke=lambda: _build_fixed_unary_invoke(
+                op=rearrange(ax[b, h, w, d], ax[b, (h * w), d]),
+                tensor=x_bhwd,
             ),
             loops=loops["rearrange_flatten"],
         ),
         OverheadCase(
             name="rearrange_split",
             call_repr="rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(h=h, w=w)(x)",
-            build_invoke=lambda: (
-                lambda op=rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(
+            build_invoke=lambda: _build_fixed_unary_invoke(
+                op=rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(
                     h=sizes.h,
                     w=sizes.w,
-                ): op(x_bflatd)
+                ),
+                tensor=x_bflatd,
             ),
             loops=loops["rearrange_split"],
         ),
         OverheadCase(
             name="repeat",
             call_repr="repeat(ax[b, d], ax[b, d, r]).with_sizes(r=r)(x)",
-            build_invoke=lambda: (
-                lambda op=repeat(ax[b, d], ax[b, d, r]).with_sizes(r=sizes.r): op(
-                    x_bd
-                )
+            build_invoke=lambda: _build_fixed_unary_invoke(
+                op=repeat(ax[b, d], ax[b, d, r]).with_sizes(r=sizes.r),
+                tensor=x_bd,
             ),
             loops=loops["repeat"],
         ),
         OverheadCase(
             name="reduce",
             call_repr="reduce(ax[b, h, w, d], ax[b, d])(x)",
-            build_invoke=lambda: (
-                lambda op=reduce(ax[b, h, w, d], ax[b, d]): op(x_bhwd)
+            build_invoke=lambda: _build_fixed_unary_invoke(
+                op=reduce(ax[b, h, w, d], ax[b, d]),
+                tensor=x_bhwd,
             ),
             loops=loops["reduce"],
         ),
         OverheadCase(
             name="contract",
             call_repr="contract((ax[b, n, d], ax[d, j]), ax[b, n, j])(lhs, rhs)",
-            build_invoke=lambda: (
-                lambda op=contract((ax[b, n, d], ax[d, j]), ax[b, n, j]): op(
-                    x_bnd, w_dj
-                )
+            build_invoke=lambda: _build_fixed_binary_invoke(
+                op=contract((ax[b, n, d], ax[d, j]), ax[b, n, j]),
+                lhs=x_bnd,
+                rhs=w_dj,
             ),
             loops=loops["contract"],
         ),
         OverheadCase(
             name="einop_contract",
             call_repr="einop((ax[b, n, d], ax[d, j]), ax[b, n, j])(lhs, rhs)",
-            build_invoke=lambda: (
-                lambda op=einop((ax[b, n, d], ax[d, j]), ax[b, n, j]): op(
-                    x_bnd, w_dj
-                )
+            build_invoke=lambda: _build_fixed_binary_invoke(
+                op=einop((ax[b, n, d], ax[d, j]), ax[b, n, j]),
+                lhs=x_bnd,
+                rhs=w_dj,
             ),
             loops=loops["einop_contract"],
         ),
@@ -627,13 +674,13 @@ def _fixed_cases(
                 "(ax[b, h1 * r, d], ax[b, h2 * r, d]))"
                 ".with_sizes(h1=h1, h2=h2, r=r)(lhs, rhs)"
             ),
-            build_invoke=lambda: (
-                lambda op=einop(
+            build_invoke=lambda: _build_fixed_binary_invoke(
+                op=einop(
                     (ax[b, ((h1 + h2) * r), n], ax[n, d]),
                     (ax[b, (h1 * r), d], ax[b, (h2 * r), d]),
-                ).with_sizes(h1=h1_size, h2=h2_size, r=sizes.r): op(
-                    x_split_contract, w_nd
-                )
+                ).with_sizes(h1=h1_size, h2=h2_size, r=sizes.r),
+                lhs=x_split_contract,
+                rhs=w_nd,
             ),
             loops=loops["einop_contract_split"],
         ),
@@ -763,11 +810,13 @@ def _dynamic_cases(
             call_repr="rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(h=h_i, w=w_i)(x)",
             build_invoke=lambda: _build_dynamic_rearrange_split_invoke(
                 split_invokes=tuple(
-                    lambda tensor=batch.tensor,
-                    op=rearrange(ax[b, (h * w), d], ax[b, h, w, d]).with_sizes(
-                        h=batch.h,
-                        w=batch.w,
-                    ): op(tensor)
+                    _build_prebound_unary_invoke(
+                        op=rearrange(
+                            ax[b, (h * w), d],
+                            ax[b, h, w, d],
+                        ).with_sizes(h=batch.h, w=batch.w),
+                        tensor=batch.tensor,
+                    )
                     for batch in split_batches
                 ),
             ),
@@ -974,7 +1023,7 @@ def _to_markdown(
         "## Repro",
         "",
         "```bash",
-        "PYTHONPATH=src python benchmarks/profile/overhead_breakdown.py \\",
+        "python -m benchmarks.profile.overhead_breakdown \\",
         f"  --backend {backend} \\",
         "  --output docs/benchmarks/2026-02-18-overhead-breakdown.md \\",
         f"  --raw-output {raw_output}",

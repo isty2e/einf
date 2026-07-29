@@ -2,10 +2,8 @@ from einf.axis import AxisSide, AxisTerms
 from einf.ir import IRProgram
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPlan
-from einf.steps.expand import ExpandSymbolicStep
+from einf.steps.expand import ExpandSymbolicStep, build_expand_symbolic_program
 from einf.steps.permute import PermuteSymbolicStep, build_permute_symbolic_program
-
-from ..expand import build_expand_symbolic_program
 
 
 def build_repeat_symbolic_plan(

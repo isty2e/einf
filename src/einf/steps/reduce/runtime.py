@@ -1,7 +1,7 @@
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeGuard
+from typing import Literal, Protocol, TypeGuard, cast
 
 try:
     from typing import Never
@@ -11,9 +11,9 @@ except ImportError:  # pragma: no cover
 from einf.backend import ArrayNamespace, BackendArrayOps
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.reduction.schema import (
-    STRING_REDUCERS,
-    Reducer,
+    CanonicalReducer,
     ReducerCallable,
+    ReducerName,
     ReducerResult,
 )
 from einf.tensor_types import TensorLike
@@ -28,6 +28,17 @@ ReducerCallMode = Literal[
 NamespaceReducer = Callable[..., ReducerResult]
 
 
+def resolve_namespace_reducer(
+    xp: ArrayNamespace,
+    reducer_name: ReducerName,
+) -> NamespaceReducer | None:
+    """Resolve one canonical reducer name to a callable namespace primitive."""
+    reducer_candidate = getattr(xp, reducer_name.value, None)
+    if not callable(reducer_candidate):
+        return None
+    return cast(NamespaceReducer, reducer_candidate)
+
+
 @dataclass(frozen=True, slots=True)
 class ReducerRuntimeContext:
     """Runtime reducer execution context for one backend namespace."""
@@ -38,7 +49,7 @@ class ReducerRuntimeContext:
     def apply_string_reducer(
         self,
         *,
-        reducer_name: str,
+        reducer_name: ReducerName,
         reducer_fn: NamespaceReducer,
         tensor: TensorLike,
         axes: tuple[int, ...],
@@ -50,23 +61,23 @@ class ReducerRuntimeContext:
         if self.backend_ops is not None:
             try:
                 reduced = self.backend_ops.reduce(
-                    reducer_name=reducer_name,
+                    reducer_name=reducer_name.value,
                     tensor=tensor,
                     axes=axes,
                 )
             except Exception as error:
-                self.raise_string_reducer_error(
+                raise self.string_reducer_error(
                     reducer_name=reducer_name,
                     error=error,
-                )
+                ) from error
         else:
             try:
                 reduced = reducer_fn(tensor, axis=axes)
             except Exception as error:
-                self.raise_string_reducer_error(
+                raise self.string_reducer_error(
                     reducer_name=reducer_name,
                     error=error,
-                )
+                ) from error
         return self.coerce_output(reduced)
 
     def coerce_output(
@@ -95,39 +106,40 @@ class ReducerRuntimeContext:
             data={},
         )
 
-    def raise_string_reducer_error(
+    def string_reducer_error(
         self,
         *,
-        reducer_name: str,
+        reducer_name: ReducerName,
         error: Exception,
-    ) -> Never:
-        """Raise normalized string-reducer runtime error."""
-        raise ValidationError(
+    ) -> ValidationError:
+        """Build one normalized string-reducer runtime error."""
+        return ValidationError(
             code=ErrorCode.INCONSISTENT_DIMS,
             message=(
-                f"inconsistent dims: backend reducer {reducer_name!r} failed: {error}"
+                "inconsistent dims: backend reducer "
+                f"{reducer_name.value!r} failed: {error}"
             ),
             help=(
                 "ensure reducer domain is valid for the selected axes "
                 "(for example non-empty domain for max/min)"
             ),
             related=("reduce reducer",),
-            data={"reducer": reducer_name},
-        ) from error
+            data={"reducer": reducer_name.value},
+        )
 
-    def raise_custom_reducer_error(
+    def custom_reducer_error(
         self,
         *,
         error: Exception,
-    ) -> Never:
-        """Raise normalized custom-reducer runtime error."""
-        raise ValidationError(
+    ) -> ValidationError:
+        """Build one normalized custom-reducer runtime error."""
+        return ValidationError(
             code=ErrorCode.INCONSISTENT_DIMS,
             message=f"inconsistent dims: custom reducer failed: {error}",
             help="ensure reducer domain is valid for selected axes",
             related=("reduce reducer",),
             data={},
-        ) from error
+        )
 
     def raise_unsupported_reducer_signature(self) -> Never:
         """Raise normalized unsupported reducer signature error."""
@@ -168,7 +180,7 @@ class CompiledReducer(Protocol):
 class CompiledStringReducer:
     """Compiled string reducer resolved against one backend namespace."""
 
-    name: str
+    name: ReducerName
     reducer_fn: NamespaceReducer
 
     def apply(
@@ -238,7 +250,7 @@ class CallableReducerInvoker:
         except TypeError:
             raise
         except Exception as error:
-            return context.raise_custom_reducer_error(error=error)
+            raise context.custom_reducer_error(error=error) from error
 
     def _run_fallback(
         self,
@@ -261,7 +273,7 @@ class CallableReducerInvoker:
                     continue
                 raise
             except Exception as error:
-                return context.raise_custom_reducer_error(error=error)
+                raise context.custom_reducer_error(error=error) from error
         return context.raise_unsupported_reducer_signature()
 
     def _is_binding_typeerror(
@@ -324,13 +336,13 @@ class ReducerCompiler:
     def compile(
         self,
         *,
-        reducer: Reducer,
+        reducer: CanonicalReducer,
         axes: tuple[int, ...],
         tensor: TensorLike,
         xp: ArrayNamespace,
     ) -> CompiledReducer:
         """Compile one reducer against runtime backend and call-shape."""
-        if isinstance(reducer, str):
+        if isinstance(reducer, ReducerName):
             return self._compile_string_reducer(
                 reducer_name=reducer,
                 xp=xp,
@@ -349,25 +361,17 @@ class ReducerCompiler:
     def _compile_string_reducer(
         self,
         *,
-        reducer_name: str,
+        reducer_name: ReducerName,
         xp: ArrayNamespace,
     ) -> CompiledStringReducer:
         """Compile one string reducer by resolving namespace callable."""
-        if reducer_name not in STRING_REDUCERS:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=f"inconsistent dims: unsupported reducer {reducer_name!r}",
-                help="use one of: sum, prod, mean, max, min, all, any",
-                related=("reduce reducer",),
-                data={},
-            )
-        reducer_candidate = getattr(xp, reducer_name, None)
-        if not callable(reducer_candidate):
+        reducer_fn = resolve_namespace_reducer(xp, reducer_name)
+        if reducer_fn is None:
             raise ValidationError(
                 code=ErrorCode.INCONSISTENT_DIMS,
                 message=(
                     "inconsistent dims: backend reducer "
-                    f"{reducer_name!r} is unavailable"
+                    f"{reducer_name.value!r} is unavailable"
                 ),
                 help="choose a reducer available on the active backend namespace",
                 related=("reduce reducer",),
@@ -375,7 +379,7 @@ class ReducerCompiler:
             )
         return CompiledStringReducer(
             name=reducer_name,
-            reducer_fn=reducer_candidate,
+            reducer_fn=reducer_fn,
         )
 
     def _resolve_callable_call_mode(
@@ -424,11 +428,12 @@ REDUCER_COMPILER = ReducerCompiler()
 
 
 __all__ = [
+    "REDUCER_COMPILER",
     "CallableReducerInvoker",
     "CompiledCallableReducer",
     "CompiledReducer",
     "CompiledStringReducer",
-    "REDUCER_COMPILER",
     "ReducerCompiler",
     "ReducerRuntimeContext",
+    "resolve_namespace_reducer",
 ]

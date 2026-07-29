@@ -177,6 +177,7 @@ src/*/_version.py
 # Local git worktrees
 .worktrees/
 .beads
+.codegraph/
 AGENTS.md
 CLAUDE.md
 archived
@@ -190,3 +191,4 @@ pyrightconfig.json
 
 # Benchmark raw JSON dumps (summary/report markdown stays tracked)
 artifacts/**/raw/
+.kata.local.toml

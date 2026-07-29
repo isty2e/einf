@@ -1,8 +1,9 @@
-from einf.diagnostics import ValidationError
+from einf.diagnostics import ErrorCode, ValidationError
 from einf.signature import Signature
 from einf.steps.einsum.equation import build_contract_equation
 
 from .equation import build_einop_equations, has_nary_contraction_candidate
+from .layout import EinopLayoutNormalization
 from .model import EinopLoweringPlan
 
 
@@ -12,6 +13,29 @@ def build_einop_execution_plan_base(
     has_reducer_plan: bool,
 ) -> EinopLoweringPlan:
     """Build deterministic einop lowering plan before carrier-specific lifting."""
+    if analysis_signature.inputs == analysis_signature.outputs and not has_reducer_plan:
+        return EinopLoweringPlan(kind="route", equations=())
+
+    layout_normalization = EinopLayoutNormalization.from_signature(analysis_signature)
+    if layout_normalization.is_required:
+        duplicate_terms = layout_normalization.generated_duplicate_terms()
+        if duplicate_terms:
+            raise ValidationError(
+                code=ErrorCode.AMBIGUOUS_DIMS,
+                message=(
+                    "ambiguous dims: composite expansion introduces repeated "
+                    "logical axes"
+                ),
+                help="rename repeated factors to give each logical axis one identity",
+                related=("einop layout normalization",),
+                data={"operation": "einop", "terms": ",".join(duplicate_terms)},
+            )
+        return EinopLoweringPlan(
+            kind="layout_normalized",
+            equations=(),
+            layout_normalization=layout_normalization,
+        )
+
     if len(analysis_signature.inputs) == 1 and len(analysis_signature.outputs) == 1:
         lhs_terms = analysis_signature.inputs[0]
         rhs_terms = analysis_signature.outputs[0]

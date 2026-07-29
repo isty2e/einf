@@ -30,7 +30,9 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 ```json
 {
   "parser": "ast",
-  "checkers": []
+  "checkers": [],
+  "checkerTimeoutSeconds": 30,
+  "checkerMaxConcurrency": 1
 }
 ```
 
@@ -47,6 +49,22 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 1. hover metadata for axis-group relationships and role summaries,
 2. inlay hints for selected non-trivial axis roles (`contracted`,
    `reduced`, `introduced`, `pack`).
+
+## Responsiveness model
+
+`einf-lsp` keeps interactive editor requests on cached semantic state:
+
+1. `didOpen` analyzes immediately,
+2. `didChange` events are coalesced briefly so rapid edits analyze only the
+   latest document version,
+3. semantic analysis runs in a bounded background worker queue,
+4. semantic tokens, hover, and inlay hints read the latest cached analysis,
+5. a pending edit is flushed before a semantic-token, hover, or inlay request
+   is answered.
+
+The sidecar also takes a conservative fast path for Python files that contain
+no `einf` lexical marker. Those files produce no `einf` diagnostics or axis
+metadata without paying the full semantic-analysis cost.
 
 ## Editor support summary
 
@@ -65,7 +83,9 @@ external checkers on save by passing `checkers` in `initialize` options.
 ```json
 {
   "parser": "ast",
-  "checkers": ["basedpyright", "pyrefly"]
+  "checkers": ["basedpyright", "pyrefly"],
+  "checkerTimeoutSeconds": 30,
+  "checkerMaxConcurrency": 1
 }
 ```
 
@@ -73,3 +93,13 @@ External checker diagnostics refresh on save boundaries. Unsaved document
 changes continue to receive fresh `einf` semantic diagnostics and
 semantic tokens, but stale checker diagnostics are not retained as if
 they were current.
+
+Checker execution uses a separate bounded async subprocess coordinator.
+`checkerTimeoutSeconds` limits each checker process, while
+`checkerMaxConcurrency` limits checker processes across documents and tools.
+Saving or closing a newer document generation cancels and reaps obsolete
+checker processes before their results can be published.
+
+Checker execution can be much slower than `einf` semantic analysis. Treat it
+as a compatibility fallback for editors that cannot run a separate Python
+language server, not as the recommended interactive path.

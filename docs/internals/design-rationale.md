@@ -112,10 +112,11 @@ defeat the primitive vocabulary.
 
 ## What to avoid
 
-- **Do not push specialization state into `AbstractPlan`.** Shapes,
-  backend profiles, and reducer bindings belong in
-  `SpecializationContext`, not on the plan. Leaking them onto the
-  plan breaks cacheability and multi-backend reuse.
+- **Do not push call-specific specialization state into `AbstractPlan`.**
+  Input shapes and backend profiles belong in
+  `RuntimeSpecializationContext`, and shape-only candidate selection
+  belongs in `PlanSelectionContext`. Leaking them onto the plan breaks
+  cacheability and multi-backend reuse.
 
 - **Do not place chain search inside `SymbolicStep.specialize`.**
   Search is a planning concern. Specialization must be cheap and

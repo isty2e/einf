@@ -24,12 +24,12 @@ from einf import ax, axes, einop
 
 try:
     import einops
-except Exception:
+except ImportError:
     einops = None
 
 try:
     import einx
-except Exception:
+except ImportError:
     einx = None
 
 
@@ -320,7 +320,9 @@ def _make_batches(
 ) -> list[ArrayBatch]:
     backend = BackendSpec(name="torch")
     return [
-        case.batch_factory(TensorGenerator.from_seed(backend=backend, seed=seed + index))
+        case.batch_factory(
+            TensorGenerator.from_seed(backend=backend, seed=seed + index)
+        )
         for index in range(count)
     ]
 
@@ -419,7 +421,9 @@ def _render_markdown(report: LayoutAuditReport) -> str:
             lines.append(f"- `{signature}` x `{count}`")
         lines.extend(["", "Fastest samples:", ""])
         for sample in strategy.summary.fastest_samples:
-            lines.append(f"- batch `{sample.batch_index}` latency `{sample.latency_ms:.4f} ms`")
+            lines.append(
+                f"- batch `{sample.batch_index}` latency `{sample.latency_ms:.4f} ms`"
+            )
             for snapshot in sample.snapshots:
                 lines.append(
                     f"  - `{snapshot.label}` shape={snapshot.shape} stride={snapshot.stride} "
@@ -427,7 +431,9 @@ def _render_markdown(report: LayoutAuditReport) -> str:
                 )
         lines.extend(["", "Slowest samples:", ""])
         for sample in strategy.summary.slowest_samples:
-            lines.append(f"- batch `{sample.batch_index}` latency `{sample.latency_ms:.4f} ms`")
+            lines.append(
+                f"- batch `{sample.batch_index}` latency `{sample.latency_ms:.4f} ms`"
+            )
             for snapshot in sample.snapshots:
                 lines.append(
                     f"  - `{snapshot.label}` shape={snapshot.shape} stride={snapshot.stride} "
@@ -483,7 +489,9 @@ def main() -> int:
         args.output.write_text(markdown, encoding="utf-8")
     if args.raw_output is not None:
         args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-        args.raw_output.write_text(json.dumps(_to_json(report), indent=2), encoding="utf-8")
+        args.raw_output.write_text(
+            json.dumps(_to_json(report), indent=2), encoding="utf-8"
+        )
     return 0
 
 

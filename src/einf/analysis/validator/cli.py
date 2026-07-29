@@ -1,9 +1,14 @@
 import argparse
 import json
-from dataclasses import asdict
+import math
 from pathlib import Path
 
-from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, build_checker_adapters
+from einf.analysis.checkers import (
+    SUPPORTED_CHECKER_NAMES,
+    CheckerExecutionPolicy,
+    build_checker_adapters,
+)
+from einf.analysis.validator.json_projection import project_validation_report
 from einf.analysis.validator.run import (
     SUPPORTED_PARSER_NAMES,
     build_parser_backend,
@@ -36,6 +41,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=[],
         help="External type checker to run alongside einf semantic analysis.",
     )
+    parser.add_argument(
+        "--checker-timeout-seconds",
+        type=_positive_float,
+        default=30.0,
+        help="Maximum runtime for each external checker process.",
+    )
+    parser.add_argument(
+        "--checker-max-concurrency",
+        type=_positive_int,
+        default=1,
+        help="Maximum number of external checker processes run concurrently.",
+    )
     return parser
 
 
@@ -48,9 +65,27 @@ def main(argv: list[str] | None = None) -> int:
         targets=tuple(arguments.paths),
         parser_backend=parser_backend,
         checker_adapters=checker_adapters,
+        checker_execution_policy=CheckerExecutionPolicy(
+            timeout_seconds=arguments.checker_timeout_seconds,
+            max_concurrency=arguments.checker_max_concurrency,
+        ),
     )
-    print(json.dumps(asdict(report), indent=2, sort_keys=True))
+    print(json.dumps(project_validation_report(report), indent=2, sort_keys=True))
     return report.exit_code()
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a finite positive number")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
 
 
 __all__ = ["build_argument_parser", "main"]

@@ -42,8 +42,10 @@ directory and sketches the dependency order.
 - **`operations/`** — the user-facing API. `api.py` exports the six op
   constructors (`rearrange`, `reduce`, `contract`, `einop`, `view`,
   `repeat`) plus `TensorOp`. `tensor_op.py` carries the op value object
-  with planning and call behavior. `policy.py` holds op-level policy
-  knobs. `api.pyi` provides overload stubs that ship with the wheel.
+  with planning state. `execution.py` owns call-time tensor execution
+  glue. `validation.py` owns constructor-time operation contract checks.
+  `policy.py` holds op-level policy knobs. `api.pyi` provides overload
+  stubs that ship with the wheel.
 
 ## Planning and lowering pipeline
 
@@ -54,7 +56,7 @@ Planning is the internal execution model described in
 TensorOp ingress
    │  (normalize and record call-site policy)
    ▼
-AbstractPlan       ← operation definition + lowering policy
+AbstractPlan       ← operation definition + plan-owned lowering protocol
    │  (lowering expands to symbolic candidates)
    ▼
 SymbolicPlan       ← ordered SymbolicStep tuple, scoreable, cacheable
@@ -66,29 +68,39 @@ RuntimeStep chain  ← executable program
 execution
 ```
 
+`operations/` is the ingress and call boundary: it constructs the canonical
+`AbstractPlan` with a concrete lowering program, then delegates repeated calls to
+the plan runtime. Lowering still owns IR-to-symbolic candidate generation, and
+steps still own primitive specialization/execution.
+
 - **`ir/`** — shared IR node model (`AssembleIR`, `GatherIR`,
-  `RouteIR`, `TransformIR`) and routing tables. Acts as the
-  intermediate representation between op ingress and lowering.
+  `RouteIR`, `TransformIR`) plus pure route solving and static routing
+  tables. Acts as the intermediate representation between op ingress
+  and lowering; call-time route resolution lives in `plans/`.
 - **`lowering/`** — `LoweringProgram` implementations and the
   IR → symbolic-candidates compiler. Chain search, candidate pruning,
   and feasibility enforcement live here, not in runtime specialization.
 - **`plans/`** — plan contracts and runtime integration.
   `abstract.py` defines `AbstractPlan`, `symbolic.py` the
-  `SymbolicPlan`, `context.py` the `SpecializationContext`,
-  `scoring.py` the deterministic scoring policy, `entrypoint.py` the
-  `TensorOp` call-site glue, and `cache.py` / `fusion/` / `runners.py`
-  / `render.py` the runtime support surfaces.
+  `SymbolicPlan`, `lowering_protocol.py` the `LoweringProgram` seam
+  consumed by `AbstractPlan`, and `scoring.py` the plan-level scoring
+  record. `cache.py`, `fusion/`, `routing.py`, `runners.py`, and
+  `render.py` own the plan runtime support surfaces.
 - **`steps/`** — primitive symbolic and runtime step modules
   (`permute`, `reshape`, `reduce`, `expand`, `einsum`, `concat`,
-  `axis_slice`, plus shared `base.py` and `runtime.py`). Each step
-  owns its own specialization and arity contract.
+  `axis_slice`, plus shared `base.py`, `context.py`, `scoring.py`, and
+  `runtime.py`). Each step owns its own specialization and arity
+  contract. Step-consumed runtime context and primitive scoring helpers
+  live here, not in `plans/`.
 
 ## Static analysis
 
 - **`analysis/`** — an independent tree for static DSL analysis.
   - `parser/` — AST and LibCST parser backends.
-  - `engine.py` + `model.py` + `passes/` — semantic analysis engine
-    and diagnostic model.
+  - `engine.py` + `model.py` + `passes/` — semantic analysis engine,
+    diagnostic model, and package-split `einf_calls` pass
+    (`syntax`, `semantics`, `reducers`, `diagnostics`, `tokens`,
+    `entrypoint`).
   - `checkers/` — adapters for external type checkers (`pyright`,
     `basedpyright`, `zuban`, `ty`, `pyrefly`).
   - `validator/` — batch validator CLI (`einf-validate`) and its
@@ -96,10 +108,10 @@ execution
   - `lsp/` — `einf-lsp` language server sidecar.
   - `source.py` — source text handling shared across parsers.
 
-  The analysis tree depends on the runtime packages read-only
-  (`axis`, `diagnostics`, `operations`, `reduction`, `signature`,
-  `steps.einsum`, `tensor_types`), but nothing in the runtime pipeline
-  depends on analysis.
+  The analysis tree depends on runtime boundary/canonical packages
+  read-only (`axis`, `diagnostics`, `operations`, `reduction`,
+  `signature`, `tensor_types`), but not on concrete `steps`. Nothing in
+  the runtime pipeline depends on analysis.
 
 ## Layering sketch
 
@@ -114,13 +126,15 @@ tensor_types  diagnostics
       │            │            │
       └────────────┼────────────┘
                    ▼
-                  ir ──►  lowering ──► plans ──► steps
-                                          │
-                                          ▼
-                                      operations ──►  public API
-                                          ▲
-                                          │ (read-only consumer)
-                                      analysis
+              operations ──► plans ──► steps
+                   │           ▲        ▲
+                   │           │        │
+                   └──────► lowering ───┘
+                               ▲
+                               │
+                              ir
+
+              analysis ──► runtime boundary/canonical packages
 ```
 
 Use this as a mental map — if a change crosses two boxes, it is worth

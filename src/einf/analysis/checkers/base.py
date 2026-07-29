@@ -1,72 +1,26 @@
-import shutil
-import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from einf.analysis.checkers.model import CheckerFailure, CheckerResult
+from einf.analysis.checkers.model import (
+    CheckerFailure,
+    CheckerRequest,
+    CheckerResult,
+)
 from einf.analysis.model import TextPosition, TextSpan
 
 
 class CheckerAdapter(ABC):
-    """Abstract subprocess-backed external checker adapter."""
+    """Translate between checker-neutral requests and tool-specific output."""
 
     name: str
     executable: str
 
-    def run(
-        self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> CheckerResult:
-        """Execute one checker and normalize its diagnostics."""
-        if shutil.which(self.executable) is None:
-            return CheckerResult(
-                diagnostics=(),
-                failures=(
-                    CheckerFailure(
-                        tool=self.name,
-                        kind="unavailable",
-                        message=f"checker executable not found: {self.executable}",
-                    ),
-                ),
-            )
-
-        process = subprocess.run(
-            self.build_command(targets=targets, project_root=project_root),
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        result = self.parse_output(
-            stdout=process.stdout,
-            stderr=process.stderr,
-            project_root=project_root,
-        )
-        if process.returncode not in (0, 1) and not result.failures:
-            message = process.stderr.strip() or process.stdout.strip()
-            return CheckerResult(
-                diagnostics=result.diagnostics,
-                failures=result.failures
-                + (
-                    CheckerFailure(
-                        tool=self.name,
-                        kind="execution_error",
-                        message=message
-                        or f"{self.name} exited with code {process.returncode}",
-                    ),
-                ),
-            )
-        return result
-
     @abstractmethod
     def build_command(
         self,
-        *,
-        targets: tuple[Path, ...],
-        project_root: Path,
-    ) -> list[str]:
+        request: CheckerRequest,
+        /,
+    ) -> tuple[str, ...]:
         """Build one subprocess command for the checker."""
 
     @abstractmethod
@@ -75,17 +29,56 @@ class CheckerAdapter(ABC):
         *,
         stdout: str,
         stderr: str,
-        project_root: Path,
+        request: CheckerRequest,
     ) -> CheckerResult:
         """Parse checker stdout/stderr into canonical result objects."""
 
+    def normalize_output(
+        self,
+        *,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        request: CheckerRequest,
+    ) -> CheckerResult:
+        """Normalize one completed checker process into canonical results."""
+        result = self.parse_output(stdout=stdout, stderr=stderr, request=request)
+        if returncode == 1 and not result.diagnostics and not result.failures:
+            return CheckerResult(
+                diagnostics=(),
+                failures=(
+                    CheckerFailure(
+                        tool=self.name,
+                        kind="output_parse_error",
+                        message=(
+                            f"{self.name} exited with code 1 without "
+                            "recognized diagnostics"
+                        ),
+                    ),
+                ),
+            )
+        if returncode not in (0, 1) and not result.failures:
+            message = stderr.strip() or stdout.strip()
+            return CheckerResult(
+                diagnostics=result.diagnostics,
+                failures=result.failures
+                + (
+                    CheckerFailure(
+                        tool=self.name,
+                        kind="execution_error",
+                        message=message or f"{self.name} exited with code {returncode}",
+                    ),
+                ),
+            )
+        return result
 
-def resolve_report_path(path_text: str, project_root: Path) -> Path:
+
+def resolve_report_path(path_text: str, request: CheckerRequest) -> Path:
     """Resolve one checker-reported file path against the project root."""
     reported = Path(path_text)
     if reported.is_absolute():
         return reported.resolve(strict=False)
-    return (project_root / reported).resolve(strict=False)
+    return (request.project_root / reported).resolve(strict=False)
 
 
 def line_span(

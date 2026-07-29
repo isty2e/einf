@@ -8,7 +8,7 @@ from .matching import PartialState, ShapeMatcher
 
 @dataclass(slots=True)
 class DimSearch:
-    """Mutable solve state for one `solve_dimensions` invocation."""
+    """Mutable state for one dimension feasibility or unique-solve search."""
 
     signature: Signature
     normalized_shapes: tuple[tuple[int, ...], ...]
@@ -68,6 +68,15 @@ class DimSearch:
             if len(self.solutions) >= 2:
                 return
             self._search_operands(index + 1, matched_state)
+
+    def has_feasible_assignment(self) -> bool:
+        """Return whether at least one consistent assignment exists."""
+        self._search_operands(0, self.initial_state)
+        return bool(
+            self.solutions
+            or self.unresolved_pack_ambiguity
+            or self.unresolved_axis_ambiguity
+        )
 
     def run(self) -> DimSolveResult:
         """Run search and return one unique solve result or raise."""

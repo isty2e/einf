@@ -1,18 +1,21 @@
 from dataclasses import dataclass, field
 
 from einf.axis import AxisSide
-from einf.backend import BACKEND_RESOLVER, BackendProfile
+from einf.backend import (
+    BACKEND_RESOLVER,
+    BackendExecutionIdentity,
+    BackendProfile,
+)
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.ir import IRProgram
-from einf.ir.routing.runtime import resolve_route_output_indices
 from einf.ir.routing.static import precompute_route_output_indices
-from einf.plans.context import PlanSelectionContext
+from einf.signature import Signature
+from einf.solver import validate_dimensions
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
+from einf.steps.context import PlanSelectionContext
 from einf.tensor_types import TensorLike
 
-from ..lowering import LoweringProgram
 from .cache import (
-    BackendProfileCache,
     RouteOutputIndexCache,
     RunnerCache,
     RunnerCacheKey,
@@ -25,6 +28,8 @@ from .fusion import (
     TupleRunner,
     discover_step_fusions,
 )
+from .lowering_protocol import LoweringProgram
+from .routing import resolve_route_output_indices
 from .runners import RouteRunnerKernel, RunnerKernel, StepChainRunnerKernel
 from .symbolic import SymbolicPlan
 
@@ -33,13 +38,13 @@ from .symbolic import SymbolicPlan
 class AbstractPlanRuntimeCaches:
     """Mutable runtime memoization owned by one abstract plan."""
 
+    last_validated_input_shapes: tuple[tuple[int, ...], ...] | None = None
     selection: SelectionCache = field(default_factory=SelectionCache)
-    backend_profiles: BackendProfileCache = field(default_factory=BackendProfileCache)
     route_output_indices: RouteOutputIndexCache | None = None
-    single_output_runners: RunnerCache[SingleOutputRunner] = field(
+    single_output_runners: RunnerCache[RunnerCacheKey, SingleOutputRunner] = field(
         default_factory=lambda: RunnerCache()
     )
-    tuple_runners: RunnerCache[TupleRunner] = field(
+    tuple_runners: RunnerCache[RunnerCacheKey, TupleRunner] = field(
         default_factory=lambda: RunnerCache()
     )
 
@@ -60,11 +65,12 @@ class AbstractPlan:
         repr=False,
         compare=False,
     )
-    _requires_input_shapes_by_input_arity: dict[int, bool] = field(
+    _specialization_shape_dependency_by_input_arity: dict[int, bool] = field(
         init=False,
         repr=False,
         compare=False,
     )
+    _signature: Signature = field(init=False, repr=False, compare=False)
     _explicit_sizes: dict[str, int] = field(
         init=False,
         repr=False,
@@ -112,6 +118,11 @@ class AbstractPlan:
             },
         )
         object.__setattr__(self, "_explicit_sizes", dict(self.explicit_sizes_items))
+        object.__setattr__(
+            self,
+            "_signature",
+            Signature(inputs=self.lhs, outputs=self.rhs),
+        )
         static_output_indices = precompute_route_output_indices(self.lhs, self.rhs)
         object.__setattr__(
             self,
@@ -124,8 +135,8 @@ class AbstractPlan:
         )
         object.__setattr__(
             self,
-            "_requires_input_shapes_by_input_arity",
-            self._build_requires_input_shapes_map(
+            "_specialization_shape_dependency_by_input_arity",
+            self._build_specialization_shape_dependency_map(
                 candidate_indices_by_input_arity={
                     input_arity: tuple(indices)
                     for input_arity, indices in candidate_indices_by_input_arity.items()
@@ -134,31 +145,62 @@ class AbstractPlan:
             ),
         )
 
-    def _build_requires_input_shapes_map(
+    def _build_specialization_shape_dependency_map(
         self,
         *,
         candidate_indices_by_input_arity: dict[int, tuple[int, ...]],
         static_route_output_indices: tuple[int, ...] | None,
     ) -> dict[int, bool]:
-        """Build one input-shape requirement map by input arity."""
-        requires_by_arity: dict[int, bool] = {}
+        """Build runner-specialization shape dependencies by input arity."""
+        depends_on_shapes_by_arity: dict[int, bool] = {}
         for input_arity, indices in candidate_indices_by_input_arity.items():
             if len(indices) != 1:
-                requires_by_arity[input_arity] = True
+                depends_on_shapes_by_arity[input_arity] = True
                 continue
             symbolic_plan = self.symbolic_candidates[indices[0]]
             if symbolic_plan.kind == "route" and not symbolic_plan.steps:
-                requires_by_arity[input_arity] = static_route_output_indices is None
+                depends_on_shapes_by_arity[input_arity] = (
+                    static_route_output_indices is None
+                )
                 continue
-            requires_by_arity[input_arity] = any(
+            depends_on_shapes_by_arity[input_arity] = any(
                 step.specialization_depends_on_input_shapes()
                 for step in symbolic_plan.steps
             )
-        return requires_by_arity
+        return depends_on_shapes_by_arity
 
-    def requires_input_shapes(self, input_arity: int, /) -> bool:
-        """Return whether call-time input shapes are required for execution."""
-        return self._requires_input_shapes_by_input_arity.get(input_arity, True)
+    def specialization_depends_on_input_shapes(self, input_arity: int, /) -> bool:
+        """Return whether runner specialization depends on concrete input shapes."""
+        return self._specialization_shape_dependency_by_input_arity.get(
+            input_arity,
+            True,
+        )
+
+    def validate_input_shapes(
+        self,
+        input_shapes: tuple[tuple[int, ...], ...],
+        /,
+    ) -> None:
+        """Validate concrete input shapes against the canonical operation contract."""
+        if input_shapes == self._runtime.last_validated_input_shapes:
+            return
+        try:
+            validate_dimensions(
+                self._signature,
+                input_shapes,
+                explicit_sizes=self._explicit_sizes,
+            )
+        except ValidationError:
+            raise
+        except (TypeError, ValueError) as error:
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message=f"inconsistent dims: {error}",
+                help="provide input shapes consistent with the operation signature",
+                related=("TensorOp input shape contract",),
+                data={"operation": self.op_name},
+            ) from error
+        self._runtime.last_validated_input_shapes = input_shapes
 
     def select_symbolic_plan(self, context: PlanSelectionContext, /) -> SymbolicPlan:
         """Select one symbolic candidate deterministically for given runtime context."""
@@ -212,10 +254,7 @@ class AbstractPlan:
             return context
         return RuntimeSpecializationContext(
             input_shapes=context.input_shapes,
-            backend_profile=self.resolve_backend_profile(
-                op_name=self.op_name,
-                tensors=tensors,
-            ),
+            backend_profile=self.resolve_backend_profile(tensors),
         )
 
     def _select_runtime_symbolic_plan(
@@ -245,7 +284,8 @@ class AbstractPlan:
         self,
         *,
         tensors: tuple[TensorLike, ...],
-        requires_shapes: bool,
+        backend_identity: BackendExecutionIdentity,
+        specialization_depends_on_shapes: bool,
         input_shapes: tuple[tuple[int, ...], ...],
     ) -> RunnerCacheKey:
         """Build one deterministic compiled-runner cache key."""
@@ -256,8 +296,8 @@ class AbstractPlan:
             tensor_types = (type(tensors[0]), type(tensors[1]))
         else:
             tensor_types = tuple(type(tensor) for tensor in tensors)
-        shape_key = input_shapes if requires_shapes else None
-        return (tensor_types, shape_key)
+        shape_key = input_shapes if specialization_depends_on_shapes else None
+        return (tensor_types, backend_identity, shape_key)
 
     def _build_step_chain_runner_kernel(
         self,
@@ -320,24 +360,30 @@ class AbstractPlan:
     ) -> TupleRunner:
         """Resolve or compile one cached tuple-output runtime runner."""
         input_arity = len(tensors)
-        requires_shapes = self._requires_input_shapes_by_input_arity.get(
-            input_arity,
-            True,
+        specialization_depends_on_shapes = (
+            self._specialization_shape_dependency_by_input_arity.get(
+                input_arity,
+                True,
+            )
         )
-        runner_cache_key = self._build_runner_cache_key(
-            tensors=tensors,
-            requires_shapes=requires_shapes,
-            input_shapes=context.input_shapes,
-        )
-        cached_runner = self._runtime.tuple_runners.get(runner_cache_key)
-        if cached_runner is not None:
-            return cached_runner
-
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors
         )
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
+        backend_profile = runtime_context.backend_profile
+        if backend_profile is None:
+            raise RuntimeError("runtime runner resolution requires a backend profile")
+        runner_cache_key = self._build_runner_cache_key(
+            tensors=tensors,
+            backend_identity=backend_profile.execution_identity,
+            specialization_depends_on_shapes=specialization_depends_on_shapes,
+            input_shapes=runtime_context.input_shapes,
+        )
+        cached_runner = self._runtime.tuple_runners.get(runner_cache_key)
+        if cached_runner is not None:
+            return cached_runner
+
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
         runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
@@ -366,24 +412,30 @@ class AbstractPlan:
     ) -> SingleOutputRunner:
         """Resolve or compile one cached single-output runtime runner."""
         input_arity = len(tensors)
-        requires_shapes = self._requires_input_shapes_by_input_arity.get(
-            input_arity,
-            True,
+        specialization_depends_on_shapes = (
+            self._specialization_shape_dependency_by_input_arity.get(
+                input_arity,
+                True,
+            )
         )
-        runner_cache_key = self._build_runner_cache_key(
-            tensors=tensors,
-            requires_shapes=requires_shapes,
-            input_shapes=context.input_shapes,
-        )
-        cached_runner = self._runtime.single_output_runners.get(runner_cache_key)
-        if cached_runner is not None:
-            return cached_runner
-
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors
         )
         if self.op_name == "view":
             self._validate_view_backend_profile(runtime_context)
+        backend_profile = runtime_context.backend_profile
+        if backend_profile is None:
+            raise RuntimeError("runtime runner resolution requires a backend profile")
+        runner_cache_key = self._build_runner_cache_key(
+            tensors=tensors,
+            backend_identity=backend_profile.execution_identity,
+            specialization_depends_on_shapes=specialization_depends_on_shapes,
+            input_shapes=runtime_context.input_shapes,
+        )
+        cached_runner = self._runtime.single_output_runners.get(runner_cache_key)
+        if cached_runner is not None:
+            return cached_runner
+
         symbolic_plan = self._select_runtime_symbolic_plan(context=runtime_context)
         runner_kernel = self._build_runner_kernel(
             symbolic_plan=symbolic_plan,
@@ -449,20 +501,11 @@ class AbstractPlan:
 
     def resolve_backend_profile(
         self,
-        *,
-        op_name: str,
         tensors: tuple[TensorLike, ...],
+        /,
     ) -> BackendProfile:
-        """Resolve and cache backend profile by input runtime tensor types."""
-        cached_profile = self._runtime.backend_profiles.get(tensors)
-        if cached_profile is not None:
-            return cached_profile
-        backend_profile = BACKEND_RESOLVER.resolve(*tensors, op_name=op_name)
-        self._runtime.backend_profiles.set(
-            tensors=tensors,
-            profile=backend_profile,
-        )
-        return backend_profile
+        """Resolve this plan's backend profile from current runtime tensors."""
+        return BACKEND_RESOLVER.resolve(*tensors, op_name=self.op_name)
 
 
 __all__ = [

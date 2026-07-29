@@ -27,12 +27,12 @@ from einf import ax, axes, einop
 
 try:
     import einops
-except Exception:
+except ImportError:
     einops = None
 
 try:
     import einx
-except Exception:
+except ImportError:
     einx = None
 
 
@@ -131,7 +131,9 @@ def _validate_output(
     batch: tuple[Array, ...],
     output: Output,
 ) -> None:
-    expected = backend.to_numpy_output(runner_spec.reference(_numpy_batch(backend=backend, batch=batch)))
+    expected = backend.to_numpy_output(
+        runner_spec.reference(_numpy_batch(backend=backend, batch=batch))
+    )
     got = backend.to_numpy_output(output)
     if len(expected) != len(got):
         raise ValueError(
@@ -143,7 +145,9 @@ def _validate_output(
     atol = 1e-4 if uses_torch_backend else 1e-5
     rtol = 1e-4 if uses_torch_backend else 1e-5
 
-    for index, (expected_array, got_array) in enumerate(zip(expected, got, strict=True)):
+    for index, (expected_array, got_array) in enumerate(
+        zip(expected, got, strict=True)
+    ):
         if expected_array.shape != got_array.shape:
             raise ValueError(
                 f"{runner_spec.name} output[{index}] shape mismatch: "
@@ -216,7 +220,9 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
         einops_module = einops
 
         def run(inputs: tuple[Array, ...]) -> Output:
-            contracted = einops_module.einsum(inputs[0], inputs[1], "b t n, n d -> b t d")
+            contracted = einops_module.einsum(
+                inputs[0], inputs[1], "b t n, n d -> b t d"
+            )
             return (contracted[:, :split_index, :], contracted[:, split_index:, :])
 
         return run
@@ -287,7 +293,9 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                     ),
                     available=True,
                     reason="available",
-                    reference=lambda inputs: _reference_contract_split(inputs, sizes=sizes),
+                    reference=lambda inputs: _reference_contract_split(
+                        inputs, sizes=sizes
+                    ),
                     make_runner=make_einf_runner,
                 ),
                 ExpressionRunnerSpec(
@@ -300,7 +308,9 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                     ),
                     available=einops is not None,
                     reason="available" if einops is not None else "not installed",
-                    reference=lambda inputs: _reference_contract_split(inputs, sizes=sizes),
+                    reference=lambda inputs: _reference_contract_split(
+                        inputs, sizes=sizes
+                    ),
                     make_runner=make_einops_runner,
                 ),
                 ExpressionRunnerSpec(
@@ -313,7 +323,9 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                     ),
                     available=einx is not None,
                     reason="available" if einx is not None else "not installed",
-                    reference=lambda inputs: _reference_contract_split(inputs, sizes=sizes),
+                    reference=lambda inputs: _reference_contract_split(
+                        inputs, sizes=sizes
+                    ),
                     make_runner=make_einx_runner,
                 ),
                 ExpressionRunnerSpec(
@@ -331,12 +343,13 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                     role="equivalent",
                     description="plain torch matmul plus split_with_sizes",
                     call_repr=(
-                        "tmp = torch.matmul(lhs, rhs); "
-                        "tmp.split((h*r, w*r), dim=1)"
+                        "tmp = torch.matmul(lhs, rhs); tmp.split((h*r, w*r), dim=1)"
                     ),
                     available=torch is not None,
                     reason="available" if torch is not None else "torch not installed",
-                    reference=lambda inputs: _reference_contract_split(inputs, sizes=sizes),
+                    reference=lambda inputs: _reference_contract_split(
+                        inputs, sizes=sizes
+                    ),
                     make_runner=make_torch_matmul_split_runner,
                 ),
                 ExpressionRunnerSpec(
@@ -349,7 +362,9 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                     ),
                     available=torch is not None,
                     reason="available" if torch is not None else "torch not installed",
-                    reference=lambda inputs: _reference_contract_split(inputs, sizes=sizes),
+                    reference=lambda inputs: _reference_contract_split(
+                        inputs, sizes=sizes
+                    ),
                     make_runner=make_torch_matmul_slice_runner,
                 ),
             ),
@@ -394,15 +409,17 @@ def _run_dynamic_case(
 
     round_batches = [
         [
-            case.batch_factory(TensorGenerator.from_seed(
-                backend=backend,
-                seed=(
-                    config.seed
-                    + case_index * CASE_SEED_STRIDE
-                    + round_index * ROUND_BATCH_SEED_STRIDE
-                    + batch_index
-                ),
-            ))
+            case.batch_factory(
+                TensorGenerator.from_seed(
+                    backend=backend,
+                    seed=(
+                        config.seed
+                        + case_index * CASE_SEED_STRIDE
+                        + round_index * ROUND_BATCH_SEED_STRIDE
+                        + batch_index
+                    ),
+                )
+            )
             for batch_index in range(config.batches)
         ]
         for round_index in range(config.rounds)
@@ -429,7 +446,9 @@ def _run_dynamic_case(
                 output=output,
             )
 
-    samples_by_name: dict[str, list[float]] = {spec.name: [] for spec in available_specs}
+    samples_by_name: dict[str, list[float]] = {
+        spec.name: [] for spec in available_specs
+    }
     for round_index, batches in enumerate(round_batches):
         for name in round_orders[round_index]:
             samples_by_name[name].extend(
@@ -515,9 +534,7 @@ def _render_markdown(report: ExpressionParityReport) -> str:
             ]
         )
         for spec in case_result.case.runner_specs:
-            lines.append(
-                f"- `{spec.name}` (`{spec.role}`): `{spec.call_repr}`"
-            )
+            lines.append(f"- `{spec.name}` (`{spec.role}`): `{spec.call_repr}`")
         lines.extend(
             [
                 "",
@@ -541,7 +558,9 @@ def _render_markdown(report: ExpressionParityReport) -> str:
             )
         lines.extend(["", "Round strategy order (deterministic shuffle):", ""])
         max_orders = 12
-        for round_index, order in enumerate(case_result.round_orders[:max_orders], start=1):
+        for round_index, order in enumerate(
+            case_result.round_orders[:max_orders], start=1
+        ):
             lines.append(f"- round {round_index}: `{' -> '.join(order)}`")
         if len(case_result.round_orders) > max_orders:
             hidden = len(case_result.round_orders) - max_orders
@@ -617,7 +636,9 @@ def main() -> int:
     backend.validate_available()
     profiler = Profiler(backend=backend)
     sizes = dynamic_sizes_for_scale(args.scale)
-    round_order_seed = args.seed if args.round_order_seed is None else args.round_order_seed
+    round_order_seed = (
+        args.seed if args.round_order_seed is None else args.round_order_seed
+    )
     config = DynamicTaskConfig(
         backend="torch",
         scale=args.scale,

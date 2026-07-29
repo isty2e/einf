@@ -1,3 +1,4 @@
+from math import gcd
 from typing import Protocol, TypeGuard
 
 from einf.backend import BackendProfile
@@ -36,9 +37,7 @@ def _supports_torch_storage_interface(value: TensorLike) -> TypeGuard[_TorchTens
         return False
     if not callable(getattr(value, "stride", None)):
         return False
-    if not callable(getattr(value, "element_size", None)):
-        return False
-    return True
+    return callable(getattr(value, "element_size", None))
 
 
 def validate_view_outputs(
@@ -80,7 +79,7 @@ def validate_view_outputs(
                 rhs=outputs[rhs_index],
                 profile=profile,
             )
-            if overlaps is True:
+            if overlaps is not False:
                 raise ValidationError(
                     code=ErrorCode.NOT_A_VIEW,
                     message=(
@@ -123,7 +122,7 @@ def _shares_memory(
 def _outputs_overlap(
     *, lhs: TensorLike, rhs: TensorLike, profile: BackendProfile
 ) -> bool | None:
-    """Return whether two output tensors overlap in memory for supported backends."""
+    """Return true for overlap, false for disjointness, or none when unknown."""
     if tensor_numel(lhs) == 0 or tensor_numel(rhs) == 0:
         return False
 
@@ -153,6 +152,8 @@ def _outputs_overlap(
         rhs_start, rhs_stop = rhs_span
         if lhs_stop <= rhs_start or rhs_stop <= lhs_start:
             return False
+        if _torch_storage_congruence_proves_disjoint(lhs=lhs, rhs=rhs):
+            return False
         return None
 
     return None
@@ -172,7 +173,7 @@ def _torch_storage_offsets(
         storage_offset = int(tensor.storage_offset())
         shape = tuple(int(dim) for dim in tensor.shape)
         strides = tuple(int(stride) for stride in tensor.stride())
-    except Exception:
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
         return None
 
     if len(shape) != len(strides):
@@ -199,6 +200,51 @@ def _torch_storage_offsets(
     return offsets
 
 
+def _torch_storage_congruence_proves_disjoint(
+    *, lhs: TensorLike, rhs: TensorLike
+) -> bool:
+    """Prove disjointness when affine storage offsets occupy distinct residues."""
+    if not _supports_torch_storage_interface(lhs):
+        return False
+    if not _supports_torch_storage_interface(rhs):
+        return False
+
+    try:
+        lhs_offset = int(lhs.storage_offset())
+        rhs_offset = int(rhs.storage_offset())
+        lhs_shape = tuple(int(dim) for dim in lhs.shape)
+        rhs_shape = tuple(int(dim) for dim in rhs.shape)
+        lhs_strides = tuple(int(stride) for stride in lhs.stride())
+        rhs_strides = tuple(int(stride) for stride in rhs.stride())
+        lhs_element_size = int(lhs.element_size())
+        rhs_element_size = int(rhs.element_size())
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
+        return False
+
+    if lhs_element_size <= 0 or lhs_element_size != rhs_element_size:
+        return False
+    if len(lhs_shape) != len(lhs_strides):
+        return False
+    if len(rhs_shape) != len(rhs_strides):
+        return False
+
+    active_strides = [
+        abs(stride)
+        for shape, strides in (
+            (lhs_shape, lhs_strides),
+            (rhs_shape, rhs_strides),
+        )
+        for dim, stride in zip(shape, strides)
+        if dim > 1 and stride != 0
+    ]
+    offset_delta = abs(lhs_offset - rhs_offset)
+    if not active_strides:
+        return offset_delta != 0
+
+    stride_gcd = gcd(*active_strides)
+    return offset_delta % stride_gcd != 0
+
+
 def _torch_byte_span(tensor: TensorLike) -> tuple[int, int] | None:
     """Return tensor byte span relative to storage base pointer."""
     if not _supports_torch_storage_interface(tensor):
@@ -209,7 +255,7 @@ def _torch_byte_span(tensor: TensorLike) -> tuple[int, int] | None:
         strides = tuple(int(stride) for stride in tensor.stride())
         shape = tuple(int(dim) for dim in tensor.shape)
         element_size = int(tensor.element_size())
-    except Exception:
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
         return None
 
     if len(strides) != len(shape):

@@ -167,8 +167,7 @@ class BenchmarkRunner:
                         validated.add(lib_name)
 
             warm_runners = {
-                lib_name: runners[lib_name]()
-                for lib_name in available_libs
+                lib_name: runners[lib_name]() for lib_name in available_libs
             }
             warm_inputs = {
                 lib_name: self.backend.clone_batch(inputs)
@@ -182,13 +181,9 @@ class BenchmarkRunner:
                         warm_runners[lib_name](warm_inputs[lib_name])
                     )
 
-            round_warm_samples = {
-                lib_name: [] for lib_name in available_libs
-            }
+            round_warm_samples = {lib_name: [] for lib_name in available_libs}
             for repeat_index in range(config.warm_repeats):
-                elapsed_ms_by_library = {
-                    lib_name: 0.0 for lib_name in available_libs
-                }
+                elapsed_ms_by_library = {lib_name: 0.0 for lib_name in available_libs}
                 for iteration_index in range(config.warm_iterations):
                     iteration_order = self._rotate_order(
                         order,
@@ -313,9 +308,7 @@ class BenchmarkRunner:
         for round_index, batches in enumerate(round_batches):
             warmup_slice = batches[: config.warmup_batches]
             measure_slice = batches[config.warmup_batches :]
-            round_samples = {
-                lib_name: [] for lib_name in available_libs
-            }
+            round_samples = {lib_name: [] for lib_name in available_libs}
 
             for batch_index, canonical_batch in enumerate(warmup_slice):
                 batch_order = self._rotate_order(

@@ -1,9 +1,7 @@
-from collections import OrderedDict
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from threading import RLock
-from typing import Generic, TypeVar, final, overload
+from typing import final, overload
 
 try:
     from typing import Self
@@ -11,19 +9,30 @@ except ImportError:  # pragma: no cover
     from typing_extensions import Self
 
 from ..axis import AxisSide, AxisTerms
+from ..backend import BackendExecutionIdentity
 from ..diagnostics import ErrorCode, ValidationError
 from ..lowering import DefaultLoweringProgram
-from ..output_normalization import normalize_runtime_outputs
+from ..lowering.einop.layout import EinopLayoutNormalization
+from ..output_normalization import RuntimeOutputContract
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
-from ..plans.entrypoint import execute_tensor_op_call, extract_input_shapes
+from ..plans.cache import RunnerCache
 from ..plans.render import PlanDict, build_plan_dict, render_plan_text
 from ..reduction.plan import ReducerPlanParser
 from ..reduction.schema import Reducer, ReducerCallable, ReducerPlan
 from ..signature import Signature
 from ..tensor_types import TensorLike
+from .cache import (
+    BaseOpCacheKey,
+    ConfiguredOpCacheKey,
+    TensorOpFactory,
+    reducer_plan_to_cache_key,
+)
+from .execution import execute_tensor_op_call, extract_input_shapes
+from .kind import OperationKind
 from .policy import OpPolicy, resolve_op_policy
 
-RuntimeTypeKey = tuple[type, ...]
+RuntimeTypeKey = tuple[type[object], ...]
+RuntimeRunnerKey = tuple[RuntimeTypeKey, BackendExecutionIdentity]
 _DEFAULT_LOWERING_PROGRAM = DefaultLoweringProgram()
 _BASE_OP_CACHE_MAX_SIZE = 512
 _CONFIGURED_OP_CACHE_MAX_SIZE = 2_048
@@ -37,58 +46,26 @@ class _CallMode(Enum):
     SHAPE_FREE_TUPLE = auto()
 
 
-@dataclass(frozen=True, slots=True)
-class _BaseOpCacheKey:
-    """Deterministic cache key for one base TensorOp instance."""
-
-    name: str
-    lhs: AxisSide
-    rhs: AxisSide
-    supports_reducer: bool
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class _ReducerCallableToken:
-    """Identity token for callable reducers in configured-op cache keys."""
-
-    reducer: ReducerCallable
-
-    def __hash__(self) -> int:
-        """Hash by callable identity to keep key stable while object is alive."""
-        return id(self.reducer)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare callable reducer tokens by identity."""
-        if not isinstance(other, _ReducerCallableToken):
-            return False
-        return self.reducer is other.reducer
-
-
-_ReducerToken = str | _ReducerCallableToken
-_ReducerPlanKey = tuple[tuple[AxisTerms, _ReducerToken], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ConfiguredOpCacheKey:
-    """Deterministic cache key for one configured TensorOp instance."""
-
-    base: _BaseOpCacheKey
-    sizes_items: tuple[tuple[str, int], ...]
-    reducer_plan_key: _ReducerPlanKey | None
-
-
-KeyT = TypeVar("KeyT", bound=Hashable)
-ValueT = TypeVar("ValueT")
-
-
 def _normalize_sizes_items(
     *,
     op_name: str,
     sizes_items: tuple[tuple[str, int], ...],
+    axis_names: set[str],
 ) -> tuple[tuple[str, int], ...]:
     """Validate and normalize size bindings to one immutable sorted tuple."""
     merged: dict[str, int] = {}
     for key, value in sizes_items:
+        if key not in axis_names:
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message=(
+                    f"inconsistent dims: with_sizes binding {key!r} "
+                    "does not name a scalar axis in the signature"
+                ),
+                help="bind only scalar axes referenced by the operation signature",
+                related=("with_sizes binding",),
+                data={"operation": op_name, "dim": key},
+            )
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"size binding for {key!r} must be an int")
         if value < 0:
@@ -103,39 +80,13 @@ def _normalize_sizes_items(
     return tuple(sorted(merged.items()))
 
 
-def _reducer_to_cache_token(reducer: Reducer, /) -> _ReducerToken:
-    """Build stable configured-cache token for one reducer."""
-    if isinstance(reducer, str):
-        return reducer
-    return _ReducerCallableToken(reducer)
-
-
-def _reducer_plan_to_cache_key(
-    reducer_plan: ReducerPlan | None,
-    /,
-) -> _ReducerPlanKey | None:
-    """Build deterministic configured-cache key for one reducer plan."""
-    if reducer_plan is None:
-        return None
-    phases: list[tuple[AxisTerms, _ReducerToken]] = []
-    for phase in reducer_plan:
-        phases.append(
-            (
-                AxisTerms.from_spec(phase.axes),
-                _reducer_to_cache_token(phase.reducer),
-            )
-        )
-    return tuple(phases)
-
-
 @dataclass(frozen=True, slots=True)
 class TensorOpContract:
     """Canonical immutable TensorOp contract and its normalized products."""
 
-    name: str
+    kind: OperationKind
     lhs: AxisSide
     rhs: AxisSide
-    supports_reducer: bool = False
     reducer_plan: ReducerPlan | None = None
     sizes_items: tuple[tuple[str, int], ...] = ()
     signature: Signature = field(init=False, repr=False)
@@ -147,7 +98,9 @@ class TensorOpContract:
     def __post_init__(self) -> None:
         """Normalize constructor inputs and derive the canonical execution contract."""
         normalized = Signature(inputs=self.lhs, outputs=self.rhs)
-        op_policy = resolve_op_policy(self.name)
+        op_policy = resolve_op_policy(self.kind)
+        if self.reducer_plan is not None and not op_policy.supports_reducer:
+            raise ValueError(f"{self.name} does not support reducer plans")
         op_policy.validate_constructor(
             op_name=self.name,
             lhs=normalized.inputs,
@@ -156,6 +109,7 @@ class TensorOpContract:
         normalized_sizes_items = _normalize_sizes_items(
             op_name=self.name,
             sizes_items=self.sizes_items,
+            axis_names=normalized.axis_names(),
         )
         abstract_plan = AbstractPlan(
             op_name=self.name,
@@ -173,21 +127,25 @@ class TensorOpContract:
         object.__setattr__(self, "op_policy", op_policy)
         object.__setattr__(self, "abstract_plan", abstract_plan)
 
-    def base_cache_key(self) -> _BaseOpCacheKey:
+    @property
+    def name(self) -> str:
+        """Return the string operation name used by execution and diagnostics."""
+        return self.kind.value
+
+    def base_cache_key(self) -> BaseOpCacheKey:
         """Build the deterministic base-op cache key for this contract."""
-        return _BaseOpCacheKey(
-            name=self.name,
+        return BaseOpCacheKey(
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
         )
 
-    def configured_cache_key(self) -> _ConfiguredOpCacheKey:
+    def configured_cache_key(self) -> ConfiguredOpCacheKey:
         """Build the deterministic configured-op cache key for this contract."""
-        return _ConfiguredOpCacheKey(
+        return ConfiguredOpCacheKey(
             base=self.base_cache_key(),
             sizes_items=self.sizes_items,
-            reducer_plan_key=_reducer_plan_to_cache_key(self.reducer_plan),
+            reducer_plan_key=reducer_plan_to_cache_key(self.reducer_plan),
         )
 
     def with_sizes_items(
@@ -197,10 +155,9 @@ class TensorOpContract:
     ) -> "TensorOpContract":
         """Return one contract with updated explicit size bindings."""
         return TensorOpContract(
-            name=self.name,
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
             reducer_plan=self.reducer_plan,
             sizes_items=sizes_items,
         )
@@ -210,10 +167,9 @@ class TensorOpContract:
     ) -> "TensorOpContract":
         """Return one contract with updated reducer strategy."""
         return TensorOpContract(
-            name=self.name,
+            kind=self.kind,
             lhs=self.lhs,
             rhs=self.rhs,
-            supports_reducer=self.supports_reducer,
             reducer_plan=reducer_plan,
             sizes_items=self.sizes_items,
         )
@@ -234,7 +190,9 @@ class TensorOpExecutionStrategy:
     def from_contract(cls, contract: TensorOpContract, /) -> Self:
         """Build one execution strategy from one immutable contract."""
         shape_free_context: RuntimeSpecializationContext | None = None
-        if not contract.abstract_plan.requires_input_shapes(contract.input_arity):
+        if not contract.abstract_plan.specialization_depends_on_input_shapes(
+            contract.input_arity
+        ):
             shape_free_context = RuntimeSpecializationContext(
                 input_shapes=tuple(() for _ in range(contract.input_arity)),
                 backend_profile=None,
@@ -255,14 +213,14 @@ class TensorOpExecutionStrategy:
 class TensorOpRunnerCache:
     """Mutable runner cache for one TensorOp execution strategy."""
 
-    shape_free_single_runners: dict[
-        RuntimeTypeKey,
+    shape_free_single_runners: RunnerCache[
+        RuntimeRunnerKey,
         Callable[[tuple[TensorLike, ...]], TensorLike],
-    ] = field(default_factory=dict)
-    shape_free_tuple_runners: dict[
-        RuntimeTypeKey,
+    ] = field(default_factory=lambda: RunnerCache())
+    shape_free_tuple_runners: RunnerCache[
+        RuntimeRunnerKey,
         Callable[[tuple[TensorLike, ...]], tuple[TensorLike, ...]],
-    ] = field(default_factory=dict)
+    ] = field(default_factory=lambda: RunnerCache())
 
 
 @final
@@ -281,6 +239,11 @@ class TensorOp:
         repr=False,
         compare=False,
     )
+    _runtime_output_contract: RuntimeOutputContract = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Attach fresh mutable runtime state to one immutable TensorOp contract."""
@@ -290,22 +253,28 @@ class TensorOp:
             TensorOpExecutionStrategy.from_contract(self._contract),
         )
         object.__setattr__(self, "_runner_cache", TensorOpRunnerCache())
+        object.__setattr__(
+            self,
+            "_runtime_output_contract",
+            RuntimeOutputContract(
+                op_name=self._contract.name,
+                expected_output_arity=self._contract.output_arity,
+            ),
+        )
 
     @classmethod
     def from_base_spec(
         cls,
         *,
-        name: str,
+        kind: OperationKind,
         lhs: AxisSide,
         rhs: AxisSide,
-        supports_reducer: bool = False,
     ):
         """Return cached base TensorOp for one normalized constructor spec."""
         contract = TensorOpContract(
-            name=name,
+            kind=kind,
             lhs=lhs,
             rhs=rhs,
-            supports_reducer=supports_reducer,
         )
         return _TENSOR_OP_FACTORY.get_base(
             key=contract.base_cache_key(),
@@ -330,7 +299,7 @@ class TensorOp:
     @property
     def supports_reducer(self) -> bool:
         """Whether this operation accepts `.reduce_by(...)` customization."""
-        return self._contract.supports_reducer
+        return self._contract.op_policy.supports_reducer
 
     @property
     def reducer_plan(self) -> ReducerPlan | None:
@@ -466,7 +435,24 @@ class TensorOp:
                 "dict reducer plans are not supported; "
                 "use ordered phase tuples like reduce_by((ax[h], 'sum'), (ax[d], 'prod'))"
             )
-        reducer_plan = ReducerPlanParser(lhs=self.lhs, rhs=self.rhs).parse(
+        reducer_signature = self.signature
+        if self.name == "einop":
+            reducer_signature = EinopLayoutNormalization.from_signature(
+                reducer_signature
+            ).logical
+        reducer_parser = ReducerPlanParser(
+            lhs=reducer_signature.inputs,
+            rhs=reducer_signature.outputs,
+        )
+        if self.name == "einop" and not reducer_parser.reduced_terms():
+            raise ValidationError(
+                code=ErrorCode.INCONSISTENT_DIMS,
+                message="inconsistent dims: reduce_by has no logical axes to reduce",
+                help="remove reduce_by from einop signatures that preserve every axis",
+                related=("einop reducer configuration",),
+                data={"operation": "einop"},
+            )
+        reducer_plan = reducer_parser.parse(
             reducer=reducer,
             phases=phases,
         )
@@ -514,11 +500,12 @@ class TensorOp:
         contract = self._contract
         execution_strategy = self._execution_strategy
         runner_cache = self._runner_cache
+        output_contract = self._runtime_output_contract
         if (
             len(tensors) != contract.input_arity
             or execution_strategy.call_mode is _CallMode.GENERAL
         ):
-            return execute_tensor_op_call(
+            raw_outputs = execute_tensor_op_call(
                 contract.name,
                 contract.input_arity,
                 contract.output_arity,
@@ -526,116 +513,54 @@ class TensorOp:
                 contract.abstract_plan,
                 tensors,
             )
+            return output_contract.normalize(raw_outputs)
 
+        input_shapes = extract_input_shapes(op_name=contract.name, tensors=tensors)
+        contract.abstract_plan.validate_input_shapes(input_shapes)
         runtime_type_key = self._runtime_type_key(tensors)
+        backend_profile = contract.abstract_plan.resolve_backend_profile(tensors)
+        runner_cache_key = (
+            runtime_type_key,
+            backend_profile.execution_identity,
+        )
         if execution_strategy.call_mode is _CallMode.SHAPE_FREE_SINGLE:
-            runner = runner_cache.shape_free_single_runners.get(runtime_type_key)
+            runner = runner_cache.shape_free_single_runners.get(runner_cache_key)
             if runner is None:
-                _ = extract_input_shapes(op_name=contract.name, tensors=tensors)
                 shape_free_context = execution_strategy.shape_free_context
                 if shape_free_context is None:
-                    raise RuntimeError("shape-free single mode requires runtime context")
+                    raise RuntimeError(
+                        "shape-free single mode requires runtime context"
+                    )
+                runtime_context = RuntimeSpecializationContext(
+                    input_shapes=shape_free_context.input_shapes,
+                    backend_profile=backend_profile,
+                )
                 runner = contract.abstract_plan.resolve_single_output_runner(
-                    shape_free_context,
+                    runtime_context,
                     tensors,
                 )
-                runner_cache.shape_free_single_runners[runtime_type_key] = runner
-            return runner(tensors)
+                runner_cache.shape_free_single_runners.set(runner_cache_key, runner)
+            return output_contract.normalize(runner(tensors))
 
-        tuple_runner = runner_cache.shape_free_tuple_runners.get(runtime_type_key)
+        tuple_runner = runner_cache.shape_free_tuple_runners.get(runner_cache_key)
         if tuple_runner is None:
-            _ = extract_input_shapes(op_name=contract.name, tensors=tensors)
             shape_free_context = execution_strategy.shape_free_context
             if shape_free_context is None:
                 raise RuntimeError("shape-free tuple mode requires runtime context")
+            runtime_context = RuntimeSpecializationContext(
+                input_shapes=shape_free_context.input_shapes,
+                backend_profile=backend_profile,
+            )
             tuple_runner = contract.abstract_plan.resolve_tuple_runner(
-                shape_free_context,
+                runtime_context,
                 tensors,
             )
-            runner_cache.shape_free_tuple_runners[runtime_type_key] = tuple_runner
+            runner_cache.shape_free_tuple_runners.set(runner_cache_key, tuple_runner)
         raw_outputs = tuple_runner(tensors)
-        if len(raw_outputs) == contract.output_arity:
-            return raw_outputs
-        return normalize_runtime_outputs(
-            op_name=contract.name,
-            expected_output_arity=contract.output_arity,
-            raw_outputs=raw_outputs,
-        )
+        return output_contract.normalize(raw_outputs)
 
 
-class _BoundedTensorOpCache(Generic[KeyT, ValueT]):
-    """Thread-safe bounded LRU cache for TensorOp instances."""
-
-    def __init__(self, *, max_size: int) -> None:
-        self._max_size = max_size
-        self._lock = RLock()
-        self._entries: OrderedDict[KeyT, ValueT] = OrderedDict()
-
-    def get_or_create(
-        self,
-        *,
-        key: KeyT,
-        builder: Callable[[], ValueT],
-    ) -> ValueT:
-        """Return cached TensorOp or create-and-cache one under one key."""
-        with self._lock:
-            existing = self._entries.get(key)
-            if existing is not None:
-                self._entries.move_to_end(key)
-                return existing
-
-        created = builder()
-
-        with self._lock:
-            existing = self._entries.get(key)
-            if existing is not None:
-                self._entries.move_to_end(key)
-                return existing
-
-            self._entries[key] = created
-            self._entries.move_to_end(key)
-            if len(self._entries) > self._max_size:
-                self._entries.popitem(last=False)
-        return created
-
-
-@dataclass(slots=True)
-class _TensorOpFactory:
-    """Two-level TensorOp object factory cache (base + configured)."""
-
-    base_max_size: int
-    configured_max_size: int
-    _base_cache: _BoundedTensorOpCache[_BaseOpCacheKey, TensorOp] = field(init=False)
-    _configured_cache: _BoundedTensorOpCache[_ConfiguredOpCacheKey, TensorOp] = field(
-        init=False
-    )
-
-    def __post_init__(self) -> None:
-        self._base_cache = _BoundedTensorOpCache(max_size=self.base_max_size)
-        self._configured_cache = _BoundedTensorOpCache(
-            max_size=self.configured_max_size
-        )
-
-    def get_base(
-        self,
-        *,
-        key: _BaseOpCacheKey,
-        builder: Callable[[], TensorOp],
-    ) -> TensorOp:
-        """Resolve one base TensorOp through bounded base-op cache."""
-        return self._base_cache.get_or_create(key=key, builder=builder)
-
-    def get_configured(
-        self,
-        *,
-        key: _ConfiguredOpCacheKey,
-        builder: Callable[[], TensorOp],
-    ) -> TensorOp:
-        """Resolve one configured TensorOp through bounded configured-op cache."""
-        return self._configured_cache.get_or_create(key=key, builder=builder)
-
-
-_TENSOR_OP_FACTORY = _TensorOpFactory(
+_TENSOR_OP_FACTORY: TensorOpFactory[TensorOp] = TensorOpFactory(
     base_max_size=_BASE_OP_CACHE_MAX_SIZE,
     configured_max_size=_CONFIGURED_OP_CACHE_MAX_SIZE,
 )

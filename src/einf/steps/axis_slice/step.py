@@ -9,13 +9,13 @@ from einf.axis import (
 )
 from einf.backend import BackendProfile
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import build_runtime_execution_context
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
     SymbolicProgram,
 )
+from einf.steps.context import build_runtime_execution_context
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
@@ -110,7 +110,7 @@ def _try_run_direct_axis_slice(
             )
             for output_terms in rhs_terms
         )
-    except Exception:
+    except (KeyError, TypeError):
         return None
 
     if any(size < 0 for size in split_sizes):
@@ -312,7 +312,7 @@ class AxisSliceSymbolicStep(AxisSideSymbolicStep[AxisSliceSymbolicProgram]):
                 )
                 if all(size >= 0 for size in resolved_sizes):
                     precomputed_split_sizes = resolved_sizes
-            except Exception:
+            except (KeyError, TypeError):
                 precomputed_split_sizes = None
         return AxisSliceRuntimeStep(
             name=self.name,
@@ -327,8 +327,8 @@ class AxisSliceSymbolicStep(AxisSideSymbolicStep[AxisSliceSymbolicProgram]):
 
 __all__ = [
     "AxisSliceRuntimeStep",
-    "AxisSliceSymbolicStep",
     "AxisSliceSymbolicProgram",
+    "AxisSliceSymbolicStep",
     "build_axis_slice_symbolic_program",
     "resolve_axis_slice_axis",
 ]

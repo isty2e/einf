@@ -93,24 +93,44 @@ class RegressionFinding:
         return (self.candidate_ms / self.baseline_ms) - 1.0
 
 
+@dataclass(frozen=True, slots=True)
+class RepeatedRegressionFinding:
+    """One regression repeated across enough benchmark trials to gate."""
+
+    key: tuple[str, str, str, str]
+    metric: MetricName
+    required_count: int
+    findings: tuple[RegressionFinding, ...]
+
+    @property
+    def count(self) -> int:
+        """Number of trial pairs that reported this regression."""
+        return len(self.findings)
+
+    @property
+    def worst_ratio(self) -> float:
+        """Largest observed slowdown ratio across failing trials."""
+        return max((finding.ratio for finding in self.findings), default=0.0)
+
+
 def load_overhead_report(path: Path) -> OverheadReportDict:
     """Load one overhead raw JSON report with schema checks."""
     loaded = json.loads(path.read_text())
     if not isinstance(loaded, dict):
-        raise ValueError(f"invalid overhead report at {path}: expected object root")
+        raise TypeError(f"invalid overhead report at {path}: expected object root")
 
     meta_raw = loaded.get("meta")
     scenarios_raw = loaded.get("scenarios")
     if not isinstance(meta_raw, dict):
-        raise ValueError(f"invalid overhead report at {path}: missing object meta")
+        raise TypeError(f"invalid overhead report at {path}: missing object meta")
     if not isinstance(scenarios_raw, list):
-        raise ValueError(f"invalid overhead report at {path}: missing list scenarios")
+        raise TypeError(f"invalid overhead report at {path}: missing list scenarios")
 
     stages_raw = meta_raw.get("stages")
     if not isinstance(stages_raw, list) or not all(
         isinstance(stage_name, str) for stage_name in stages_raw
     ):
-        raise ValueError(
+        raise TypeError(
             f"invalid overhead report at {path}: meta.stages must be list[str]"
         )
 
@@ -127,37 +147,37 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     scenarios: list[OverheadScenarioDict] = []
     for scenario_raw in scenarios_raw:
         if not isinstance(scenario_raw, dict):
-            raise ValueError(
+            raise TypeError(
                 f"invalid overhead report at {path}: each scenario must be object"
             )
         cases_raw = scenario_raw.get("cases")
         if not isinstance(cases_raw, list):
-            raise ValueError(
+            raise TypeError(
                 f"invalid overhead report at {path}: scenario.cases must be list"
             )
 
         cases: list[OverheadCaseDict] = []
         for case_raw in cases_raw:
             if not isinstance(case_raw, dict):
-                raise ValueError(
+                raise TypeError(
                     f"invalid overhead report at {path}: each case must be object"
                 )
             stage_ms_raw = case_raw.get("stage_ms_per_call")
             if not isinstance(stage_ms_raw, dict):
-                raise ValueError(
+                raise TypeError(
                     f"invalid overhead report at {path}: case.stage_ms_per_call must be object"
                 )
 
             stage_ms: dict[str, float] = {}
             for stage_name, stage_value in stage_ms_raw.items():
                 if not isinstance(stage_name, str):
-                    raise ValueError(
+                    raise TypeError(
                         f"invalid overhead report at {path}: stage name must be string"
                     )
                 if isinstance(stage_value, bool) or not isinstance(
                     stage_value, (int, float)
                 ):
-                    raise ValueError(
+                    raise TypeError(
                         f"invalid overhead report at {path}: stage value must be numeric"
                     )
                 stage_ms[stage_name] = float(stage_value)
@@ -249,6 +269,48 @@ def compare_overhead_reports(
     return findings, missing_keys
 
 
+def compare_overhead_report_trials(
+    *,
+    report_pairs: tuple[tuple[OverheadReportDict, OverheadReportDict], ...],
+    metric: MetricName,
+    max_regression_ratio: float,
+    min_regression_count: int,
+    fail_on_missing_cases: bool,
+) -> tuple[list[RepeatedRegressionFinding], list[tuple[str, str, str, str]]]:
+    """Compare repeated baseline/candidate trials and keep repeated regressions."""
+    if min_regression_count < 1:
+        raise ValueError("min_regression_count must be >= 1")
+    if min_regression_count > len(report_pairs):
+        raise ValueError("min_regression_count cannot exceed report pair count")
+
+    findings_by_key: dict[tuple[str, str, str, str], list[RegressionFinding]] = {}
+    missing_keys: set[tuple[str, str, str, str]] = set()
+    for baseline, candidate in report_pairs:
+        findings, missing = compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric=metric,
+            max_regression_ratio=max_regression_ratio,
+            fail_on_missing_cases=fail_on_missing_cases,
+        )
+        for finding in findings:
+            findings_by_key.setdefault(finding.key, []).append(finding)
+        missing_keys.update(missing)
+
+    repeated = [
+        RepeatedRegressionFinding(
+            key=key,
+            metric=metric,
+            required_count=min_regression_count,
+            findings=tuple(findings),
+        )
+        for key, findings in findings_by_key.items()
+        if len(findings) >= min_regression_count
+    ]
+    repeated.sort(key=lambda finding: (*finding.key, finding.metric))
+    return repeated, sorted(missing_keys)
+
+
 def render_findings(
     *,
     regressions: list[RegressionFinding],
@@ -279,13 +341,51 @@ def render_findings(
     return "\n".join(lines)
 
 
+def render_trial_findings(
+    *,
+    regressions: list[RepeatedRegressionFinding],
+    missing_keys: list[tuple[str, str, str, str]],
+) -> str:
+    """Render repeated-trial guardrail findings in plain text."""
+    lines: list[str] = []
+    if not regressions and not missing_keys:
+        return "No guardrail violations."
+
+    if regressions:
+        lines.append("Repeated regressions:")
+        for finding in regressions:
+            scenario, mode, scale, case_name = finding.key
+            lines.append(
+                f"- {scenario}/{mode}/{scale}/{case_name}: "
+                f"{finding.metric} failed {finding.count}/{finding.required_count} "
+                f"required trials (worst +{finding.worst_ratio * 100.0:.2f}%)"
+            )
+            for trial_index, trial_finding in enumerate(finding.findings, start=1):
+                lines.append(
+                    f"  trial {trial_index}: {trial_finding.candidate_ms:.6f}ms "
+                    f"> allowed {trial_finding.allowed_ms:.6f}ms "
+                    f"(baseline {trial_finding.baseline_ms:.6f}ms, "
+                    f"+{trial_finding.ratio * 100.0:.2f}%)"
+                )
+
+    if missing_keys:
+        lines.append("Missing cases:")
+        for scenario, mode, scale, case_name in missing_keys:
+            lines.append(f"- {scenario}/{mode}/{scale}/{case_name}")
+
+    return "\n".join(lines)
+
+
 __all__ = [
     "CaseMetric",
     "MetricName",
     "OverheadReportDict",
     "RegressionFinding",
+    "RepeatedRegressionFinding",
     "collect_case_metrics",
+    "compare_overhead_report_trials",
     "compare_overhead_reports",
     "load_overhead_report",
     "render_findings",
+    "render_trial_findings",
 ]

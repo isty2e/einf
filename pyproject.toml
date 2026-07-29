@@ -17,9 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "basedpyright>=1.31",
+  "build>=1.2",
   "einx",
   "einops",
+  "numpy>=1.26",
   "pytest>=8.0",
+  "ruff==0.16.0",
 ]
 analysis = [
   "libcst>=1.0",
@@ -73,7 +77,7 @@ exclude = [
   "src/einf/analysis/lsp/hover.py",
   "src/einf/analysis/lsp/inlay_hints.py",
   "src/einf/analysis/lsp/server.py",
-  "tests/test_analysis_lsp_server.py",
-  "tests/test_conformance_analysis.py",
+  "tests/analysis/test_analysis_lsp_server.py",
+  "tests/analysis/test_conformance_analysis_lsp.py",
 ]
 typeCheckingMode = "standard"

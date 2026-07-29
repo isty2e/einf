@@ -7,10 +7,10 @@ from .step import (
 )
 
 __all__ = [
-    "build_reduce_compiled_program",
-    "build_reduce_symbolic_program",
-    "ReduceSymbolicProgram",
     "ReduceCompiledProgram",
     "ReduceRuntimeStep",
+    "ReduceSymbolicProgram",
     "ReduceSymbolicStep",
+    "build_reduce_compiled_program",
+    "build_reduce_symbolic_program",
 ]

@@ -7,9 +7,8 @@ from einf.backend import (
     get_backend_array_ops,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.plans.context import build_runtime_execution_context
 from einf.reduction.plan import infer_unary_reduced_terms
-from einf.reduction.schema import STRING_REDUCERS, Reducer
+from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -17,6 +16,7 @@ from einf.steps.base import (
     SymbolicProgram,
     UnaryRuntimeProgram,
 )
+from einf.steps.context import build_runtime_execution_context
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
@@ -25,26 +25,29 @@ from .build import (
     _has_reduce_namespace_methods,
     build_reduce_compiled_program,
 )
-from .runtime import NamespaceReducer, ReducerRuntimeContext
+from .runtime import (
+    NamespaceReducer,
+    ReducerRuntimeContext,
+    resolve_namespace_reducer,
+)
 
-_DIRECT_TORCH_REDUCER_METHODS: dict[str, str] = {
-    "sum": "sum",
-    "prod": "prod",
-    "mean": "mean",
-    "max": "amax",
-    "min": "amin",
-    "all": "all",
-    "any": "any",
+_DIRECT_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
+    ReducerName.SUM: "sum",
+    ReducerName.MEAN: "mean",
+    ReducerName.MAX: "amax",
+    ReducerName.MIN: "amin",
+    ReducerName.ALL: "all",
+    ReducerName.ANY: "any",
 }
 
-_DIRECT_NUMPY_REDUCER_METHODS: dict[str, str] = {
-    "sum": "sum",
-    "prod": "prod",
-    "mean": "mean",
-    "max": "max",
-    "min": "min",
-    "all": "all",
-    "any": "any",
+_DIRECT_NUMPY_REDUCER_METHODS: dict[ReducerName, str] = {
+    ReducerName.SUM: "sum",
+    ReducerName.PROD: "prod",
+    ReducerName.MEAN: "mean",
+    ReducerName.MAX: "max",
+    ReducerName.MIN: "min",
+    ReducerName.ALL: "all",
+    ReducerName.ANY: "any",
 }
 
 
@@ -53,7 +56,7 @@ class ReduceSymbolicProgram(SymbolicProgram):
     """Precompiled unary reduce program consumed by reduce runtime steps."""
 
     signature: Signature
-    reducer: Reducer
+    reducer: CanonicalReducer
     reduce_axes: AxisTerms
     is_default_reducer: bool
 
@@ -61,7 +64,7 @@ class ReduceSymbolicProgram(SymbolicProgram):
 def build_reduce_symbolic_program(
     lhs: AxisSide,
     rhs: AxisSide,
-    reducer: Reducer,
+    reducer: CanonicalReducer,
     reduce_axes: AxisTerms,
     is_default_reducer: bool,
 ) -> ReduceSymbolicProgram:
@@ -87,7 +90,7 @@ class ReduceRuntimeProgram(UnaryRuntimeProgram):
 class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
     """Shape-invariant unary reduce program bound to one tensor method."""
 
-    reducer: str
+    reducer: ReducerName
     axes: tuple[int, ...]
     runtime_context: ReducerRuntimeContext
     direct_method_name: str
@@ -103,17 +106,17 @@ class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
                 return getattr(tensor, self.direct_method_name)(dim=self.axes)
             return getattr(tensor, self.direct_method_name)(axis=self.axes)
         except Exception as error:
-            self.runtime_context.raise_string_reducer_error(
+            raise self.runtime_context.string_reducer_error(
                 reducer_name=self.reducer,
                 error=error,
-            )
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
 class NamespaceReduceRuntimeProgram(ReduceRuntimeProgram):
     """Shape-invariant unary reduce program bound to one namespace reducer."""
 
-    reducer: str
+    reducer: ReducerName
     axes: tuple[int, ...]
     runtime_context: ReducerRuntimeContext
     reducer_fn: NamespaceReducer
@@ -138,7 +141,7 @@ class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
     signature: Signature
     explicit_sizes: dict[str, int]
     reduce_axes: AxisTerms
-    reducer: Reducer
+    reducer: CanonicalReducer
     backend_profile: BackendProfile
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
@@ -285,8 +288,8 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
             return "sum(default)"
 
         reducer = self.program.reducer
-        if isinstance(reducer, str):
-            return reducer
+        if isinstance(reducer, ReducerName):
+            return reducer.value
         return "callable"
 
 
@@ -333,7 +336,7 @@ def _build_shape_invariant_reduce_runtime_program(
 ) -> ReduceRuntimeProgram | None:
     """Build one static unary reduce program when axis mapping is shape-invariant."""
     reducer = program.reducer
-    if not isinstance(reducer, str) or reducer not in STRING_REDUCERS:
+    if not isinstance(reducer, ReducerName):
         return None
 
     try:
@@ -352,18 +355,18 @@ def _build_shape_invariant_reduce_runtime_program(
     reduce_axes = resolved.axes
 
     if not reduce_axes:
-        reducer_candidate = getattr(runtime_context.xp, reducer, None)
-        if not callable(reducer_candidate):
+        reducer_fn = resolve_namespace_reducer(runtime_context.xp, reducer)
+        if reducer_fn is None:
             return None
         return NamespaceReduceRuntimeProgram(
             reducer=reducer,
             axes=reduce_axes,
             runtime_context=runtime_context,
-            reducer_fn=reducer_candidate,
+            reducer_fn=reducer_fn,
         )
 
-    reducer_candidate = getattr(runtime_context.xp, reducer, None)
-    if not callable(reducer_candidate):
+    reducer_fn = resolve_namespace_reducer(runtime_context.xp, reducer)
+    if reducer_fn is None:
         return None
     if backend_family == "torch":
         direct_method_name = _DIRECT_TORCH_REDUCER_METHODS.get(reducer)
@@ -390,13 +393,13 @@ def _build_shape_invariant_reduce_runtime_program(
         reducer=reducer,
         axes=reduce_axes,
         runtime_context=runtime_context,
-        reducer_fn=reducer_candidate,
+        reducer_fn=reducer_fn,
     )
 
 
 __all__ = [
-    "build_reduce_symbolic_program",
-    "ReduceSymbolicProgram",
     "ReduceRuntimeStep",
+    "ReduceSymbolicProgram",
     "ReduceSymbolicStep",
+    "build_reduce_symbolic_program",
 ]

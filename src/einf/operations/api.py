@@ -1,7 +1,8 @@
 from ..axis import AxisSide, AxisTerms
 from ..signature import Signature
-from ..steps.einsum import validate_contract_atomic_terms
+from .kind import OperationKind
 from .tensor_op import TensorOp
+from .validation import validate_contract_atomic_terms
 
 
 def view(
@@ -12,7 +13,7 @@ def view(
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     return TensorOp.from_base_spec(
-        name="view",
+        kind=OperationKind.VIEW,
         lhs=lhs_specs,
         rhs=rhs_specs,
     )
@@ -26,7 +27,7 @@ def rearrange(
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     return TensorOp.from_base_spec(
-        name="rearrange",
+        kind=OperationKind.REARRANGE,
         lhs=lhs_specs,
         rhs=rhs_specs,
     )
@@ -40,7 +41,7 @@ def repeat(
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     return TensorOp.from_base_spec(
-        name="repeat",
+        kind=OperationKind.REPEAT,
         lhs=lhs_specs,
         rhs=rhs_specs,
     )
@@ -54,10 +55,9 @@ def reduce(
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     return TensorOp.from_base_spec(
-        name="reduce",
+        kind=OperationKind.REDUCE,
         lhs=lhs_specs,
         rhs=rhs_specs,
-        supports_reducer=True,
     )
 
 
@@ -70,7 +70,7 @@ def contract(
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     validate_contract_atomic_terms(Signature(inputs=lhs_specs, outputs=rhs_specs))
     return TensorOp.from_base_spec(
-        name="contract",
+        kind=OperationKind.CONTRACT,
         lhs=lhs_specs,
         rhs=rhs_specs,
     )
@@ -84,11 +84,10 @@ def einop(
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
     return TensorOp.from_base_spec(
-        name="einop",
+        kind=OperationKind.EINOP,
         lhs=lhs_specs,
         rhs=rhs_specs,
-        supports_reducer=True,
     )
 
 
-__all__ = ["view", "rearrange", "repeat", "reduce", "contract", "einop"]
+__all__ = ["contract", "einop", "rearrange", "reduce", "repeat", "view"]
