@@ -25,7 +25,13 @@ def _equation_search_limit_error(*, limit: int, attempted: int) -> ValidationErr
 
 @dataclass(slots=True)
 class _EquationSearchBudget:
-    """Deterministic candidate-search work budget for one equation solve."""
+    """Deterministic candidate-search work budget for one equation solve.
+
+    Divisor probes and candidate assignments are distinct work units. A divisor
+    that yields a candidate consumes one unit for the probe and another when
+    the candidate enters feasibility checking. A zero limit therefore permits
+    only outcomes established without either operation.
+    """
 
     limit: int
     used: int = 0
