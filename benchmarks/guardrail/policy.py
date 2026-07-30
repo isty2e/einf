@@ -14,6 +14,27 @@ from typing import Literal, NotRequired, TypedDict
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
 
 
+def _positive_finite_latency(
+    value: object,
+    *,
+    name: str,
+    context: str,
+) -> float:
+    """Normalize one finite, positive latency value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{context}: {name} must be numeric")
+
+    try:
+        normalized = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{context}: {name} must be finite") from error
+    if not math.isfinite(normalized):
+        raise ValueError(f"{context}: {name} must be finite")
+    if normalized <= 0.0:
+        raise ValueError(f"{context}: {name} must be > 0")
+    return normalized
+
+
 def _required_latency_metric(
     case: Mapping[str, object],
     *,
@@ -24,19 +45,11 @@ def _required_latency_metric(
     if metric_name not in case:
         raise TypeError(f"{context}: missing required metric {metric_name}")
 
-    value = case[metric_name]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{context}: {metric_name} must be numeric")
-
-    try:
-        normalized = float(value)
-    except OverflowError as error:
-        raise ValueError(f"{context}: {metric_name} must be finite") from error
-    if not math.isfinite(normalized):
-        raise ValueError(f"{context}: {metric_name} must be finite")
-    if normalized <= 0.0:
-        raise ValueError(f"{context}: {metric_name} must be > 0")
-    return normalized
+    return _positive_finite_latency(
+        case[metric_name],
+        name=metric_name,
+        context=context,
+    )
 
 
 class OverheadCaseDict(TypedDict):
@@ -112,11 +125,40 @@ class RegressionFinding:
     candidate_ms: float
     allowed_ms: float
 
+    def __post_init__(self) -> None:
+        """Enforce the positive latency invariant used by ratio arithmetic."""
+        context = f"invalid regression finding {self.key!r}"
+        object.__setattr__(
+            self,
+            "baseline_ms",
+            _positive_finite_latency(
+                self.baseline_ms,
+                name="baseline_ms",
+                context=context,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "candidate_ms",
+            _positive_finite_latency(
+                self.candidate_ms,
+                name="candidate_ms",
+                context=context,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allowed_ms",
+            _positive_finite_latency(
+                self.allowed_ms,
+                name="allowed_ms",
+                context=context,
+            ),
+        )
+
     @property
     def ratio(self) -> float:
         """Relative slowdown ratio over baseline."""
-        if self.baseline_ms == 0.0:
-            return 0.0
         return (self.candidate_ms / self.baseline_ms) - 1.0
 
 
@@ -172,11 +214,15 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     }
 
     scenarios: list[OverheadScenarioDict] = []
+    seen_case_keys: set[tuple[str, str, str, str]] = set()
     for scenario_raw in scenarios_raw:
         if not isinstance(scenario_raw, dict):
             raise TypeError(
                 f"invalid overhead report at {path}: each scenario must be object"
             )
+        scenario_name = str(scenario_raw.get("scenario", ""))
+        mode = str(scenario_raw.get("mode", ""))
+        scale = str(scenario_raw.get("scale", ""))
         cases_raw = scenario_raw.get("cases")
         if not isinstance(cases_raw, list):
             raise TypeError(
@@ -190,6 +236,10 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
                     f"invalid overhead report at {path}: each case must be object"
                 )
             case_name = str(case_raw.get("name", ""))
+            case_key = (scenario_name, mode, scale, case_name)
+            if case_key in seen_case_keys:
+                raise ValueError(f"duplicate overhead case key: {case_key!r}")
+            seen_case_keys.add(case_key)
             case_context = f"invalid overhead report at {path}: case {case_name!r}"
             stage_ms_raw = case_raw.get("stage_ms_per_call")
             if not isinstance(stage_ms_raw, dict):
@@ -231,16 +281,14 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
             cases.append(case)
 
         scenario = OverheadScenarioDict(
-            scenario=str(scenario_raw.get("scenario", "")),
-            mode=str(scenario_raw.get("mode", "")),
-            scale=str(scenario_raw.get("scale", "")),
+            scenario=scenario_name,
+            mode=mode,
+            scale=scale,
             cases=cases,
         )
         scenarios.append(scenario)
 
-    report = OverheadReportDict(meta=meta, scenarios=scenarios)
-    collect_case_metrics(report)
-    return report
+    return OverheadReportDict(meta=meta, scenarios=scenarios)
 
 
 def collect_case_metrics(
@@ -299,8 +347,6 @@ def compare_overhead_reports(
 
         baseline_value = baseline_case.metric_value(metric)
         candidate_value = candidate_case.metric_value(metric)
-        if baseline_value <= 0.0:
-            continue
 
         allowed_value = baseline_value * (1.0 + max_regression_ratio)
         if candidate_value > allowed_value:

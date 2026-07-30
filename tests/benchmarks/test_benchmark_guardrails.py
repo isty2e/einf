@@ -7,6 +7,7 @@ import pytest
 from benchmarks.guardrail.policy import (
     MetricName,
     OverheadReportDict,
+    RegressionFinding,
     collect_case_metrics,
     compare_overhead_report_trials,
     compare_overhead_reports,
@@ -115,6 +116,26 @@ def test_load_overhead_report_rejects_boolean_latency(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="instrumented_call_ms must be numeric"):
         load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_load_overhead_report_rejects_duplicate_case_keys(tmp_path: Path) -> None:
+    report = _report(call_ms=1.0)
+    duplicate_case = report["scenarios"][0]["cases"][0].copy()
+    report["scenarios"][0]["cases"].append(duplicate_case)
+
+    with pytest.raises(ValueError, match="duplicate overhead case key"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_regression_finding_requires_positive_baseline() -> None:
+    with pytest.raises(ValueError, match="baseline_ms must be > 0"):
+        RegressionFinding(
+            key=("fixed_medium", "fixed", "medium", "rearrange_flatten"),
+            metric="instrumented_call_ms",
+            baseline_ms=0.0,
+            candidate_ms=1.2,
+            allowed_ms=1.1,
+        )
 
 
 @pytest.mark.parametrize("report_side", ("baseline", "candidate"))
