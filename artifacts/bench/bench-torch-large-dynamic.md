@@ -15,7 +15,7 @@
 - einf: workspace source (`src/einf`)
 - backend: `torch`
 - sizes(base): `b=24, n=384, d=128, h=48, w=32, r=24, j=192`
-- each dimension is sampled per batch in `[0.6x, 1.4x]` of base size
+- dimensions marked dynamic by each case are sampled per batch; other dimensions stay fixed at base size
 - seed: `20260215`
 - round order seed: `20260215`
 - total batches per case: `32`

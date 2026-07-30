@@ -340,6 +340,9 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
 
 What matters here:
 
+- each report derives sampled and fixed dimensions, inclusive sampling ranges,
+  base tensor shapes, and exact scale ratios from the case's executable shape
+  workload,
 - dynamic heavy cases can still have meaningful round-to-round spread,
 - marginal call-observation summaries should be read together with round
   summaries and paired comparisons,
@@ -349,12 +352,16 @@ What matters here:
 
 ### Dynamic evidence contract
 
-The dynamic benchmark preserves two levels of evidence:
+The dynamic benchmark preserves the workload definition and two levels of
+timing evidence:
 
-1. **Call observations** retain
+1. **Workload metadata** records sampled and fixed dimensions, inclusive
+   integer sampling ranges, base input and output shapes, aggregate element
+   counts across those tensors, and exact ratios against the medium profile.
+2. **Call observations** retain
    `(case, round, measured batch, repeat, library, order position, latency)`.
    Marginal count/median/IQR tables summarize these calls descriptively.
-2. **Paired batch units** identify one measured batch inside one round. Repeated
+3. **Paired batch units** identify one measured batch inside one round. Repeated
    calls for the same unit are technical replications, not independent samples,
    and are averaged before comparison.
 
@@ -379,15 +386,20 @@ rejects the comparison rather than emitting a degenerate interval.
 ### Dynamic raw receipt
 
 When `--output report.md` is provided, the dynamic script also writes
-`report.json` unless `--raw-output` selects another path. The versioned JSON
-receipt includes:
+`report.json` unless `--raw-output` selects another path. Schema v2 of the
+versioned JSON receipt includes:
 
 - environment and benchmark configuration,
 - case identities and execution forms,
+- case-specific workload dimensions, shapes, element counts, and exact scale
+  ratios,
 - per-library marginal and round summaries,
 - round execution orders,
 - every call observation with its pairing and order identity,
 - paired effects, interval bounds, bootstrap seed, and resample count.
+
+Workload ratios use integer `numerator` and `denominator` fields so downstream
+analysis does not have to recover exact values from rounded decimals.
 
 The raw receipt is written before the Markdown file. Keep it when a comparison
 may need re-analysis; Markdown alone intentionally does not contain enough

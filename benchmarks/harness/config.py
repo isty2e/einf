@@ -5,6 +5,8 @@ from .types import BackendName
 
 ScaleName = Literal["small", "medium", "large"]
 DynamicScaleName = Literal["medium", "large"]
+DimensionName = Literal["b", "n", "d", "h", "w", "r", "j"]
+DIMENSION_NAMES: tuple[DimensionName, ...] = ("b", "n", "d", "h", "w", "r", "j")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,36 @@ class BenchSizes:
     w: int
     r: int
     j: int
+
+    def __post_init__(self) -> None:
+        """Reject non-positive benchmark dimensions."""
+        for name, value in self.items():
+            if type(value) is not int:
+                raise TypeError(f"benchmark dimension {name} must be an int")
+            if value < 1:
+                raise ValueError(f"benchmark dimension {name} must be positive")
+
+    def items(self) -> tuple[tuple[DimensionName, int], ...]:
+        """Return dimensions in canonical benchmark order."""
+        return tuple((name, self.value(name)) for name in DIMENSION_NAMES)
+
+    def value(self, name: DimensionName, /) -> int:
+        """Return one named benchmark dimension."""
+        if name == "b":
+            return self.b
+        if name == "n":
+            return self.n
+        if name == "d":
+            return self.d
+        if name == "h":
+            return self.h
+        if name == "w":
+            return self.w
+        if name == "r":
+            return self.r
+        if name == "j":
+            return self.j
+        raise ValueError(f"unsupported benchmark dimension: {name}")
 
 
 @dataclass(frozen=True, slots=True)

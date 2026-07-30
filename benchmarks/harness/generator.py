@@ -21,11 +21,17 @@ class TensorGenerator:
             random_state=np.random.RandomState(seed),
         )
 
+    @staticmethod
+    def dimension_bounds(*, base: int, floor: int = 1) -> tuple[int, int]:
+        """Return the inclusive integer bounds used for one dynamic dimension."""
+        low = max(floor, int(base * 0.6))
+        high = max(low, int(base * 1.4))
+        return low, high
+
     def draw_dimension(self, *, base: int, floor: int = 1) -> int:
         """Draw one positive dynamic dimension around base size."""
-        low = max(floor, int(base * 0.6))
-        high = max(low + 1, int(base * 1.4) + 1)
-        return int(self.random_state.randint(low, high))
+        low, high = self.dimension_bounds(base=base, floor=floor)
+        return int(self.random_state.randint(low, high + 1))
 
     def randn_numpy(self, shape: tuple[int, ...]) -> NumpyArray:
         """Draw one float32 NumPy tensor with Gaussian entries."""

@@ -13,10 +13,12 @@ from benchmarks.harness import (
     BackendSpec,
     BenchmarkCase,
     BenchmarkRunner,
+    BenchSizes,
     CaseCalls,
     DynamicCaseResult,
     DynamicCaseSpec,
     DynamicRun,
+    DynamicShapeWorkload,
     DynamicTaskConfig,
     FixedCaseSpec,
     FixedTaskConfig,
@@ -41,6 +43,17 @@ def _summary(*, median_ms: float) -> TimingSummary:
         mean_ms=median_ms,
         min_ms=median_ms - 0.2,
         max_ms=median_ms + 0.2,
+    )
+
+
+_UNIT_SIZES = BenchSizes(b=1, n=1, d=1, h=1, w=1, r=1, j=1)
+
+
+def _vector_workload() -> DynamicShapeWorkload:
+    return DynamicShapeWorkload(
+        sampled_dimensions=(),
+        input_shapes=lambda dimensions: ((1,),),
+        output_shapes=lambda dimensions: ((1,),),
     )
 
 
@@ -173,9 +186,8 @@ def test_dynamic_timing_stops_before_output_observation(
     runner.run_dynamic_case(
         case_spec=DynamicCaseSpec(
             case=_timing_case(events=events),
-            batch_factory=lambda generator: generator.backend_batch(
-                (np.asarray([1.0], dtype=np.float32),)
-            ),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
             backend="numpy",
@@ -403,14 +415,8 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
     result = runner.run_dynamic_case(
         case_spec=DynamicCaseSpec(
             case=case,
-            batch_factory=lambda generator: generator.backend_batch(
-                (
-                    np.asarray(
-                        [generator.random_state.randint(0, 1000)],
-                        dtype=np.float32,
-                    ),
-                )
-            ),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
             backend="numpy",
@@ -486,9 +492,8 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
     result = runner.run_dynamic_case(
         case_spec=DynamicCaseSpec(
             case=_timing_case(events=[]),
-            batch_factory=lambda generator: generator.backend_batch(
-                (np.asarray([1.0], dtype=np.float32),)
-            ),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
             backend="numpy",
@@ -538,9 +543,8 @@ def test_run_dynamic_case_rejects_partial_round_orders(
         runner.run_dynamic_case(
             case_spec=DynamicCaseSpec(
                 case=_timing_case(events=[]),
-                batch_factory=lambda generator: generator.backend_batch(
-                    (np.asarray([1.0], dtype=np.float32),)
-                ),
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
             ),
             config=DynamicTaskConfig(
                 backend="numpy",
@@ -567,8 +571,15 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
         make_einops_runner=lambda: lambda inputs: inputs[0],
         make_einx_runner=lambda: lambda inputs: inputs[0],
     )
+    workload = _vector_workload().metadata(sizes=_UNIT_SIZES)
+    workload_comparison = workload.compare_to(
+        workload,
+        scale="medium",
+        reference_scale="medium",
+    )
     case_result = DynamicCaseResult(
         case=case,
+        workload=workload,
         runs={
             "einf": DynamicRun(
                 summary=_summary(median_ms=1.0),
@@ -617,7 +628,10 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
         notes=["demo"],
     )
 
-    markdown = MarkdownPrinter().render_dynamic(report)
+    markdown = MarkdownPrinter().render_dynamic(
+        report,
+        workload_comparisons={"dynamic_case": workload_comparison},
+    )
 
     assert "Round base order (paired execution rotates within each round):" in markdown
     assert "Round median summaries (ms):" in markdown
@@ -627,3 +641,4 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
     )
     assert "einf=1.0000" in markdown
     assert "einops=2.1000" in markdown
+    assert "Total base input elements: `1`; ratio `1` (1.000x)" in markdown
