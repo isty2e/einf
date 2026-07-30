@@ -61,7 +61,7 @@ class BackendSpec:
         return (self.to_numpy_array(output),)
 
     def touch_array(self, value: Array) -> None:
-        """Touch one output tensor to avoid accidental laziness skew."""
+        """Touch one synchronous CPU output to make it observable."""
         _ = tuple(value.shape)
         if isinstance(value, np.ndarray):
             if value.size > 0:
@@ -71,6 +71,11 @@ class BackendSpec:
                     _ = float(value[(0,) * value.ndim])
             return
         if torch is not None and isinstance(value, torch.Tensor):
+            if value.device.type != "cpu":
+                raise RuntimeError(
+                    "eager benchmark timing requires synchronous CPU outputs; "
+                    f"got torch device {value.device}"
+                )
             if value.numel() > 0:
                 if value.ndim == 0:
                     _ = float(value.item())
@@ -80,7 +85,7 @@ class BackendSpec:
         raise TypeError(f"unsupported output type: {type(value)!r}")
 
     def touch_output(self, output: Output) -> None:
-        """Touch one output tuple or tensor to avoid lazy timing artifacts."""
+        """Touch one synchronous CPU output tuple or tensor."""
         if isinstance(output, tuple):
             for item in output:
                 self.touch_array(item)

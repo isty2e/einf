@@ -492,6 +492,7 @@ def main() -> int:
             "`warm`: post-warmup steady-state per-call latency",
         ],
         methodology=[
+            "Timing uses eager CPU wall-clock regions: `cold` covers operation construction plus the first call, while `warm` covers only the library call; output observation is excluded.",
             "For each case, balanced round orders rotate libraries through first/middle/last positions deterministically.",
             "Cold validation uses outputs captured during timed cold samples.",
             "Warm timing runs paired per-call execution on the same logical input while using independently materialized per-library tensors.",

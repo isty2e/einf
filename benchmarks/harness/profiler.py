@@ -4,13 +4,12 @@ import time
 import numpy as np
 
 from .backend import BackendSpec
-from .case import RunnerFactory
 from .result import TimingSummary
-from .types import Array, Output, Runner
+from .types import Array, Runner
 
 
 class Profiler:
-    """Runtime profiler for benchmark call latency distributions."""
+    """Profiler for eager CPU benchmark call latency distributions."""
 
     def __init__(self, *, backend: BackendSpec) -> None:
         self.backend = backend
@@ -32,51 +31,6 @@ class Profiler:
             min_ms=min(samples_ms),
             max_ms=max(samples_ms),
         )
-
-    def measure_cold(
-        self,
-        *,
-        runner_factory: RunnerFactory,
-        inputs: tuple[Array, ...],
-        repeats: int,
-    ) -> tuple[list[float], Output]:
-        """Measure construction + first call latency."""
-        first_output: Output | None = None
-        samples_ms: list[float] = []
-        for _ in range(repeats):
-            started = time.perf_counter()
-            runner = runner_factory()
-            output = runner(inputs)
-            self.backend.touch_output(output)
-            samples_ms.append((time.perf_counter() - started) * 1000.0)
-            if first_output is None:
-                first_output = output
-        if first_output is None:
-            raise ValueError("cold timing requires repeats >= 1")
-        return samples_ms, first_output
-
-    def measure_warm(
-        self,
-        *,
-        runner_factory: RunnerFactory,
-        inputs: tuple[Array, ...],
-        warmup: int,
-        repeats: int,
-        iterations: int,
-    ) -> list[float]:
-        """Measure steady-state per-call latency after warmup."""
-        runner = runner_factory()
-        for _ in range(warmup):
-            self.backend.touch_output(runner(inputs))
-
-        samples_ms: list[float] = []
-        for _ in range(repeats):
-            started = time.perf_counter()
-            for _ in range(iterations):
-                self.backend.touch_output(runner(inputs))
-            elapsed_ms = (time.perf_counter() - started) * 1000.0 / float(iterations)
-            samples_ms.append(elapsed_ms)
-        return samples_ms
 
     def measure_dynamic(
         self,
@@ -103,6 +57,8 @@ class Profiler:
         for _ in range(repeats):
             for batch in measure_slice:
                 started = time.perf_counter()
-                self.backend.touch_output(runner(batch))
-                samples_ms.append((time.perf_counter() - started) * 1000.0)
+                output = runner(batch)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                self.backend.touch_output(output)
+                samples_ms.append(elapsed_ms)
         return samples_ms

@@ -685,6 +685,7 @@ def main() -> int:
             "table units: `ms`",
         ],
         methodology=[
+            "Timing uses eager CPU wall-clock latency for each strategy call; output observation is excluded.",
             "Each expression strategy is benchmarked over identical deterministic torch batches.",
             "Per round, strategy order is shuffled deterministically and all post-warmup per-batch latencies are recorded.",
             "Equivalent strategies validate against the full split result; baseline strategies validate against their own stage output.",
