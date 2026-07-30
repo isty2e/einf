@@ -94,9 +94,12 @@ is in — the reuse just happens.
 
 ## Cross-backend execution
 
-The same op also transfers across Array-API backends without
-redefinition. The runtime picks the backend namespace from the input
-tensor's type.
+The same op can transfer between the supported NumPy and PyTorch backends
+without redefinition. The runtime picks the backend namespace from the input
+tensor's type. Other Array API namespaces are admitted only when they satisfy
+the capabilities required by every lowered step; they are not part of the
+CI-supported contract. See the
+[runtime backend matrix](../getting-started/install.md#runtime-backend-support).
 
 ```python
 import numpy as np

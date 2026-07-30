@@ -1,9 +1,11 @@
 # First ops
 
 This page walks the six core operations — `view`, `rearrange`, `repeat`,
-`reduce`, `contract`, `einop` — on small concrete examples. Every
-snippet below runs against the `numpy` backend unchanged on any other
-Array-API backend such as PyTorch or JAX.
+`reduce`, `contract`, `einop` — on small concrete NumPy examples. The same
+`TensorOp` definitions can run on the supported PyTorch backend, but tensor
+construction and backend callables must use PyTorch equivalents. See the
+[runtime backend matrix](install.md#runtime-backend-support) for the supported
+contract.
 
 ## Setup
 
@@ -101,7 +103,10 @@ y = max_over_n(np.arange(24, dtype=np.float32).reshape(2, 3, 4))
 ```
 
 Reducers may be named strings (`"sum"`, `"max"`, `"mean"`, `"prod"`) or
-any callable that reduces along a given axis.
+callables that reduce along a given axis. Named reducers dispatch to the active
+supported backend. A callable receives that backend's tensor directly, so the
+`np.max` example above is NumPy-specific; use a callable implemented with the
+active backend's operations if the same `TensorOp` must run across backends.
 
 ## contract — pure tensor contraction
 

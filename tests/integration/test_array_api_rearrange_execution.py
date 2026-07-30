@@ -6,6 +6,11 @@ import pytest
 import einf.plans.routing as plan_routing_module
 from einf import ErrorCode, ValidationError, ax, axes, packs, rearrange
 
+try:
+    import torch
+except ImportError:  # pragma: no cover
+    torch = None
+
 
 class _MissingOpsNamespace:
     __name__ = "array_api_compat.numpy"
@@ -142,6 +147,19 @@ def test_rearrange_transpose_executes_with_numpy() -> None:
 
     expected = np.transpose(tensor, (1, 0, 2))
     np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_rearrange_transpose_executes_with_torch() -> None:
+    assert torch is not None
+    b, h, d = axes("b", "h", "d")
+    op = rearrange(ax[b, h, d], ax[h, b, d])
+
+    tensor = torch.arange(2 * 3 * 4).reshape(2, 3, 4)
+    result = op(tensor)
+
+    assert isinstance(result, torch.Tensor)
+    assert torch.equal(result, tensor.permute(1, 0, 2))
 
 
 def test_rearrange_literal_rectangular_transpose_round_trip() -> None:
