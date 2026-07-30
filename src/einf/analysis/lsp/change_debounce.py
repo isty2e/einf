@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,17 +14,25 @@ class PendingDocumentChange:
 
 
 AnalyzePendingChange = Callable[[PendingDocumentChange], Awaitable[None]]
+_ReportPendingChangeFailure = Callable[[PendingDocumentChange, Exception], None]
 
 
 class LspChangeDebouncer:
     """Coalesce rapid document changes before running semantic analysis."""
 
-    def __init__(self, *, delay_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        delay_seconds: float,
+        report_failure: _ReportPendingChangeFailure,
+    ) -> None:
         if delay_seconds < 0:
             raise ValueError("delay_seconds must be non-negative")
         self._delay_seconds = delay_seconds
+        self._report_failure = report_failure
         self._pending: dict[str, PendingDocumentChange] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._closed = False
 
     def schedule(
         self,
@@ -32,10 +41,16 @@ class LspChangeDebouncer:
         analyze: AnalyzePendingChange,
     ) -> None:
         """Schedule semantic analysis for the latest change to one URI."""
+        if self._closed:
+            raise RuntimeError("change debouncer is closed")
         self.cancel(change.uri)
         self._pending[change.uri] = change
-        self._tasks[change.uri] = asyncio.create_task(
+        task = asyncio.create_task(
             self._run_after_delay(uri=change.uri, analyze=analyze)
+        )
+        self._tasks[change.uri] = task
+        task.add_done_callback(
+            partial(self._handle_task_completion, change=change)
         )
 
     def take_pending(self, *, uri: str) -> PendingDocumentChange | None:
@@ -52,6 +67,20 @@ class LspChangeDebouncer:
     def has_pending(self, *, uri: str) -> bool:
         """Return whether one URI has delayed analysis waiting."""
         return uri in self._pending
+
+    async def close(self) -> None:
+        """Drop pending changes and stop all owned analysis tasks."""
+        if self._closed:
+            return
+        self._closed = True
+
+        tasks = tuple(self._tasks.values())
+        self._pending.clear()
+        self._tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_after_delay(
         self,
@@ -70,5 +99,22 @@ class LspChangeDebouncer:
             if self._tasks.get(uri) is current_task:
                 self._tasks.pop(uri, None)
 
+    def _handle_task_completion(
+        self,
+        task: asyncio.Task[None],
+        *,
+        change: PendingDocumentChange,
+    ) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as error:  # noqa: BLE001
+            self._report_failure(change, error)
 
-__all__ = ["AnalyzePendingChange", "LspChangeDebouncer", "PendingDocumentChange"]
+
+__all__ = [
+    "AnalyzePendingChange",
+    "LspChangeDebouncer",
+    "PendingDocumentChange",
+]

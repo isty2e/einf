@@ -39,7 +39,8 @@ class EinfLanguageServer(LanguageServer):
         self.einf_config = LspConfig()
         self.einf_service = LspService(self.einf_config.parser)
         self.einf_change_debouncer = LspChangeDebouncer(
-            delay_seconds=_DEFAULT_CHANGE_DEBOUNCE_SECONDS
+            delay_seconds=_DEFAULT_CHANGE_DEBOUNCE_SECONDS,
+            report_failure=self._report_debounced_analysis_failure,
         )
         self.einf_analysis_queue = LspAnalysisQueue(
             worker_count=_DEFAULT_ANALYSIS_WORKER_COUNT,
@@ -48,6 +49,22 @@ class EinfLanguageServer(LanguageServer):
         self.einf_checker_coordinator = _build_checker_coordinator(self.einf_config)
         self.einf_position_encoding: lsp.PositionEncodingKind | str = (
             lsp.PositionEncodingKind.Utf16
+        )
+
+    def _report_debounced_analysis_failure(
+        self,
+        change: PendingDocumentChange,
+        error: Exception,
+    ) -> None:
+        self.window_log_message(
+            lsp.LogMessageParams(
+                type=lsp.MessageType.Error,
+                message=(
+                    f"Background analysis failed for {change.uri} "
+                    f"at version {change.version}: "
+                    f"{type(error).__name__}: {error}"
+                ),
+            )
         )
 
     def configure(self, config: LspConfig) -> None:
@@ -164,6 +181,7 @@ def build_server() -> EinfLanguageServer:
     @server.feature(lsp.SHUTDOWN)
     async def shutdown(ls: EinfLanguageServer, *args: object) -> None:
         _ = args
+        await ls.einf_change_debouncer.close()
         await asyncio.gather(
             ls.einf_analysis_queue.close(),
             ls.einf_checker_coordinator.close(),
