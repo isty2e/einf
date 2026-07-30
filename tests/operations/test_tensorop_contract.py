@@ -149,7 +149,7 @@ def test_tensorop_base_constructor_reuses_cached_instance() -> None:
     assert first is second
 
 
-def test_tensorop_base_cache_constructs_contract_and_plan_only_on_miss() -> None:
+def test_tensorop_base_cache_constructs_definition_and_plan_only_on_miss() -> None:
     b, n, d, other = axes(
         "factory_cache_b",
         "factory_cache_n",
@@ -160,9 +160,9 @@ def test_tensorop_base_cache_constructs_contract_and_plan_only_on_miss() -> None
     with (
         patch.object(
             tensor_op_module,
-            "TensorOpContract",
-            wraps=tensor_op_module.TensorOpContract,
-        ) as contract_constructor,
+            "TensorOpDefinition",
+            wraps=tensor_op_module.TensorOpDefinition,
+        ) as definition_constructor,
         patch.object(
             tensor_op_module,
             "AbstractPlan",
@@ -175,7 +175,7 @@ def test_tensorop_base_cache_constructs_contract_and_plan_only_on_miss() -> None
 
     assert cached is first
     assert other_key is not first
-    assert contract_constructor.call_count == 2
+    assert definition_constructor.call_count == 2
     assert plan_constructor.call_count == 2
 
 
@@ -186,6 +186,26 @@ def test_tensorop_with_sizes_reuses_cached_configured_instance() -> None:
     second = base.with_sizes(r=4)
 
     assert first is second
+
+
+def test_tensorop_configured_cache_constructs_plan_only_on_miss() -> None:
+    b, c, r = axes(
+        "configured_cache_b",
+        "configured_cache_c",
+        "configured_cache_r",
+    )
+    base = repeat(ax[b, c], ax[b, c, r])
+
+    with patch.object(
+        tensor_op_module,
+        "AbstractPlan",
+        wraps=tensor_op_module.AbstractPlan,
+    ) as plan_constructor:
+        first = base.with_sizes(**{r.name: 4})
+        cached = base.with_sizes(**{r.name: 4})
+
+    assert cached is first
+    assert plan_constructor.call_count == 1
 
 
 def test_tensorop_with_sizes_cache_key_is_canonical_over_kwarg_order() -> None:

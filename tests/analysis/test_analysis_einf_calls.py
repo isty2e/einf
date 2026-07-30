@@ -1,5 +1,7 @@
 from pathlib import Path
+from unittest.mock import patch
 
+import einf.operations.tensor_op as tensor_op_module
 from einf.analysis.engine import AnalysisOutput, analyze_module
 from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextPosition, TextSpan
 from einf.analysis.parser import AstParserBackend
@@ -162,6 +164,45 @@ def test_reduce_by_phase_is_parsed_without_duplicate_base_diagnostics() -> None:
 
 def test_reduce_by_callable_symbol_is_allowed() -> None:
     result = _analyze("reduce(ax[b, n, d], ax[b]).reduce_by(my_reducer)\n")
+    assert result.diagnostics == ()
+
+
+def test_static_analysis_constructs_no_runtime_planning_artifacts() -> None:
+    source = (
+        "rearrange(ax[b, n], ax[n, b]).with_sizes(n=4)\n"
+        "reduce(ax[b, n, d], ax[b]).reduce_by((ax[n, d], 'sum'))\n"
+        "einop(ax[b, n], ax[b]).reduce_by('sum')\n"
+    )
+
+    with (
+        patch.object(
+            tensor_op_module.TensorOp,
+            "from_base_spec",
+            side_effect=AssertionError("analysis constructed TensorOp"),
+        ),
+        patch.object(
+            tensor_op_module,
+            "AbstractPlan",
+            side_effect=AssertionError("analysis constructed AbstractPlan"),
+        ),
+        patch.object(
+            tensor_op_module.TensorOpExecutionStrategy,
+            "from_plan",
+            side_effect=AssertionError("analysis constructed execution strategy"),
+        ),
+        patch.object(
+            tensor_op_module,
+            "TensorOpRunnerCache",
+            side_effect=AssertionError("analysis constructed runner cache"),
+        ),
+        patch.object(
+            tensor_op_module,
+            "RuntimeOutputContract",
+            side_effect=AssertionError("analysis constructed output contract"),
+        ),
+    ):
+        result = _analyze(source)
+
     assert result.diagnostics == ()
 
 

@@ -77,6 +77,17 @@ def test_pipeline_contract_tensor_op_does_not_import_steps() -> None:
     )
 
 
+def test_pipeline_contract_operation_definition_is_planning_independent() -> None:
+    definition_path = Path("src/einf/operations/definition.py")
+    modules = _import_modules(definition_path)
+    assert all(
+        "lowering" not in module
+        and "plans" not in module
+        and "output_normalization" not in module
+        for module in modules
+    )
+
+
 def test_pipeline_contract_abstract_plan_imports_only_step_contracts() -> None:
     abstract_path = Path("src/einf/plans/abstract.py")
     modules = _import_modules(abstract_path)

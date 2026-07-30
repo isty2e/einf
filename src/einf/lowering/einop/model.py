@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
 from einf.axis import AxisTerms
-
-from .layout import EinopLayoutNormalization
+from einf.einop_layout import EinopLayoutNormalization
 
 
 @dataclass(frozen=True, slots=True)
