@@ -1,5 +1,13 @@
-import numpy as np
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import cast
 
+import numpy as np
+import pytest
+
+import benchmarks.harness.backend as backend_module
+import benchmarks.harness.profiler as profiler_module
+import benchmarks.harness.runner as runner_module
 from benchmarks.harness import (
     Array,
     BackendSpec,
@@ -13,6 +21,7 @@ from benchmarks.harness import (
     FixedTaskConfig,
     LibraryRun,
     MarkdownPrinter,
+    Output,
     Profiler,
     TimingSummary,
 )
@@ -31,6 +40,231 @@ def _summary(*, median_ms: float) -> TimingSummary:
         min_ms=median_ms - 0.2,
         max_ms=median_ms + 0.2,
     )
+
+
+def _recording_clock(
+    *,
+    events: list[str],
+    values: tuple[float, ...],
+) -> Callable[[], float]:
+    samples = iter(values)
+    call_index = 0
+
+    def clock() -> float:
+        nonlocal call_index
+        phase = "clock_start" if call_index % 2 == 0 else "clock_stop"
+        call_index += 1
+        events.append(phase)
+        return next(samples)
+
+    return clock
+
+
+def _single_library_runner(
+    *,
+    backend: BackendSpec,
+) -> BenchmarkRunner:
+    return BenchmarkRunner(
+        backend=backend,
+        profiler=Profiler(backend=backend),
+        available={
+            "einf": (True, "available"),
+            "einops": (False, "not installed"),
+            "einx": (False, "not installed"),
+        },
+    )
+
+
+def _timing_case(*, events: list[str]) -> BenchmarkCase:
+    def factory():
+        events.append("factory")
+
+        def run(inputs: tuple[Array, ...]) -> Output:
+            events.append("call")
+            return inputs[0]
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    return BenchmarkCase(
+        name="timing_case",
+        description="timing contract",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=factory,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+
+
+def test_fixed_timing_stops_before_output_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    backend = BackendSpec(name="numpy")
+    runner = _single_library_runner(backend=backend)
+    monkeypatch.setattr(
+        runner_module.time,
+        "perf_counter",
+        _recording_clock(
+            events=events,
+            values=(1.0, 1.001, 2.0, 2.002),
+        ),
+    )
+
+    def record_touch(self: BackendSpec, output: Output) -> None:
+        _ = self, output
+        events.append("touch")
+
+    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
+
+    runner.run_fixed_case(
+        case_spec=FixedCaseSpec(
+            case=_timing_case(events=events),
+            inputs=(np.asarray([1.0], dtype=np.float32),),
+        ),
+        config=FixedTaskConfig(
+            backend="numpy",
+            scale="small",
+            seed=1,
+            rounds=1,
+            cold_repeats=1,
+            warmup=0,
+            warm_repeats=1,
+            warm_iterations=1,
+        ),
+        order_seed=1,
+    )
+
+    assert events == [
+        "clock_start",
+        "factory",
+        "call",
+        "clock_stop",
+        "touch",
+        "factory",
+        "clock_start",
+        "call",
+        "clock_stop",
+        "touch",
+    ]
+
+
+def test_dynamic_timing_stops_before_output_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    backend = BackendSpec(name="numpy")
+    runner = _single_library_runner(backend=backend)
+    monkeypatch.setattr(
+        runner_module.time,
+        "perf_counter",
+        _recording_clock(events=events, values=(1.0, 1.003)),
+    )
+
+    def record_touch(self: BackendSpec, output: Output) -> None:
+        _ = self, output
+        events.append("touch")
+
+    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
+
+    runner.run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=events),
+            batch_factory=lambda generator: generator.backend_batch(
+                (np.asarray([1.0], dtype=np.float32),)
+            ),
+        ),
+        config=DynamicTaskConfig(
+            backend="numpy",
+            scale="small",
+            seed=1,
+            batches=2,
+            warmup_batches=1,
+            repeats=1,
+            rounds=1,
+            round_order_seed=1,
+            parity_checks=0,
+        ),
+        case_index=0,
+    )
+
+    assert events == [
+        "factory",
+        "call",
+        "touch",
+        "clock_start",
+        "call",
+        "clock_stop",
+        "touch",
+    ]
+
+
+def test_profiler_dynamic_timing_stops_before_output_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    backend = BackendSpec(name="numpy")
+    monkeypatch.setattr(
+        profiler_module.time,
+        "perf_counter",
+        _recording_clock(events=events, values=(1.0, 1.004)),
+    )
+
+    def record_touch(self: BackendSpec, output: Output) -> None:
+        _ = self, output
+        events.append("touch")
+
+    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        events.append("call")
+        return batch[0]
+
+    Profiler(backend=backend).measure_dynamic(
+        runner=run,
+        batches=[
+            (np.asarray([1.0], dtype=np.float32),),
+            (np.asarray([2.0], dtype=np.float32),),
+        ],
+        warmup_batches=1,
+        repeats=1,
+    )
+
+    assert events == [
+        "call",
+        "touch",
+        "clock_start",
+        "call",
+        "clock_stop",
+        "touch",
+    ]
+
+
+def test_eager_timing_rejects_asynchronous_torch_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "cuda"
+
+        def __str__(self) -> str:
+            return "cuda:0"
+
+    class FakeTensor:
+        shape = (1,)
+        device = FakeDevice()
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(Tensor=FakeTensor),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="eager benchmark timing requires synchronous CPU outputs",
+    ):
+        BackendSpec(name="torch").touch_output(cast(Output, FakeTensor()))
 
 
 def test_round_orders_rotate_balanced_positions() -> None:

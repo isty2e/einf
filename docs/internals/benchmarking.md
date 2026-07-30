@@ -24,13 +24,24 @@ The fixed and dynamic compare scripts use the same high-level fairness model:
 1. all competitors see the same logical workload,
 2. each competitor receives independently materialized tensors,
 3. per-batch execution order rotates to spread first-executor bias,
-4. measured time covers only the library call itself, not harness-side materialization.
+4. eager CPU timing excludes harness-side output observation and materialization.
 
 More concretely:
 
+- fixed cold timing covers operation construction plus the first library call,
 - fixed warm benchmarks use paired per-call execution on the same logical input,
 - dynamic benchmarks use paired same-batch execution on the same logical batch stream inside each round,
+- tuple traversal, shape access, indexing, `.item()`, and parity validation happen outside timed regions,
 - dynamic rounds still use different batch streams from one round to the next, so round summaries matter for heavy cases.
+
+The shared compare harness supports synchronous CPU outputs. It rejects
+asynchronous device outputs instead of reporting incomplete eager-launch
+latency. Supporting an asynchronous backend requires explicit synchronization
+before the timer stops and a distinct synchronized metric label.
+
+Diagnostic scripts under `benchmarks/audit/` and `benchmarks/profile/` may
+define broader task-specific timed regions; their own methodology is
+authoritative.
 
 ## Taxonomy Refactor Performance Gate
 

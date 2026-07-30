@@ -153,10 +153,9 @@ class BenchmarkRunner:
                     started = time.perf_counter()
                     runner = runners[lib_name]()
                     cold_output = runner(cold_inputs)
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
                     self.backend.touch_output(cold_output)
-                    cold_samples[lib_name].append(
-                        (time.perf_counter() - started) * 1000.0
-                    )
+                    cold_samples[lib_name].append(elapsed_ms)
                     if lib_name not in validated:
                         self._validate_output(
                             case=case,
@@ -191,12 +190,10 @@ class BenchmarkRunner:
                     )
                     for lib_name in iteration_order:
                         started = time.perf_counter()
-                        self.backend.touch_output(
-                            warm_runners[lib_name](warm_inputs[lib_name])
-                        )
-                        elapsed_ms_by_library[lib_name] += (
-                            time.perf_counter() - started
-                        ) * 1000.0
+                        warm_output = warm_runners[lib_name](warm_inputs[lib_name])
+                        elapsed_ms = (time.perf_counter() - started) * 1000.0
+                        self.backend.touch_output(warm_output)
+                        elapsed_ms_by_library[lib_name] += elapsed_ms
                 for lib_name, elapsed_ms in elapsed_ms_by_library.items():
                     elapsed_per_call_ms = elapsed_ms / float(config.warm_iterations)
                     warm_samples[lib_name].append(elapsed_per_call_ms)
@@ -328,8 +325,9 @@ class BenchmarkRunner:
                     for lib_name in batch_order:
                         batch = self.backend.clone_batch(canonical_batch)
                         started = time.perf_counter()
-                        self.backend.touch_output(runner_by_library[lib_name](batch))
+                        output = runner_by_library[lib_name](batch)
                         elapsed_ms = (time.perf_counter() - started) * 1000.0
+                        self.backend.touch_output(output)
                         samples_by_library[lib_name].append(elapsed_ms)
                         round_samples[lib_name].append(elapsed_ms)
 
