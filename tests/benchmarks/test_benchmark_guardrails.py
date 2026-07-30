@@ -1,8 +1,17 @@
+import json
+from pathlib import Path
+from typing import cast
+
+import pytest
+
 from benchmarks.guardrail.policy import (
+    MetricName,
     OverheadReportDict,
+    RegressionFinding,
     collect_case_metrics,
     compare_overhead_report_trials,
     compare_overhead_reports,
+    load_overhead_report,
     render_findings,
     render_trial_findings,
 )
@@ -45,11 +54,201 @@ def _report(*, call_ms: float) -> OverheadReportDict:
     )
 
 
+def _set_metric(
+    report: OverheadReportDict,
+    *,
+    metric_name: MetricName,
+    value: object,
+) -> None:
+    case = report["scenarios"][0]["cases"][0]
+    case[metric_name] = cast(float, value)
+
+
+def _delete_metric(
+    report: OverheadReportDict,
+    *,
+    metric_name: MetricName,
+) -> None:
+    case = report["scenarios"][0]["cases"][0]
+    case_mapping = cast(dict[str, object], case)
+    del case_mapping[metric_name]
+
+
+def _write_report(
+    tmp_path: Path,
+    *,
+    report: OverheadReportDict,
+) -> Path:
+    path = tmp_path / "overhead.json"
+    path.write_text(json.dumps(report))
+    return path
+
+
 def test_collect_case_metrics_builds_stable_keys() -> None:
     metrics = collect_case_metrics(_report(call_ms=1.0))
     key = ("fixed_medium", "fixed", "medium", "rearrange_flatten")
     assert key in metrics
     assert metrics[key].instrumented_call_ms == 1.0
+
+
+@pytest.mark.parametrize(
+    "metric_name",
+    ("unpatched_call_ms", "instrumented_call_ms"),
+)
+def test_load_overhead_report_requires_each_latency_metric(
+    tmp_path: Path,
+    metric_name: MetricName,
+) -> None:
+    report = _report(call_ms=1.0)
+    _delete_metric(report, metric_name=metric_name)
+
+    with pytest.raises(TypeError, match=f"missing required metric {metric_name}"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_load_overhead_report_rejects_boolean_latency(tmp_path: Path) -> None:
+    report = _report(call_ms=1.0)
+    _set_metric(
+        report,
+        metric_name="instrumented_call_ms",
+        value=True,
+    )
+
+    with pytest.raises(TypeError, match="instrumented_call_ms must be numeric"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_load_overhead_report_rejects_duplicate_case_keys(tmp_path: Path) -> None:
+    report = _report(call_ms=1.0)
+    duplicate_case = report["scenarios"][0]["cases"][0].copy()
+    report["scenarios"][0]["cases"].append(duplicate_case)
+
+    with pytest.raises(ValueError, match="duplicate overhead case key"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_regression_finding_requires_positive_baseline() -> None:
+    with pytest.raises(ValueError, match="baseline_ms must be > 0"):
+        RegressionFinding(
+            key=("fixed_medium", "fixed", "medium", "rearrange_flatten"),
+            metric="instrumented_call_ms",
+            baseline_ms=0.0,
+            candidate_ms=1.2,
+            allowed_ms=1.1,
+        )
+
+
+@pytest.mark.parametrize("report_side", ("baseline", "candidate"))
+@pytest.mark.parametrize(
+    "metric_name",
+    ("unpatched_call_ms", "instrumented_call_ms"),
+)
+def test_compare_overhead_reports_requires_each_latency_metric(
+    report_side: str,
+    metric_name: MetricName,
+) -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = _report(call_ms=1.0)
+    invalid_report = baseline if report_side == "baseline" else candidate
+    _delete_metric(invalid_report, metric_name=metric_name)
+
+    with pytest.raises(TypeError, match=f"missing required metric {metric_name}"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+@pytest.mark.parametrize("report_side", ("baseline", "candidate"))
+@pytest.mark.parametrize(
+    "metric_name",
+    ("unpatched_call_ms", "instrumented_call_ms"),
+)
+def test_compare_overhead_reports_rejects_boolean_latency(
+    report_side: str,
+    metric_name: MetricName,
+) -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = _report(call_ms=1.0)
+    invalid_report = baseline if report_side == "baseline" else candidate
+    _set_metric(
+        invalid_report,
+        metric_name=metric_name,
+        value=True,
+    )
+
+    with pytest.raises(TypeError, match=f"{metric_name} must be numeric"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+@pytest.mark.parametrize("report_side", ("baseline", "candidate"))
+@pytest.mark.parametrize(
+    "metric_name",
+    ("unpatched_call_ms", "instrumented_call_ms"),
+)
+@pytest.mark.parametrize(
+    ("invalid_value", "expected_message"),
+    (
+        (float("nan"), "must be finite"),
+        (float("inf"), "must be finite"),
+        (float("-inf"), "must be finite"),
+        (10**1000, "must be finite"),
+        (0.0, "must be > 0"),
+        (-1.0, "must be > 0"),
+    ),
+)
+def test_compare_overhead_reports_rejects_invalid_latency(
+    report_side: str,
+    metric_name: MetricName,
+    invalid_value: float,
+    expected_message: str,
+) -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = _report(call_ms=1.0)
+    invalid_report = baseline if report_side == "baseline" else candidate
+    _set_metric(
+        invalid_report,
+        metric_name=metric_name,
+        value=invalid_value,
+    )
+
+    with pytest.raises(ValueError, match=expected_message):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+@pytest.mark.parametrize("report_side", ("baseline", "candidate"))
+def test_compare_overhead_reports_rejects_duplicate_case_keys(
+    report_side: str,
+) -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = _report(call_ms=1.0)
+    duplicate_report = baseline if report_side == "baseline" else candidate
+    duplicate_case = duplicate_report["scenarios"][0]["cases"][0].copy()
+    duplicate_report["scenarios"][0]["cases"].append(duplicate_case)
+
+    with pytest.raises(ValueError, match="duplicate overhead case key"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
 
 
 def test_compare_overhead_reports_flags_regression() -> None:
