@@ -338,9 +338,9 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --raw-output artifacts/bench/raw/bench-torch-large-dynamic.json
 ```
 
-Running these commands now produces current-harness output. It does not recreate
-the archived 2026-04-17 environment or restore pairing identities that were not
-recorded in the historical Markdown.
+Running these commands now produces current-harness Markdown and raw JSON
+receipts. It does not recreate the archived 2026-04-17 environment or restore
+pairing identities that were not recorded in the historical Markdown.
 
 See [Benchmarking](benchmarking.md) for the full methodology, other
 backends, and audit tools.

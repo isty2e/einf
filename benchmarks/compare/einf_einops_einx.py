@@ -2,6 +2,7 @@
 """Compare einf/einops/einx performance on common tensor operations."""
 
 import argparse
+import json
 import platform
 from pathlib import Path
 
@@ -12,14 +13,22 @@ from benchmarks.harness import (
     BackendSpec,
     BenchmarkCase,
     BenchmarkRunner,
+    BenchSizes,
     CaseCalls,
+    FixedCaseResult,
     FixedCaseSpec,
     FixedTaskConfig,
     MarkdownPrinter,
     Profiler,
     TensorGenerator,
     TestResult,
+    UnavailableRun,
     fixed_sizes_for_scale,
+)
+from benchmarks.harness.receipt import (
+    paired_evidence_payload,
+    resolve_raw_output_path,
+    timing_summary_payload,
 )
 from benchmarks.shared import as_single_array, available_libraries, version_or_missing
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
@@ -385,6 +394,85 @@ def _build_case_specs(*, sizes, seed: int, backend: BackendSpec) -> list[FixedCa
     ]
 
 
+def _raw_payload(
+    *,
+    config: FixedTaskConfig,
+    sizes: BenchSizes,
+    case_results: list[FixedCaseResult],
+) -> dict[str, object]:
+    return {
+        "schema_version": 3,
+        "benchmark": "einf-vs-einops-einx-fixed",
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "numpy": version_or_missing("numpy"),
+            "torch": version_or_missing("torch"),
+            "einops": version_or_missing("einops"),
+            "einx": version_or_missing("einx"),
+            "einf": version_or_missing("einf"),
+        },
+        "configuration": {
+            "backend": config.backend,
+            "scale": config.scale,
+            "seed": config.seed,
+            "rounds": config.rounds,
+            "cold_repeats": config.cold_repeats,
+            "warmup": config.warmup,
+            "warm_repeats": config.warm_repeats,
+            "warm_iterations": config.warm_iterations,
+            "base_sizes": dict(sizes.items()),
+        },
+        "cases": [
+            {
+                "case": {
+                    "name": case_result.case.name,
+                    "description": case_result.case.description,
+                    "calls": {
+                        "einf": case_result.case.calls.einf,
+                        "einops": case_result.case.calls.einops,
+                        "einx": case_result.case.calls.einx,
+                    },
+                },
+                "runs": {
+                    library: (
+                        {
+                            "status": "unavailable",
+                            "reason": run.reason,
+                        }
+                        if isinstance(run, UnavailableRun)
+                        else {
+                            "status": "available",
+                            "cold": timing_summary_payload(run.cold),
+                            "warm": timing_summary_payload(run.warm),
+                            "warm_round_summaries": [
+                                timing_summary_payload(round_summary)
+                                for round_summary in run.warm_rounds
+                            ],
+                        }
+                    )
+                    for library, run in case_result.runs.items()
+                },
+                "round_orders": [
+                    list(round_order) for round_order in case_result.round_orders
+                ],
+                "measurements": [
+                    {
+                        "phase": "cold",
+                        **paired_evidence_payload(case_result.cold_evidence),
+                    },
+                    {
+                        "phase": "warm",
+                        **paired_evidence_payload(case_result.warm_evidence),
+                    },
+                ],
+            }
+            for case_result in case_results
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Benchmark einf vs einops vs einx on common tensor operations.",
@@ -413,14 +501,20 @@ def main() -> int:
         default=None,
         help="Optional markdown output path.",
     )
+    parser.add_argument(
+        "--raw-output",
+        type=Path,
+        default=None,
+        help="Optional raw JSON path; defaults to --output with a .json suffix.",
+    )
     args = parser.parse_args()
 
     if args.rounds < 1:
         raise ValueError("--rounds must be >= 1")
-    if args.cold_repeats < 1:
-        raise ValueError("--cold-repeats must be >= 1")
-    if args.warm_repeats < 1:
-        raise ValueError("--warm-repeats must be >= 1")
+    if args.cold_repeats < 2:
+        raise ValueError("--cold-repeats must be >= 2 for paired uncertainty")
+    if args.warm_repeats < 2:
+        raise ValueError("--warm-repeats must be >= 2 for paired uncertainty")
     if args.warm_iterations < 1:
         raise ValueError("--warm-iterations must be >= 1")
 
@@ -428,6 +522,10 @@ def main() -> int:
     backend = BackendSpec(name=backend_name)
     backend.validate_available()
     sizes = fixed_sizes_for_scale(args.scale)
+    raw_output_path = resolve_raw_output_path(
+        output=args.output,
+        raw_output=args.raw_output,
+    )
 
     config = FixedTaskConfig(
         backend=backend_name,
@@ -487,6 +585,11 @@ def main() -> int:
             f"warm iterations per repeat: `{args.warm_iterations}`",
             f"aggregated cold samples per available library: `{args.rounds * args.cold_repeats}`",
             f"aggregated warm samples per available library: `{args.rounds * args.warm_repeats}`",
+            *(
+                [f"raw JSON artifact: `{raw_output_path}`"]
+                if raw_output_path is not None
+                else []
+            ),
             "table units: `ms`",
             "`cold`: op construction + first execution",
             "`warm`: post-warmup steady-state per-call latency",
@@ -498,6 +601,8 @@ def main() -> int:
             "Warm timing runs paired per-call execution on the same logical input while using independently materialized per-library tensors.",
             "Each warm sample is the arithmetic mean of the configured timed calls in one repeat.",
             "Within each round, per-call library order rotates from the reported base order to spread position bias.",
+            "Cold trials and warm repeat blocks are paired across libraries before ratio estimation.",
+            "95% intervals use deterministic paired-unit bootstrap resampling stratified by round.",
             "Per-library summaries aggregate all samples across order rounds.",
         ],
         case_results=case_results,
@@ -510,9 +615,25 @@ def main() -> int:
     report = MarkdownPrinter().render_fixed(result)
     print(report)
 
+    if raw_output_path is not None:
+        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path.write_text(
+            json.dumps(
+                _raw_payload(
+                    config=config,
+                    sizes=sizes,
+                    case_results=case_results,
+                ),
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"\nWrote raw observations: {raw_output_path}")
+
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(report + "\n")
+        args.output.write_text(report + "\n", encoding="utf-8")
         print(f"\nWrote report: {args.output}")
 
     return 0

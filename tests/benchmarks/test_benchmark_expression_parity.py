@@ -565,7 +565,7 @@ def test_expression_observation_rejects_invalid_identity() -> None:
     with pytest.raises(ValueError, match="strategy must be non-empty"):
         ExpressionObservation(
             round_index=0,
-            measured_batch_index=0,
+            unit_index=0,
             repeat_index=0,
             strategy="",
             order_position=0,
@@ -590,7 +590,7 @@ def test_expression_result_rejects_missing_available_run() -> None:
             observations=(
                 ExpressionObservation(
                     round_index=0,
-                    measured_batch_index=0,
+                    unit_index=0,
                     repeat_index=0,
                     strategy="target",
                     order_position=0,
@@ -671,7 +671,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
 
     payload = _to_json(report)
     json.dumps(payload)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     measurement_contract = payload["measurement_contract"]
     assert isinstance(measurement_contract, dict)
     assert measurement_contract["schedule"] == "interleaved_per_logical_batch"
@@ -682,6 +682,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
     assert case_payload["case"]["runner_specs"][0]["is_target"] is True
     assert case_payload["case"]["runner_specs"][0]["semantics"] == "output_equivalent"
     assert case_payload["observations"][0]["strategy"] == "target"
+    assert case_payload["observations"][0]["unit_index"] == 0
     assert case_payload["comparisons"][0]["target"] == "target"
 
     markdown = _render_markdown(report)

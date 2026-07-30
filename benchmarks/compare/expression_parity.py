@@ -119,7 +119,7 @@ class ExpressionObservation:
     """One timed expression call with pairing and execution identity."""
 
     round_index: int
-    measured_batch_index: int
+    unit_index: int
     repeat_index: int
     strategy: str
     order_position: int
@@ -129,7 +129,7 @@ class ExpressionObservation:
         """Reject invalid observation coordinates and timing values."""
         for field_name, value in (
             ("round_index", self.round_index),
-            ("measured_batch_index", self.measured_batch_index),
+            ("unit_index", self.unit_index),
             ("repeat_index", self.repeat_index),
             ("order_position", self.order_position),
         ):
@@ -665,7 +665,7 @@ def _run_dynamic_case(
                     observations.append(
                         ExpressionObservation(
                             round_index=round_index,
-                            measured_batch_index=measured_batch_index,
+                            unit_index=measured_batch_index,
                             repeat_index=repeat_index,
                             strategy=name,
                             order_position=order_position,
@@ -698,7 +698,7 @@ def _run_dynamic_case(
 
 def _to_json(report: ExpressionParityReport) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "title": report.title,
         "configuration": list(report.configuration),
         "methodology": list(report.methodology),
@@ -707,7 +707,7 @@ def _to_json(report: ExpressionParityReport) -> dict[str, object]:
             "order": "continuous_rotation_from_one_deterministic_shuffled_order",
             "pairing_identity": [
                 "round_index",
-                "measured_batch_index",
+                "unit_index",
                 "repeat_index",
             ],
             "estimand": (
@@ -762,7 +762,7 @@ def _to_json(report: ExpressionParityReport) -> dict[str, object]:
                 "observations": [
                     {
                         "round_index": observation.round_index,
-                        "measured_batch_index": observation.measured_batch_index,
+                        "unit_index": observation.unit_index,
                         "repeat_index": observation.repeat_index,
                         "strategy": observation.strategy,
                         "order_position": observation.order_position,
@@ -775,7 +775,7 @@ def _to_json(report: ExpressionParityReport) -> dict[str, object]:
                         "target": comparison.baseline,
                         "competitor": comparison.competitor,
                         "call_pair_count": comparison.call_pair_count,
-                        "paired_batch_count": comparison.paired_batch_count,
+                        "paired_unit_count": comparison.paired_unit_count,
                         "latency_ratio": comparison.latency_ratio,
                         "confidence_level": comparison.confidence_level,
                         "confidence_interval": {
@@ -891,7 +891,7 @@ def _render_markdown(report: ExpressionParityReport) -> str:
                     f"{comparison.latency_ratio:.4f} | "
                     f"[{comparison.confidence_interval_low:.4f}, "
                     f"{comparison.confidence_interval_high:.4f}] | "
-                    f"{comparison.paired_batch_count} | "
+                    f"{comparison.paired_unit_count} | "
                     f"{comparison.call_pair_count} |"
                 )
 

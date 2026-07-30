@@ -26,6 +26,7 @@ from benchmarks.harness import (
     MarkdownPrinter,
     Output,
     PairedComparison,
+    PairedEvidence,
     Profiler,
     TimingSummary,
 )
@@ -133,7 +134,7 @@ def test_fixed_timing_stops_before_output_observation(
 
     monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
 
-    runner.run_fixed_case(
+    result = runner.run_fixed_case(
         case_spec=FixedCaseSpec(
             case=_timing_case(events=events),
             inputs=(np.asarray([1.0], dtype=np.float32),),
@@ -162,6 +163,12 @@ def test_fixed_timing_stops_before_output_observation(
         "call",
         "clock_stop",
         "touch",
+    ]
+    assert [item.latency_ms for item in result.cold_evidence.observations] == [
+        pytest.approx(1.0)
+    ]
+    assert [item.latency_ms for item in result.warm_evidence.observations] == [
+        pytest.approx(2.0)
     ]
 
 
@@ -355,24 +362,61 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
             scale="small",
             seed=1,
             rounds=1,
-            cold_repeats=1,
+            cold_repeats=2,
             warmup=0,
-            warm_repeats=1,
-            warm_iterations=1,
+            warm_repeats=2,
+            warm_iterations=2,
         ),
         order_seed=1234,
     )
 
     order = result.round_orders[0]
-    assert call_order == [order[0], order[1], order[2], order[0], order[1], order[2]]
+    expected_orders = [
+        order,
+        runner._rotate_order(order, offset=1),
+        order,
+        runner._rotate_order(order, offset=1),
+        runner._rotate_order(order, offset=2),
+        order,
+    ]
+    assert call_order == [
+        name for expected_order in expected_orders for name in expected_order
+    ]
 
     for lib_name in ("einf", "einops", "einx"):
-        cold_array, warm_array = captured[lib_name]
-        assert not np.shares_memory(cold_array, original)
-        assert not np.shares_memory(warm_array, original)
-        assert not np.shares_memory(cold_array, warm_array)
-        assert np.array_equal(cold_array, original)
-        assert np.array_equal(warm_array, original)
+        arrays = captured[lib_name]
+        assert len(arrays) == 6
+        assert all(not np.shares_memory(array, original) for array in arrays)
+        assert all(np.array_equal(array, original) for array in arrays)
+        assert not np.shares_memory(arrays[0], arrays[1])
+        assert not np.shares_memory(arrays[0], arrays[2])
+
+    assert len(result.cold_evidence.observations) == 6
+    assert len(result.warm_evidence.observations) == 12
+    assert len(result.cold_evidence.comparisons) == 2
+    assert len(result.warm_evidence.comparisons) == 2
+
+    warm_orders = expected_orders[2:]
+    for timing_index, expected_order in enumerate(warm_orders):
+        start = timing_index * 3
+        observations = result.warm_evidence.observations[start : start + 3]
+        assert tuple(item.library for item in observations) == expected_order
+        assert {item.unit_index for item in observations} == {timing_index // 2}
+        assert {item.repeat_index for item in observations} == {timing_index % 2}
+        assert tuple(item.order_position for item in observations) == (0, 1, 2)
+
+    report = BenchmarkTestResult(
+        title="# Fixed",
+        configuration=["backend: `numpy`"],
+        methodology=["paired"],
+        case_results=[result],
+        notes=[],
+    )
+    markdown = MarkdownPrinter().render_fixed(report)
+    assert "Cold paired latency ratios (competitor / einf):" in markdown
+    assert "Warm paired latency ratios (competitor / einf):" in markdown
+    assert "Paired trial units" in markdown
+    assert "Paired timing units" in markdown
 
 
 def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
@@ -451,14 +495,14 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         assert not np.shares_memory(arrays[0], arrays[2])
         assert not np.shares_memory(arrays[1], arrays[2])
 
-    assert len(result.observations) == 6
+    assert len(result.evidence.observations) == 6
     measured_orders = expected_orders[1:]
     for measured_batch_index, expected_order in enumerate(measured_orders):
         start = measured_batch_index * 3
-        batch_observations = result.observations[start : start + 3]
+        batch_observations = result.evidence.observations[start : start + 3]
         assert [item.library for item in batch_observations] == list(expected_order)
         assert [item.order_position for item in batch_observations] == [0, 1, 2]
-        assert {item.measured_batch_index for item in batch_observations} == {
+        assert {item.unit_index for item in batch_observations} == {
             measured_batch_index
         }
         assert {item.repeat_index for item in batch_observations} == {0}
@@ -509,7 +553,7 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
         case_index=0,
     )
 
-    assert [item.latency_ms for item in result.observations] == pytest.approx(
+    assert [item.latency_ms for item in result.evidence.observations] == pytest.approx(
         list(range(1, 13))
     )
 
@@ -604,19 +648,21 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
             ),
         },
         round_orders=[("einf", "einops", "einx"), ("einops", "einx", "einf")],
-        observations=(),
-        comparisons=(
-            PairedComparison(
-                baseline="einf",
-                competitor="einops",
-                call_pair_count=12,
-                paired_batch_count=6,
-                latency_ratio=2.0,
-                confidence_level=0.95,
-                confidence_interval_low=1.8,
-                confidence_interval_high=2.2,
-                bootstrap_resamples=10_000,
-                bootstrap_seed=7,
+        evidence=PairedEvidence(
+            observations=(),
+            comparisons=(
+                PairedComparison(
+                    baseline="einf",
+                    competitor="einops",
+                    call_pair_count=12,
+                    paired_unit_count=6,
+                    latency_ratio=2.0,
+                    confidence_level=0.95,
+                    confidence_interval_low=1.8,
+                    confidence_interval_high=2.2,
+                    bootstrap_resamples=10_000,
+                    bootstrap_seed=7,
+                ),
             ),
         ),
     )

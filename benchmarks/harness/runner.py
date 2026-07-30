@@ -5,18 +5,19 @@ import numpy as np
 
 from .backend import BackendSpec
 from .case import BenchmarkCase, DynamicCaseSpec, FixedCaseSpec, RunnerFactory
-from .comparison import compare_paired_observations
+from .comparison import compare_library_timings
 from .config import DynamicTaskConfig, FixedTaskConfig
 from .generator import TensorGenerator
 from .profiler import Profiler
 from .result import (
     DynamicCaseResult,
-    DynamicObservation,
     DynamicRun,
     DynamicRunResult,
     FixedCaseResult,
     FixedRun,
     FixedRunResult,
+    LibraryTimingObservation,
+    PairedEvidence,
     TimingSummary,
     UnavailableRun,
 )
@@ -76,6 +77,40 @@ class BenchmarkRunner:
             "einops": case.make_einops_runner,
             "einx": case.make_einx_runner,
         }
+
+    def _require_full_round_orders(
+        self,
+        *,
+        round_orders: list[tuple[LibraryName, ...]],
+        libraries: list[LibraryName],
+    ) -> None:
+        expected_libraries = frozenset(libraries)
+        if any(
+            len(round_order) != len(libraries)
+            or frozenset(round_order) != expected_libraries
+            for round_order in round_orders
+        ):
+            raise RuntimeError(
+                "benchmark round orders must be full library permutations"
+            )
+
+    def _paired_evidence(
+        self,
+        *,
+        observations: list[LibraryTimingObservation],
+        libraries: list[LibraryName],
+        bootstrap_seed: int,
+    ) -> PairedEvidence:
+        observation_tuple = tuple(observations)
+        return PairedEvidence(
+            observations=observation_tuple,
+            comparisons=compare_library_timings(
+                observations=observation_tuple,
+                libraries=tuple(libraries),
+                baseline="einf",
+                bootstrap_seed=bootstrap_seed,
+            ),
+        )
 
     def _numpy_batch(self, batch: tuple[Array, ...]) -> tuple[np.ndarray, ...]:
         return tuple(self.backend.to_numpy_array(item) for item in batch)
@@ -139,12 +174,22 @@ class BenchmarkRunner:
             available_libs.append(lib_name)
 
         if not available_libs:
-            return FixedCaseResult(case=case, runs=runs, round_orders=[])
+            empty_evidence = PairedEvidence(observations=(), comparisons=())
+            return FixedCaseResult(
+                case=case,
+                runs=runs,
+                round_orders=[],
+                cold_evidence=empty_evidence,
+                warm_evidence=empty_evidence,
+            )
 
         cold_samples: dict[LibraryName, list[float]] = {
             name: [] for name in available_libs
         }
         warm_samples: dict[LibraryName, list[float]] = {
+            name: [] for name in available_libs
+        }
+        warm_call_samples: dict[LibraryName, list[float]] = {
             name: [] for name in available_libs
         }
         warm_rounds: dict[LibraryName, list[TimingSummary]] = {
@@ -155,6 +200,10 @@ class BenchmarkRunner:
             library_names=available_libs,
             rounds=config.rounds,
             seed=order_seed,
+        )
+        self._require_full_round_orders(
+            round_orders=round_orders,
+            libraries=available_libs,
         )
 
         for order in round_orders:
@@ -209,6 +258,7 @@ class BenchmarkRunner:
                         warm_output = warm_runners[lib_name](warm_inputs[lib_name])
                         elapsed_ms = (time.perf_counter() - started) * 1000.0
                         self.backend.touch_output(warm_output)
+                        warm_call_samples[lib_name].append(elapsed_ms)
                         elapsed_ms_by_library[lib_name] += elapsed_ms
                 for lib_name, elapsed_ms in elapsed_ms_by_library.items():
                     elapsed_per_call_ms = elapsed_ms / float(config.warm_iterations)
@@ -226,10 +276,90 @@ class BenchmarkRunner:
                 warm_rounds=tuple(warm_rounds[lib_name]),
             )
 
+        expected_cold_sample_count = len(round_orders) * config.cold_repeats
+        cold_sample_counts = {
+            lib_name: len(cold_samples[lib_name]) for lib_name in available_libs
+        }
+        if any(
+            count != expected_cold_sample_count for count in cold_sample_counts.values()
+        ):
+            raise RuntimeError(
+                "fixed cold observation sample count mismatch: "
+                f"expected {expected_cold_sample_count} per library, "
+                f"got {cold_sample_counts}"
+            )
+
+        cold_observations: list[LibraryTimingObservation] = []
+        cold_sample_index = 0
+        for round_index, round_order in enumerate(round_orders):
+            for unit_index in range(config.cold_repeats):
+                unit_order = self._rotate_order(round_order, offset=unit_index)
+                for order_position, lib_name in enumerate(unit_order):
+                    cold_observations.append(
+                        LibraryTimingObservation(
+                            round_index=round_index,
+                            unit_index=unit_index,
+                            repeat_index=0,
+                            library=lib_name,
+                            order_position=order_position,
+                            latency_ms=cold_samples[lib_name][cold_sample_index],
+                        )
+                    )
+                cold_sample_index += 1
+
+        expected_warm_call_count = (
+            len(round_orders) * config.warm_repeats * config.warm_iterations
+        )
+        warm_call_counts = {
+            lib_name: len(warm_call_samples[lib_name]) for lib_name in available_libs
+        }
+        if any(
+            count != expected_warm_call_count for count in warm_call_counts.values()
+        ):
+            raise RuntimeError(
+                "fixed warm observation sample count mismatch: "
+                f"expected {expected_warm_call_count} per library, "
+                f"got {warm_call_counts}"
+            )
+
+        warm_observations: list[LibraryTimingObservation] = []
+        warm_sample_index = 0
+        for round_index, round_order in enumerate(round_orders):
+            for unit_index in range(config.warm_repeats):
+                for repeat_index in range(config.warm_iterations):
+                    repeat_order = self._rotate_order(
+                        round_order,
+                        offset=unit_index * config.warm_iterations + repeat_index,
+                    )
+                    for order_position, lib_name in enumerate(repeat_order):
+                        warm_observations.append(
+                            LibraryTimingObservation(
+                                round_index=round_index,
+                                unit_index=unit_index,
+                                repeat_index=repeat_index,
+                                library=lib_name,
+                                order_position=order_position,
+                                latency_ms=warm_call_samples[lib_name][
+                                    warm_sample_index
+                                ],
+                            )
+                        )
+                    warm_sample_index += 1
+
         return FixedCaseResult(
             case=case,
             runs=runs,
             round_orders=round_orders,
+            cold_evidence=self._paired_evidence(
+                observations=cold_observations,
+                libraries=available_libs,
+                bootstrap_seed=order_seed,
+            ),
+            warm_evidence=self._paired_evidence(
+                observations=warm_observations,
+                libraries=available_libs,
+                bootstrap_seed=order_seed + 1,
+            ),
         )
 
     def _make_dynamic_batches(
@@ -270,8 +400,7 @@ class BenchmarkRunner:
                 workload=case_spec.workload_metadata,
                 runs=runs,
                 round_orders=[],
-                observations=(),
-                comparisons=(),
+                evidence=PairedEvidence(observations=(), comparisons=()),
             )
 
         round_batches = [
@@ -292,15 +421,10 @@ class BenchmarkRunner:
             rounds=config.rounds,
             seed=config.round_order_seed + case_index * CASE_SEED_STRIDE,
         )
-        expected_libraries = frozenset(available_libs)
-        if any(
-            len(round_order) != len(available_libs)
-            or frozenset(round_order) != expected_libraries
-            for round_order in round_orders
-        ):
-            raise RuntimeError(
-                "dynamic benchmark round orders must be full library permutations"
-            )
+        self._require_full_round_orders(
+            round_orders=round_orders,
+            libraries=available_libs,
+        )
         runner_by_library: dict[LibraryName, Runner] = {
             lib_name: runners[lib_name]() for lib_name in available_libs
         }
@@ -378,7 +502,7 @@ class BenchmarkRunner:
                 f"expected {expected_sample_count} per library, got {sample_counts}"
             )
 
-        observations: list[DynamicObservation] = []
+        observations: list[LibraryTimingObservation] = []
         sample_index = 0
         # Full round permutations append every per-library list in the same
         # round/repeat/batch coordinate order, so one shared index is sufficient.
@@ -393,9 +517,9 @@ class BenchmarkRunner:
                     )
                     for order_position, lib_name in enumerate(batch_order):
                         observations.append(
-                            DynamicObservation(
+                            LibraryTimingObservation(
                                 round_index=round_index,
-                                measured_batch_index=measured_batch_index,
+                                unit_index=measured_batch_index,
                                 repeat_index=repeat_index,
                                 library=lib_name,
                                 order_position=order_position,
@@ -404,18 +528,14 @@ class BenchmarkRunner:
                         )
                     sample_index += 1
 
-        observation_tuple = tuple(observations)
-        comparisons = compare_paired_observations(
-            observations=observation_tuple,
-            libraries=tuple(available_libs),
-            baseline="einf",
-            bootstrap_seed=config.seed + case_index * CASE_SEED_STRIDE,
-        )
         return DynamicCaseResult(
             case=case,
             workload=case_spec.workload_metadata,
             runs=runs,
             round_orders=round_orders,
-            observations=observation_tuple,
-            comparisons=comparisons,
+            evidence=self._paired_evidence(
+                observations=observations,
+                libraries=available_libs,
+                bootstrap_seed=config.seed + case_index * CASE_SEED_STRIDE,
+            ),
         )

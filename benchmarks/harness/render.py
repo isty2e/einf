@@ -7,6 +7,7 @@ from .result import (
     DynamicRun,
     FixedCaseResult,
     FixedRun,
+    PairedEvidence,
     TestResult,
     TimingSummary,
     UnavailableRun,
@@ -113,6 +114,40 @@ def _format_round_medians(
     return lines
 
 
+def _render_paired_comparisons(
+    *,
+    evidence: PairedEvidence,
+    heading: str,
+    unit_label: str,
+) -> list[str]:
+    if not evidence.comparisons:
+        return []
+
+    lines = [
+        "",
+        heading,
+        "",
+        (
+            "| Comparison | Call pairs | "
+            f"{unit_label} | Ratio | Bootstrap level | Bootstrap interval | Difference |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for comparison in evidence.comparisons:
+        percent_difference = (comparison.latency_ratio - 1.0) * 100.0
+        lines.append(
+            f"| {comparison.competitor} / {comparison.baseline} | "
+            f"{comparison.call_pair_count} | "
+            f"{comparison.paired_unit_count} | "
+            f"{comparison.latency_ratio:.4f} | "
+            f"{comparison.confidence_level:.0%} | "
+            f"[{comparison.confidence_interval_low:.4f}, "
+            f"{comparison.confidence_interval_high:.4f}] | "
+            f"{percent_difference:+.2f}% |"
+        )
+    return lines
+
+
 @dataclass(frozen=True, slots=True)
 class MarkdownPrinter:
     """Render benchmark test results to markdown."""
@@ -153,6 +188,21 @@ class MarkdownPrinter:
             lines.append(
                 f"| {lib_name} | {_format_summary(run.cold)} | {_format_summary(run.warm)} |"
             )
+
+        lines.extend(
+            _render_paired_comparisons(
+                evidence=case_result.cold_evidence,
+                heading="Cold paired latency ratios (competitor / einf):",
+                unit_label="Paired trial units",
+            )
+        )
+        lines.extend(
+            _render_paired_comparisons(
+                evidence=case_result.warm_evidence,
+                heading="Warm paired latency ratios (competitor / einf):",
+                unit_label="Paired timing units",
+            )
+        )
 
         def resolve_warm_round(
             lib_name: LibraryName, round_index: int
@@ -221,28 +271,13 @@ class MarkdownPrinter:
                 f"{summary.p95_ms:.4f} | {summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
 
-        if case_result.comparisons:
-            lines.extend(
-                [
-                    "",
-                    "Paired latency ratios (competitor / einf):",
-                    "",
-                    "| Comparison | Call pairs | Paired batch units | Ratio | Bootstrap level | Bootstrap interval | Difference |",
-                    "|---|---:|---:|---:|---:|---:|---:|",
-                ]
+        lines.extend(
+            _render_paired_comparisons(
+                evidence=case_result.evidence,
+                heading="Paired latency ratios (competitor / einf):",
+                unit_label="Paired workload units",
             )
-            for comparison in case_result.comparisons:
-                percent_difference = (comparison.latency_ratio - 1.0) * 100.0
-                lines.append(
-                    f"| {comparison.competitor} / {comparison.baseline} | "
-                    f"{comparison.call_pair_count} | "
-                    f"{comparison.paired_batch_count} | "
-                    f"{comparison.latency_ratio:.4f} | "
-                    f"{comparison.confidence_level:.0%} | "
-                    f"[{comparison.confidence_interval_low:.4f}, "
-                    f"{comparison.confidence_interval_high:.4f}] | "
-                    f"{percent_difference:+.2f}% |"
-                )
+        )
 
         lines.extend(
             ["", "Round base order (paired execution rotates within each round):", ""]

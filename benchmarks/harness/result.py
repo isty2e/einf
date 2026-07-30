@@ -51,11 +51,11 @@ DynamicRunResult = DynamicRun | UnavailableRun
 
 
 @dataclass(frozen=True, slots=True)
-class DynamicObservation:
-    """One timed dynamic call with its pairing and execution identity."""
+class LibraryTimingObservation:
+    """One timed library call with its pairing and execution identity."""
 
     round_index: int
-    measured_batch_index: int
+    unit_index: int
     repeat_index: int
     library: LibraryName
     order_position: int
@@ -65,7 +65,7 @@ class DynamicObservation:
         """Reject invalid observation coordinates and timing values."""
         for field_name, value in (
             ("round_index", self.round_index),
-            ("measured_batch_index", self.measured_batch_index),
+            ("unit_index", self.unit_index),
             ("repeat_index", self.repeat_index),
             ("order_position", self.order_position),
         ):
@@ -82,12 +82,12 @@ _ComparisonMemberT = TypeVar("_ComparisonMemberT", bound=str)
 
 @dataclass(frozen=True, slots=True)
 class PairedComparison(Generic[_ComparisonMemberT]):
-    """Paired latency-ratio estimate with batch-level uncertainty."""
+    """Paired latency-ratio estimate with unit-level uncertainty."""
 
     baseline: _ComparisonMemberT
     competitor: _ComparisonMemberT
     call_pair_count: int
-    paired_batch_count: int
+    paired_unit_count: int
     latency_ratio: float
     confidence_level: float
     confidence_interval_low: float
@@ -99,11 +99,11 @@ class PairedComparison(Generic[_ComparisonMemberT]):
         """Reject malformed paired-effect evidence."""
         if self.baseline == self.competitor:
             raise ValueError("paired comparison requires distinct members")
-        if self.paired_batch_count < 1:
-            raise ValueError("paired_batch_count must be positive")
-        if self.call_pair_count < self.paired_batch_count:
+        if self.paired_unit_count < 1:
+            raise ValueError("paired_unit_count must be positive")
+        if self.call_pair_count < self.paired_unit_count:
             raise ValueError(
-                "call_pair_count must cover every paired batch at least once"
+                "call_pair_count must cover every paired unit at least once"
             )
         if not math.isfinite(self.latency_ratio) or self.latency_ratio <= 0.0:
             raise ValueError("latency_ratio must be finite and positive")
@@ -123,12 +123,22 @@ class PairedComparison(Generic[_ComparisonMemberT]):
 
 
 @dataclass(frozen=True, slots=True)
+class PairedEvidence:
+    """Raw and derived evidence for one paired library measurement phase."""
+
+    observations: tuple[LibraryTimingObservation, ...]
+    comparisons: tuple[PairedComparison[LibraryName], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FixedCaseResult:
     """One fixed-shape benchmark case run across libraries."""
 
     case: BenchmarkCase
     runs: dict[LibraryName, FixedRunResult]
     round_orders: list[tuple[LibraryName, ...]]
+    cold_evidence: PairedEvidence
+    warm_evidence: PairedEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,8 +149,7 @@ class DynamicCaseResult:
     workload: DynamicWorkloadMetadata
     runs: dict[LibraryName, DynamicRunResult]
     round_orders: list[tuple[LibraryName, ...]]
-    observations: tuple[DynamicObservation, ...]
-    comparisons: tuple[PairedComparison[LibraryName], ...]
+    evidence: PairedEvidence
 
 
 _CaseResultT = TypeVar("_CaseResultT", FixedCaseResult, DynamicCaseResult)

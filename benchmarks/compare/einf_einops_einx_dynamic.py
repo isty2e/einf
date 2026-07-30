@@ -26,9 +26,13 @@ from benchmarks.harness import (
     MarkdownPrinter,
     Profiler,
     TestResult,
-    TimingSummary,
     UnavailableRun,
     dynamic_sizes_for_scale,
+)
+from benchmarks.harness.receipt import (
+    paired_evidence_payload,
+    resolve_raw_output_path,
+    timing_summary_payload,
 )
 from benchmarks.shared import as_single_array, available_libraries, version_or_missing
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
@@ -405,20 +409,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
     ]
 
 
-def _summary_payload(summary: TimingSummary) -> dict[str, int | float]:
-    return {
-        "count": summary.count,
-        "p25_ms": summary.p25_ms,
-        "median_ms": summary.median_ms,
-        "p75_ms": summary.p75_ms,
-        "iqr_ms": summary.iqr_ms,
-        "p95_ms": summary.p95_ms,
-        "mean_ms": summary.mean_ms,
-        "min_ms": summary.min_ms,
-        "max_ms": summary.max_ms,
-    }
-
-
 def _fraction_payload(ratio: Fraction) -> dict[str, int]:
     return {
         "numerator": ratio.numerator,
@@ -474,7 +464,7 @@ def _raw_payload(
     workload_comparisons: Mapping[str, DynamicWorkloadComparison],
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -530,9 +520,9 @@ def _raw_payload(
                         if isinstance(run, UnavailableRun)
                         else {
                             "status": "available",
-                            "summary": _summary_payload(run.summary),
+                            "summary": timing_summary_payload(run.summary),
                             "round_summaries": [
-                                _summary_payload(round_summary)
+                                timing_summary_payload(round_summary)
                                 for round_summary in run.round_summaries
                             ],
                         }
@@ -542,33 +532,11 @@ def _raw_payload(
                 "round_orders": [
                     list(round_order) for round_order in case_result.round_orders
                 ],
-                "observations": [
+                "measurements": [
                     {
-                        "round_index": observation.round_index,
-                        "measured_batch_index": observation.measured_batch_index,
-                        "repeat_index": observation.repeat_index,
-                        "library": observation.library,
-                        "order_position": observation.order_position,
-                        "latency_ms": observation.latency_ms,
+                        "phase": "steady",
+                        **paired_evidence_payload(case_result.evidence),
                     }
-                    for observation in case_result.observations
-                ],
-                "comparisons": [
-                    {
-                        "baseline": comparison.baseline,
-                        "competitor": comparison.competitor,
-                        "call_pair_count": comparison.call_pair_count,
-                        "paired_batch_count": comparison.paired_batch_count,
-                        "latency_ratio": comparison.latency_ratio,
-                        "confidence_level": comparison.confidence_level,
-                        "confidence_interval": {
-                            "low": comparison.confidence_interval_low,
-                            "high": comparison.confidence_interval_high,
-                        },
-                        "bootstrap_resamples": comparison.bootstrap_resamples,
-                        "bootstrap_seed": comparison.bootstrap_seed,
-                    }
-                    for comparison in case_result.comparisons
                 ],
             }
             for case_result in case_results
@@ -591,25 +559,6 @@ def _compare_workloads_to_medium(
         )
         for case_spec in case_specs
     }
-
-
-def _resolve_raw_output_path(
-    *,
-    output: Path | None,
-    raw_output: Path | None,
-) -> Path | None:
-    if raw_output is not None:
-        if output is not None and raw_output == output:
-            raise ValueError("--output and --raw-output must use different paths")
-        return raw_output
-    if output is None:
-        return None
-    derived_path = output.with_suffix(".json")
-    if derived_path == output:
-        raise ValueError(
-            "--output must have a non-JSON suffix when --raw-output is omitted"
-        )
-    return derived_path
 
 
 def main() -> int:
@@ -684,7 +633,7 @@ def main() -> int:
     round_order_seed = (
         args.seed if args.round_order_seed is None else args.round_order_seed
     )
-    raw_output_path = _resolve_raw_output_path(
+    raw_output_path = resolve_raw_output_path(
         output=args.output,
         raw_output=args.raw_output,
     )

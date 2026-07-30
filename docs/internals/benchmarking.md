@@ -23,15 +23,15 @@ The fixed and dynamic compare scripts use the same high-level fairness model:
 
 1. all competitors see the same logical workload,
 2. each competitor receives independently materialized tensors,
-3. per-batch execution order rotates to spread first-executor bias,
+3. execution order rotates at each paired timing coordinate to spread
+   first-executor bias,
 4. eager CPU timing excludes harness-side output observation and materialization.
 
 More concretely:
 
 - fixed cold timing covers operation construction plus the first library call,
 - fixed warm benchmarks use paired per-call execution on the same logical input,
-- each fixed warm observation is the arithmetic mean of the configured timed
-  calls in one repeat,
+- each fixed warm summary sample is the arithmetic mean of one repeat block,
 - dynamic benchmarks use paired same-batch execution on the same logical batch stream inside each round,
 - tuple traversal, shape access, indexing, `.item()`, and parity validation happen outside timed regions,
 - dynamic rounds still use different batch streams from one round to the next, so round summaries matter for heavy cases.
@@ -317,8 +317,10 @@ What the script reports:
 - cold construction + first-call timing,
 - warm steady-state observations, each an arithmetic mean over
   `--warm-iterations` timed calls,
+- paired latency ratios and round-stratified intervals for both phases,
 - round-level warm summaries,
-- per-case library order for each round.
+- per-case library order for each round,
+- a versioned raw JSON receipt alongside the Markdown report.
 
 ## Dynamic-Shape Compare
 
@@ -350,56 +352,57 @@ What matters here:
   artifact, but paired scheduling does not eliminate genuine workload-stream
   variance.
 
-### Dynamic evidence contract
+### Paired evidence contract
 
-The dynamic benchmark preserves the workload definition and two levels of
-timing evidence:
+Fixed and dynamic comparison runs use the same observation and comparison
+contract. Each timed call retains:
 
-1. **Workload metadata** records sampled and fixed dimensions, inclusive
-   integer sampling ranges, base input and output shapes, aggregate element
-   counts across those tensors, and exact ratios against the medium profile.
-2. **Call observations** retain
-   `(case, round, measured batch, repeat, library, order position, latency)`.
-   Marginal count/median/IQR tables summarize these calls descriptively.
-3. **Paired batch units** identify one measured batch inside one round. Repeated
-   calls for the same unit are technical replications, not independent samples,
-   and are averaged before comparison.
+`(phase, case, round, unit, repeat, library, order position, latency)`.
+
+The meaning of `unit` follows the measurement schedule:
+
+- a fixed cold unit is one construction and first-call trial,
+- a fixed warm unit is one repeat block; its timed iterations are technical
+  replications,
+- a dynamic unit is one measured batch; its repeats are technical
+  replications.
+
+Replications are averaged within each `(round, unit)` before comparison.
 
 For each competitor, the reported point effect is:
 
 ```text
-mean competitor latency across paired batch units
--------------------------------------------------
-mean einf latency across paired batch units
+mean competitor latency across paired units
+---------------------------------------------
+mean einf latency across paired units
 ```
 
 The 95% interval is a deterministic percentile bootstrap. It resamples paired
-batch units jointly across libraries within each observed round, preserving the
-round strata and library pairing. The interval is conditional on the observed
-run and rounds. It is not a p-value, does not turn marginal IQR overlap into a
-significance test, and does not establish cross-machine or long-run temporal
-generalization.
+units jointly across libraries within each observed round. The interval is
+conditional on the observed workload and run. It is not a p-value or evidence
+of cross-machine or long-run generalization.
 
-At least two measured batches per round are required; otherwise the script
-rejects the comparison rather than emitting a degenerate interval.
+Each measured phase requires at least two paired units per round. The scripts
+reject smaller configurations rather than emit a degenerate interval.
 
-### Dynamic raw receipt
+### Raw receipts
 
-When `--output report.md` is provided, the dynamic script also writes
-`report.json` unless `--raw-output` selects another path. Schema v2 of the
-versioned JSON receipt includes:
+When `--output report.md` is provided, both comparison scripts also write
+`report.json` unless `--raw-output` selects another path. Schema v3 uses the
+same `measurements` structure for fixed and dynamic reports. Fixed reports
+contain `cold` and `warm` phases; dynamic reports contain a `steady` phase.
+Each receipt includes:
 
 - environment and benchmark configuration,
 - case identities and execution forms,
-- case-specific workload dimensions, shapes, element counts, and exact scale
-  ratios,
 - per-library marginal and round summaries,
 - round execution orders,
 - every call observation with its pairing and order identity,
 - paired effects, interval bounds, bootstrap seed, and resample count.
 
-Workload ratios use integer `numerator` and `denominator` fields so downstream
-analysis does not have to recover exact values from rounded decimals.
+Dynamic receipts also record case-specific workload dimensions, shapes, element
+counts, and exact scale ratios. Ratios use integer `numerator` and
+`denominator` fields rather than rounded decimals.
 
 The raw receipt is written before the Markdown file. Keep it when a comparison
 may need re-analysis; Markdown alone intentionally does not contain enough
