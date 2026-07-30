@@ -145,7 +145,7 @@ def test_paired_comparison_rejects_insufficient_batches_per_round() -> None:
 def test_paired_comparison_rejects_incomplete_call_pair() -> None:
     observations = _observations(((0, 0, 0, 1.0, 2.0),))
 
-    with pytest.raises(ValueError, match="incomplete dynamic observation pairing"):
+    with pytest.raises(ValueError, match="incomplete paired timing observation"):
         compare_paired_observations(
             observations=observations[:-1],
             libraries=("einf", "einops"),
@@ -157,10 +157,22 @@ def test_paired_comparison_rejects_incomplete_call_pair() -> None:
 def test_paired_comparison_rejects_duplicate_call_identity() -> None:
     observations = _observations(((0, 0, 0, 1.0, 2.0),))
 
-    with pytest.raises(ValueError, match="duplicate dynamic observation"):
+    with pytest.raises(ValueError, match="duplicate paired timing observation"):
         compare_paired_observations(
             observations=observations + observations[:1],
             libraries=("einf", "einops"),
+            baseline="einf",
+            bootstrap_seed=0,
+        )
+
+
+def test_paired_comparison_rejects_duplicate_members() -> None:
+    observations = _observations(((0, 0, 0, 1.0, 2.0),))
+
+    with pytest.raises(ValueError, match="members must be unique"):
+        compare_paired_observations(
+            observations=observations,
+            libraries=("einf", "einf"),
             baseline="einf",
             bootstrap_seed=0,
         )
@@ -181,7 +193,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         order_position=0,
         latency_ms=1.25,
     )
-    comparison = PairedComparison(
+    comparison: PairedComparison[LibraryName] = PairedComparison(
         baseline="einf",
         competitor="einops",
         call_pair_count=8,
