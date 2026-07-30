@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "array-api-strict>=2.5",
   "basedpyright>=1.31",
   "build>=1.2",
   "einx",

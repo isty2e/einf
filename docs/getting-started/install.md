@@ -9,36 +9,46 @@ pip install git+https://github.com/isty2e/einf.git
 ```
 
 The base install provides the `einf` runtime and its backend-dispatch
-dependencies, but it does not install a tensor backend. Install either NumPy
-or PyTorch separately.
+dependencies, but it does not install an array implementation. Install a
+compatible implementation separately. NumPy and PyTorch have full named
+backend coverage in CI.
 
 ```bash
 pip install numpy
 # or install PyTorch for your platform
 ```
 
-`array-api-compat` identifies the namespace of input tensors. It does not make
-every Array API namespace a supported and tested `einf` runtime backend.
+[`array-api-compat`](https://data-apis.org/array-api-compat/supported-array-libraries.html)
+recognizes NumPy, CuPy, PyTorch, Dask, JAX, ndonnx, and Sparse, and accepts
+other implementations that expose `__array_namespace__`. This admits the
+namespace to `einf`; each operation still checks the capabilities it needs.
 
 ## Runtime backend support
 
-The following matrix is the supported and CI-tested runtime contract:
+Support follows operation capabilities rather than a closed list of backend
+names:
 
-| Operation | NumPy | PyTorch | Other Array API namespaces |
+| Operation | Portable Array API baseline | Additional requirement | CI coverage |
 | --- | --- | --- | --- |
-| `view` | Supported | Supported | Unsupported |
-| `rearrange` | Supported | Supported | Capability-gated |
-| `repeat` | Supported | Supported | Capability-gated |
-| `reduce` | Supported | Supported | Capability-gated |
-| `contract` | Supported | Supported | Capability-gated |
-| `einop` | Supported | Supported | Capability-gated |
+| `view` | No | Backend-specific storage-sharing proof | NumPy, PyTorch |
+| `rearrange` | Yes | Methods selected by the layout plan | NumPy, PyTorch, `array-api-strict` |
+| `repeat` | Yes | `reshape`, `expand_dims`, `broadcast_to` | NumPy, PyTorch, `array-api-strict` |
+| `reduce` | Yes for named reducers | Selected reducer, or a backend-compatible callable | NumPy, PyTorch, `array-api-strict` |
+| `contract` | No | An `einsum` implementation recognized by `opt_einsum` | NumPy, PyTorch |
+| `einop` | No | The current runtime requires recognized `einsum`, plus every selected step capability | NumPy, PyTorch |
 
-NumPy and PyTorch are tested in CI across all six operations.
-`Capability-gated` is not a support guarantee: the runtime checks that the
-namespace provides every primitive selected by the operation's lowered plan,
-such as `reshape`, `permute_dims`, `expand_dims`, `broadcast_to`, `concat`, or
-the selected reducer. `contract` and contraction paths in `einop` also require
-an einsum implementation recognized by `opt_einsum`.
+`array-api-strict` is a test-only minimal implementation of the standard. Its
+CI coverage verifies that `rearrange`, `repeat`, and named `reduce` do not
+accidentally depend on NumPy- or PyTorch-only behavior. It is not a runtime
+dependency or an end-user backend.
+
+Other Array API namespaces take the same protocol path. A namespace with the
+required standard methods can run the three portable operations. If its
+backend family is recognized by `einf` and provides an `einsum` implementation
+discoverable by `opt_einsum`, it can run `contract` and `einop` as well. These
+capability checks allow implementations such as JAX, Dask, or MLX to work
+without a dedicated `einf` adapter, but only NumPy and PyTorch receive full
+named-backend CI coverage.
 
 `view` is stricter than the other operations: it succeeds only when `einf` can
 prove that the result shares storage with the input. NumPy and PyTorch have
