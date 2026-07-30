@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pytest
 
+lsprotocol = pytest.importorskip("lsprotocol")
 pygls = pytest.importorskip("pygls")
-_ = pygls
+_ = lsprotocol, pygls
+
+from lsprotocol import types as lsp
 
 from einf.analysis.checkers import (
     CheckerAdapter,
@@ -17,6 +20,7 @@ from einf.analysis.checkers import (
     CheckerResult,
 )
 from einf.analysis.lsp.analysis_queue import DocumentAnalysisRequest
+from einf.analysis.lsp.change_debounce import PendingDocumentChange
 from einf.analysis.lsp.checker_coordinator import LspCheckerCoordinator
 from einf.analysis.lsp.server import (
     EinfLanguageServer,
@@ -94,6 +98,44 @@ async def _wait_until_set(event: threading.Event) -> None:
             return
         await asyncio.sleep(0.001)
     raise AssertionError("worker did not reach the blocking analysis")
+
+
+async def _run_debounced_change(
+    server: EinfLanguageServer,
+    change: PendingDocumentChange,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[lsp.LogMessageParams], list[dict[str, object]]]:
+    logged: list[lsp.LogMessageParams] = []
+    loop_errors: list[dict[str, object]] = []
+    reported = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def record_log(params: lsp.LogMessageParams) -> None:
+        logged.append(params)
+        reported.set()
+
+    async def analyze(pending_change: PendingDocumentChange) -> None:
+        await _analyze_document_request(
+            server,
+            request=DocumentAnalysisRequest(
+                uri=pending_change.uri,
+                source=pending_change.source,
+                version=pending_change.version,
+            ),
+        )
+
+    monkeypatch.setattr(server, "window_log_message", record_log)
+    loop.set_exception_handler(lambda _, context: loop_errors.append(context))
+    try:
+        server.einf_change_debouncer.schedule(change, analyze=analyze)
+        await asyncio.wait_for(reported.wait(), timeout=1)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+        await server.einf_analysis_queue.close()
+    return logged, loop_errors
 
 
 def test_build_server_returns_language_server() -> None:
@@ -176,6 +218,92 @@ def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> 
         assert latest_state is not None
         assert service.get_document_state(uri="file:///sample.py") == latest_state
         assert published_versions == [2]
+
+    asyncio.run(scenario())
+
+
+def test_server_reports_debounced_analysis_failure_and_preserves_state(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            "einf.analysis.lsp.server._DEFAULT_CHANGE_DEBOUNCE_SECONDS",
+            0,
+        )
+        server = EinfLanguageServer()
+        service = server.einf_service
+        uri = "file:///sample.py"
+        initial_state = service.open_document(
+            uri=uri,
+            source="value = 1\n",
+            version=1,
+        )
+
+        def fail_analysis(
+            *,
+            uri: str,
+            source: str,
+            version: int | None,
+        ) -> LspDocumentState:
+            _ = uri, source, version
+            raise RuntimeError("analysis failed")
+
+        monkeypatch.setattr(service, "analyze_document", fail_analysis)
+        logged, loop_errors = await _run_debounced_change(
+            server,
+            PendingDocumentChange(uri=uri, source="value = 2\n", version=2),
+            monkeypatch=monkeypatch,
+        )
+
+        assert service.get_document_state(uri=uri) == initial_state
+        assert len(logged) == 1
+        assert logged[0].type == lsp.MessageType.Error
+        assert uri in logged[0].message
+        assert "version 2" in logged[0].message
+        assert "RuntimeError: analysis failed" in logged[0].message
+        assert loop_errors == []
+
+    asyncio.run(scenario())
+
+
+def test_server_reports_debounced_publication_failure_and_keeps_committed_state(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            "einf.analysis.lsp.server._DEFAULT_CHANGE_DEBOUNCE_SECONDS",
+            0,
+        )
+        server = EinfLanguageServer()
+        service = server.einf_service
+        uri = "file:///sample.py"
+        service.open_document(uri=uri, source="value = 1\n", version=1)
+
+        def fail_publication(params: lsp.PublishDiagnosticsParams) -> None:
+            _ = params
+            raise RuntimeError("publication failed")
+
+        monkeypatch.setattr(
+            server,
+            "text_document_publish_diagnostics",
+            fail_publication,
+        )
+        logged, loop_errors = await _run_debounced_change(
+            server,
+            PendingDocumentChange(uri=uri, source="value = 2\n", version=2),
+            monkeypatch=monkeypatch,
+        )
+
+        committed = service.get_document_state(uri=uri)
+        assert committed is not None
+        assert committed.version == 2
+        assert committed.source == "value = 2\n"
+        assert len(logged) == 1
+        assert logged[0].type == lsp.MessageType.Error
+        assert uri in logged[0].message
+        assert "version 2" in logged[0].message
+        assert "RuntimeError: publication failed" in logged[0].message
+        assert loop_errors == []
 
     asyncio.run(scenario())
 
