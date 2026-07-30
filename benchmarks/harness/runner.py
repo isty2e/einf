@@ -291,6 +291,15 @@ class BenchmarkRunner:
             rounds=config.rounds,
             seed=config.round_order_seed + case_index * CASE_SEED_STRIDE,
         )
+        expected_libraries = frozenset(available_libs)
+        if any(
+            len(round_order) != len(available_libs)
+            or frozenset(round_order) != expected_libraries
+            for round_order in round_orders
+        ):
+            raise RuntimeError(
+                "dynamic benchmark round orders must be full library permutations"
+            )
         runner_by_library: dict[LibraryName, Runner] = {
             lib_name: runners[lib_name]() for lib_name in available_libs
         }
@@ -356,10 +365,22 @@ class BenchmarkRunner:
             )
 
         measured_batch_count = config.batches - config.warmup_batches
+        expected_sample_count = (
+            len(round_orders) * config.repeats * measured_batch_count
+        )
+        sample_counts = {
+            lib_name: len(samples_by_library[lib_name]) for lib_name in available_libs
+        }
+        if any(count != expected_sample_count for count in sample_counts.values()):
+            raise RuntimeError(
+                "dynamic observation reconstruction sample count mismatch: "
+                f"expected {expected_sample_count} per library, got {sample_counts}"
+            )
+
         observations: list[DynamicObservation] = []
         sample_index = 0
-        # Rebuild the deterministic schedule after timing to keep records out of
-        # the measurement loop.
+        # Full round permutations append every per-library list in the same
+        # round/repeat/batch coordinate order, so one shared index is sufficient.
         for round_index, round_order in enumerate(round_orders):
             for repeat_index in range(config.repeats):
                 for measured_batch_index in range(measured_batch_count):

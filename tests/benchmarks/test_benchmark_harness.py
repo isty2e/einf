@@ -20,6 +20,7 @@ from benchmarks.harness import (
     DynamicTaskConfig,
     FixedCaseSpec,
     FixedTaskConfig,
+    LibraryName,
     MarkdownPrinter,
     Output,
     PairedComparison,
@@ -506,6 +507,54 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
     assert [item.latency_ms for item in result.observations] == pytest.approx(
         list(range(1, 13))
     )
+
+
+def test_run_dynamic_case_rejects_partial_round_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def partial_round_orders(
+        self: BenchmarkRunner,
+        *,
+        library_names: list[LibraryName],
+        rounds: int,
+        seed: int,
+    ) -> list[tuple[LibraryName, ...]]:
+        _ = self, library_names, rounds, seed
+        return [("einf",)]
+
+    monkeypatch.setattr(BenchmarkRunner, "_round_orders", partial_round_orders)
+    backend = BackendSpec(name="numpy")
+    runner = BenchmarkRunner(
+        backend=backend,
+        profiler=Profiler(backend=backend),
+        available={
+            "einf": (True, "available"),
+            "einops": (True, "available"),
+            "einx": (False, "not installed"),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="full library permutations"):
+        runner.run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=_timing_case(events=[]),
+                batch_factory=lambda generator: generator.backend_batch(
+                    (np.asarray([1.0], dtype=np.float32),)
+                ),
+            ),
+            config=DynamicTaskConfig(
+                backend="numpy",
+                scale="medium",
+                seed=7,
+                batches=2,
+                warmup_batches=0,
+                repeats=1,
+                rounds=1,
+                round_order_seed=1234,
+                parity_checks=0,
+            ),
+            case_index=0,
+        )
 
 
 def test_markdown_printer_renders_round_level_summaries() -> None:
