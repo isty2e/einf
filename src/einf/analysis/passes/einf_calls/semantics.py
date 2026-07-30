@@ -7,10 +7,8 @@ from einf.analysis.source import SourceText
 from einf.axis import AxisSide
 from einf.diagnostics import ValidationError
 from einf.operations import contract, einop, rearrange, reduce, repeat, view
+from einf.operations.definition import TensorOpDefinition
 from einf.operations.kind import OperationKind
-from einf.operations.tensor_op import TensorOp
-from einf.operations.validation import validate_contract_atomic_terms
-from einf.signature import Signature
 
 from .diagnostics import (
     _ANALYSIS_CALL_SHAPE_ERROR,
@@ -37,17 +35,14 @@ _ENTRYPOINT_SIGNATURES = {
 }
 
 
-def _build_base_tensor_op(
+def _build_base_definition(
     *,
     op_name: str,
     lhs: AxisSide,
     rhs: AxisSide,
-) -> TensorOp:
-    """Construct one base TensorOp for parsed op call."""
-    if op_name == "contract":
-        validate_contract_atomic_terms(Signature(inputs=lhs, outputs=rhs))
-
-    return TensorOp.from_base_spec(
+) -> TensorOpDefinition:
+    """Construct one canonical definition for a parsed operation call."""
+    return TensorOpDefinition(
         kind=OperationKind(op_name),
         lhs=lhs,
         rhs=rhs,
@@ -151,7 +146,9 @@ def _parse_base_op_call(
     )
     if bound_arguments is None:
         return _EvaluatedCall(
-            base_call=None, op=None, diagnostics=tuple(call_diagnostics)
+            base_call=None,
+            definition=None,
+            diagnostics=tuple(call_diagnostics),
         )
 
     lhs = _parse_side_spec(
@@ -170,7 +167,9 @@ def _parse_base_op_call(
     call_span = context.span_from_ast_node(call_expr)
     if call_span is None or lhs is None or rhs is None:
         return _EvaluatedCall(
-            base_call=None, op=None, diagnostics=tuple(call_diagnostics)
+            base_call=None,
+            definition=None,
+            diagnostics=tuple(call_diagnostics),
         )
 
     parsed_call = _CallParseResult(
@@ -181,7 +180,7 @@ def _parse_base_op_call(
     )
 
     try:
-        op = _build_base_tensor_op(
+        definition = _build_base_definition(
             op_name=op_name, lhs=lhs.axis_side, rhs=rhs.axis_side
         )
     except ValidationError as error:
@@ -190,7 +189,7 @@ def _parse_base_op_call(
         )
         return _EvaluatedCall(
             base_call=parsed_call,
-            op=None,
+            definition=None,
             diagnostics=tuple(call_diagnostics),
         )
     except (TypeError, ValueError, AttributeError) as error:
@@ -203,13 +202,13 @@ def _parse_base_op_call(
         )
         return _EvaluatedCall(
             base_call=parsed_call,
-            op=None,
+            definition=None,
             diagnostics=tuple(call_diagnostics),
         )
 
     return _EvaluatedCall(
         base_call=parsed_call,
-        op=op,
+        definition=definition,
         diagnostics=tuple(call_diagnostics),
     )
 
@@ -217,10 +216,10 @@ def _parse_base_op_call(
 def _parse_with_sizes_call(
     *,
     call_expr: ast.Call,
-    op: TensorOp,
+    definition: TensorOpDefinition,
     context: _SnippetContext,
     diagnostics: list[AnalysisDiagnostic],
-) -> TensorOp | None:
+) -> TensorOpDefinition | None:
     """Parse/apply one `.with_sizes(...)` call."""
     call_span = context.span_from_ast_node(call_expr)
 
@@ -278,7 +277,7 @@ def _parse_with_sizes_call(
         return None
 
     try:
-        return op.with_sizes(**sizes)
+        return definition.with_sizes(**sizes)
     except ValidationError as error:
         diagnostics.append(_validation_error_to_diagnostic(error=error, span=call_span))
         return None
@@ -315,34 +314,34 @@ def _evaluate_call_expression(
         return None
 
     diagnostics = list(receiver_eval.diagnostics)
-    op = receiver_eval.op
-    if op is None:
+    definition = receiver_eval.definition
+    if definition is None:
         return _EvaluatedCall(
             base_call=receiver_eval.base_call,
-            op=None,
+            definition=None,
             diagnostics=tuple(diagnostics),
         )
 
     if method_name == "with_sizes":
-        updated_op = _parse_with_sizes_call(
+        updated_definition = _parse_with_sizes_call(
             call_expr=call_expr,
-            op=op,
+            definition=definition,
             context=context,
             diagnostics=diagnostics,
         )
     elif method_name == "reduce_by":
-        updated_op = _parse_reduce_by_call(
+        updated_definition = _parse_reduce_by_call(
             call_expr=call_expr,
-            op=op,
+            definition=definition,
             context=context,
             diagnostics=diagnostics,
         )
     else:
-        updated_op = None
+        updated_definition = None
 
     return _EvaluatedCall(
         base_call=receiver_eval.base_call,
-        op=updated_op,
+        definition=updated_definition,
         diagnostics=tuple(diagnostics),
     )
 

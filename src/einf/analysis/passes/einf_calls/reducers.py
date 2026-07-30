@@ -2,7 +2,7 @@ import ast
 
 from einf.analysis.model import AnalysisDiagnostic
 from einf.diagnostics import ValidationError
-from einf.operations.tensor_op import TensorOp
+from einf.operations.definition import TensorOpDefinition
 from einf.reduction.schema import Reducer
 from einf.tensor_types import TensorLike
 
@@ -96,10 +96,10 @@ def _parse_reduce_phase_argument(
 def _parse_reduce_by_call(
     *,
     call_expr: ast.Call,
-    op: TensorOp,
+    definition: TensorOpDefinition,
     context: _SnippetContext,
     diagnostics: list[AnalysisDiagnostic],
-) -> TensorOp | None:
+) -> TensorOpDefinition | None:
     """Parse/apply one `.reduce_by(...)` call."""
     call_span = context.span_from_ast_node(call_expr)
 
@@ -173,7 +173,7 @@ def _parse_reduce_by_call(
                 )
                 return None
             typed_tail = tuple(phase for phase in tail if isinstance(phase, tuple))
-            return op.reduce_by(first, *typed_tail)
+            return definition.reduce_by(first, *typed_tail)
 
         if tail:
             diagnostics.append(
@@ -188,7 +188,7 @@ def _parse_reduce_by_call(
             )
             return None
 
-        return op.reduce_by(first)
+        return definition.reduce_by(first)
     except ValidationError as error:
         diagnostics.append(_validation_error_to_diagnostic(error=error, span=call_span))
         return None

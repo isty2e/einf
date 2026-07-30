@@ -1,5 +1,6 @@
 from einf.axis import AxisSide, AxisTermBase, AxisTerms
 from einf.diagnostics import ErrorCode, ValidationError
+from einf.einop_layout import EinopLayoutNormalization
 from einf.ir import IRProgram, build_default_ir_program
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.plan import infer_unary_reduced_terms
@@ -15,7 +16,6 @@ from einf.steps.tensor_map import TensorMapSymbolicProgram, TensorMapSymbolicSte
 
 from ..einop import EinopLoweringPlan, build_einop_execution_plan
 from ..einop.equation import build_einop_equations
-from ..einop.layout import EinopLayoutNormalization
 from .contract import build_contract_symbolic_plan
 from .rearrange import build_rearrange_symbolic_plan
 from .reduce import build_reduce_symbolic_plan

@@ -1,9 +1,9 @@
 from einf.diagnostics import ErrorCode, ValidationError
+from einf.einop_layout import EinopLayoutNormalization
 from einf.signature import Signature
 from einf.steps.einsum.equation import build_contract_equation
 
 from .equation import build_einop_equations, has_nary_contraction_candidate
-from .layout import EinopLayoutNormalization
 from .model import EinopLoweringPlan
 
 

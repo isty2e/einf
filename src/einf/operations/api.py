@@ -1,8 +1,6 @@
 from ..axis import AxisSide, AxisTerms
-from ..signature import Signature
 from .kind import OperationKind
 from .tensor_op import TensorOp
-from .validation import validate_contract_atomic_terms
 
 
 def view(
@@ -68,7 +66,6 @@ def contract(
     """Create a `TensorOp` scaffold for `contract` transforms."""
     lhs_specs = AxisSide.from_spec(lhs, side_name="lhs")
     rhs_specs = AxisSide.from_spec(rhs, side_name="rhs")
-    validate_contract_atomic_terms(Signature(inputs=lhs_specs, outputs=rhs_specs))
     return TensorOp.from_base_spec(
         kind=OperationKind.CONTRACT,
         lhs=lhs_specs,

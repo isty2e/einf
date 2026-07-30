@@ -119,6 +119,27 @@ BOUNDARY_RULES = (
         rationale="static analysis should not reach into concrete runtime step packages",
     ),
     BoundaryRule(
+        name="analysis-must-not-import-lowering",
+        source_prefixes=("einf.analysis",),
+        target_prefix="einf.lowering",
+        ticket="60a1",
+        rationale="static analysis should consume canonical operation semantics rather than runtime lowering",
+    ),
+    BoundaryRule(
+        name="analysis-must-not-import-plans",
+        source_prefixes=("einf.analysis",),
+        target_prefix="einf.plans",
+        ticket="60a1",
+        rationale="static analysis should not construct or inspect runtime plans",
+    ),
+    BoundaryRule(
+        name="analysis-must-not-import-runtime-tensor-op",
+        source_prefixes=("einf.analysis",),
+        target_prefix="einf.operations.tensor_op",
+        ticket="60a1",
+        rationale="static analysis should use canonical definitions rather than executable TensorOp objects",
+    ),
+    BoundaryRule(
         name="runtime-packages-must-not-import-analysis",
         source_prefixes=RUNTIME_PACKAGE_PREFIXES,
         target_prefix="einf.analysis",
@@ -151,6 +172,9 @@ def test_package_import_boundaries_follow_taxonomy_guardrails() -> None:
 def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
     assert {rule.name for rule in BOUNDARY_RULES} == {
         "analysis-must-not-import-concrete-steps",
+        "analysis-must-not-import-lowering",
+        "analysis-must-not-import-plans",
+        "analysis-must-not-import-runtime-tensor-op",
         "ir-must-not-import-backend",
         "ir-must-not-import-plans",
         "ir-must-not-import-steps",

@@ -11,7 +11,7 @@ from einf.analysis.model import (
 from einf.analysis.passes.call_resolution import CallBindings
 from einf.analysis.source import SourceText
 from einf.axis import AxisSide, AxisTerms
-from einf.operations.tensor_op import TensorOp
+from einf.operations.definition import TensorOpDefinition
 from einf.reduction.schema import Reducer
 
 _ReducePhaseArg = tuple[AxisTerms, Reducer]
@@ -59,7 +59,7 @@ class _EvaluatedCall:
     """Evaluation result for one parsed call expression."""
 
     base_call: _CallParseResult | None
-    op: TensorOp | None
+    definition: TensorOpDefinition | None
     diagnostics: tuple[AnalysisDiagnostic, ...]
 
 
