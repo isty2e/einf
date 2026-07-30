@@ -79,7 +79,9 @@ steps still own primitive specialization/execution.
 - **`ir/`** — canonical `IRProgram` operation signatures plus pure route
   solving and static routing tables. `IRProgram.op_name/lhs/rhs` are the
   authoritative lowering inputs; its `LoweringTraceStage` sequence is
-  observability metadata only. Call-time route resolution lives in `plans/`.
+  producer-owned conceptual metadata only. The selected `SymbolicPlan.steps`
+  remain the executable description. Call-time route resolution lives in
+  `plans/`.
 - **`lowering/`** — `LoweringProgram` implementations and the
   IR → symbolic-candidates compiler. Chain search, candidate pruning,
   and feasibility enforcement live here, not in runtime specialization.
