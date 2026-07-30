@@ -5,7 +5,6 @@ import argparse
 import json
 import math
 import platform
-import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -263,12 +262,10 @@ def _validate_output(
     *,
     backend: BackendSpec,
     runner_spec: ExpressionRunnerSpec,
-    batch: tuple[Array, ...],
+    expected: tuple[NumpyArray, ...],
     output: Output,
 ) -> None:
-    expected = backend.to_numpy_output(
-        runner_spec.reference(_numpy_batch(backend=backend, batch=batch))
-    )
+    backend.validate_output_target(output)
     got = backend.to_numpy_output(output)
     if len(expected) != len(got):
         raise ValueError(
@@ -276,7 +273,7 @@ def _validate_output(
             f"expected {len(expected)}, got {len(got)}"
         )
 
-    uses_torch_backend = any(backend.is_torch_tensor(item) for item in batch)
+    uses_torch_backend = backend.name == "torch"
     atol = 1e-4 if uses_torch_backend else 1e-5
     rtol = 1e-4 if uses_torch_backend else 1e-5
 
@@ -568,19 +565,38 @@ def _run_dynamic_case(
         raise RuntimeError(
             "expression benchmark round orders must be full strategy permutations"
         )
+    validation_runners = {
+        spec.name: spec.make_runner() for spec in available_specs
+    }
+    checks = min(config.batches, config.parity_checks)
+    for batch_index in range(checks):
+        batch = make_batch(round_index=0, batch_index=batch_index)
+        numpy_batch = _numpy_batch(backend=backend, batch=batch)
+        expected_by_name = {
+            spec.name: tuple(
+                array.copy()
+                for array in backend.to_numpy_output(spec.reference(numpy_batch))
+            )
+            for spec in available_specs
+        }
+        for spec in available_specs:
+            output = validation_runners[spec.name](batch)
+            backend.synchronize()
+            _validate_output(
+                backend=backend,
+                runner_spec=spec,
+                expected=expected_by_name[spec.name],
+                output=output,
+            )
+            del output
+        del batch
+    del validation_runners
+
     runners = {spec.name: spec.make_runner() for spec in available_specs}
-
-    samples_by_name: dict[str, list[float]] = {
-        spec.name: [] for spec in available_specs
-    }
-    round_summaries_by_name: dict[str, list[TimingSummary]] = {
-        spec.name: [] for spec in available_specs
-    }
+    observations: list[ExpressionObservation] = []
     for round_index, round_order in enumerate(round_orders):
-        round_samples = {spec.name: [] for spec in available_specs}
-
         for batch_index in range(config.warmup_batches):
-            canonical_batch = make_batch(
+            batch = make_batch(
                 round_index=round_index,
                 batch_index=batch_index,
             )
@@ -589,74 +605,18 @@ def _run_dynamic_case(
                 offset=batch_index,
             )
             for name in batch_order:
-                batch = backend.clone_batch(canonical_batch)
-                backend.touch_output(runners[name](batch))
-                del batch
-            del canonical_batch
+                output = runners[name](batch)
+                backend.synchronize()
+                backend.validate_output_target(output)
+                del output
+            del batch
 
         for repeat_index in range(config.repeats):
             for measured_batch_index in range(measured_batch_count):
-                canonical_batch = make_batch(
+                batch = make_batch(
                     round_index=round_index,
                     batch_index=(config.warmup_batches + measured_batch_index),
                 )
-                batch_order = _rotate_order(
-                    round_order,
-                    offset=(repeat_index * measured_batch_count + measured_batch_index),
-                )
-                for name in batch_order:
-                    batch = backend.clone_batch(canonical_batch)
-                    started = time.perf_counter()
-                    output = runners[name](batch)
-                    elapsed_ms = (time.perf_counter() - started) * 1000.0
-                    backend.touch_output(output)
-                    samples_by_name[name].append(elapsed_ms)
-                    round_samples[name].append(elapsed_ms)
-                    del output, batch
-                del canonical_batch
-
-        for spec in available_specs:
-            round_summaries_by_name[spec.name].append(
-                profiler.summarize(round_samples[spec.name])
-            )
-
-    checks = min(config.batches, config.parity_checks)
-    for spec in available_specs:
-        validation_runner = spec.make_runner()
-        for batch_index in range(checks):
-            canonical_batch = make_batch(round_index=0, batch_index=batch_index)
-            batch = backend.clone_batch(canonical_batch)
-            output = validation_runner(batch)
-            _validate_output(
-                backend=backend,
-                runner_spec=spec,
-                batch=canonical_batch,
-                output=output,
-            )
-            del output, batch, canonical_batch
-        del validation_runner
-
-    for spec in available_specs:
-        runs[spec.name] = ExpressionRun(
-            summary=profiler.summarize(samples_by_name[spec.name]),
-            round_summaries=tuple(round_summaries_by_name[spec.name]),
-        )
-
-    expected_sample_count = len(round_orders) * config.repeats * measured_batch_count
-    sample_counts = {
-        spec.name: len(samples_by_name[spec.name]) for spec in available_specs
-    }
-    if any(count != expected_sample_count for count in sample_counts.values()):
-        raise RuntimeError(
-            "expression observation reconstruction sample count mismatch: "
-            f"expected {expected_sample_count} per strategy, got {sample_counts}"
-        )
-
-    observations: list[ExpressionObservation] = []
-    sample_index = 0
-    for round_index, round_order in enumerate(round_orders):
-        for repeat_index in range(config.repeats):
-            for measured_batch_index in range(measured_batch_count):
                 batch_order = _rotate_order(
                     round_order,
                     offset=(repeat_index * measured_batch_count + measured_batch_index),
@@ -669,13 +629,37 @@ def _run_dynamic_case(
                             repeat_index=repeat_index,
                             strategy=name,
                             order_position=order_position,
-                            latency_ms=samples_by_name[name][sample_index],
+                            latency_ms=profiler.measure_call(
+                                runner=runners[name],
+                                batch=batch,
+                            ),
                         )
                     )
-                sample_index += 1
+                del batch
 
     observation_tuple = tuple(observations)
     available_names = tuple(spec.name for spec in available_specs)
+    for spec in available_specs:
+        spec_observations = [
+            observation
+            for observation in observations
+            if observation.strategy == spec.name
+        ]
+        runs[spec.name] = ExpressionRun(
+            summary=profiler.summarize(
+                [observation.latency_ms for observation in spec_observations]
+            ),
+            round_summaries=tuple(
+                profiler.summarize(
+                    [
+                        observation.latency_ms
+                        for observation in spec_observations
+                        if observation.round_index == round_index
+                    ]
+                )
+                for round_index in range(config.rounds)
+            ),
+        )
 
     def strategy_of(observation: ExpressionObservation) -> str:
         return observation.strategy

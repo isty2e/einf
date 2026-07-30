@@ -16,10 +16,9 @@ from .generator import TensorGenerator
 from .profiler import Profiler
 from .render import MarkdownPrinter
 from .result import (
+    AvailableRun,
     DynamicCaseResult,
-    DynamicRun,
     FixedCaseResult,
-    FixedRun,
     LibraryTimingObservation,
     PairedComparison,
     PairedEvidence,
@@ -49,6 +48,7 @@ from .workload import (
 
 __all__ = [
     "Array",
+    "AvailableRun",
     "BackendName",
     "BackendSpec",
     "BenchSizes",
@@ -59,7 +59,6 @@ __all__ = [
     "DimensionName",
     "DynamicCaseResult",
     "DynamicCaseSpec",
-    "DynamicRun",
     "DynamicScaleName",
     "DynamicShapeWorkload",
     "DynamicTaskConfig",
@@ -67,7 +66,6 @@ __all__ = [
     "DynamicWorkloadMetadata",
     "FixedCaseResult",
     "FixedCaseSpec",
-    "FixedRun",
     "FixedTaskConfig",
     "LibraryName",
     "LibraryTimingObservation",

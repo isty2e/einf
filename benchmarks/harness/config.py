@@ -66,10 +66,9 @@ class FixedTaskConfig(TaskConfig):
     """Fixed-shape benchmark configuration."""
 
     rounds: int
-    cold_repeats: int
     warmup: int
-    warm_repeats: int
-    warm_iterations: int
+    repeats: int
+    iterations: int
 
 
 @dataclass(frozen=True, slots=True)

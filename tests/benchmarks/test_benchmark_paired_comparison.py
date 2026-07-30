@@ -14,16 +14,15 @@ from benchmarks.compare.einf_einops_einx_dynamic import (
     _raw_payload,
 )
 from benchmarks.harness import (
+    AvailableRun,
     BenchmarkCase,
     BenchSizes,
     CaseCalls,
     DynamicCaseResult,
-    DynamicRun,
     DynamicShapeWorkload,
     DynamicTaskConfig,
     DynamicWorkloadMetadata,
     FixedCaseResult,
-    FixedRun,
     FixedTaskConfig,
     LibraryTimingObservation,
     PairedComparison,
@@ -220,15 +219,15 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         case=_case(),
         workload=workload,
         runs={
-            "einf": DynamicRun(
+            "einf": AvailableRun(
                 summary=_summary(mean_ms=1.0),
                 round_summaries=(_summary(mean_ms=1.0),),
             ),
-            "einops": DynamicRun(
+            "einops": AvailableRun(
                 summary=_summary(mean_ms=1.5),
                 round_summaries=(_summary(mean_ms=1.5),),
             ),
-            "einx": DynamicRun(
+            "einx": AvailableRun(
                 summary=_summary(mean_ms=2.0),
                 round_summaries=(_summary(mean_ms=2.0),),
             ),
@@ -348,26 +347,23 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
     result = FixedCaseResult(
         case=_case(),
         runs={
-            library: FixedRun(
-                cold=_summary(mean_ms=1.0),
-                warm=_summary(mean_ms=1.0),
-                warm_rounds=(_summary(mean_ms=1.0),),
+            library: AvailableRun(
+                summary=_summary(mean_ms=1.0),
+                round_summaries=(_summary(mean_ms=1.0),),
             )
             for library in ("einf", "einops", "einx")
         },
         round_orders=[("einf", "einops", "einx")],
-        cold_evidence=evidence,
-        warm_evidence=evidence,
+        evidence=evidence,
     )
     config = FixedTaskConfig(
         backend="numpy",
         scale="medium",
         seed=5,
         rounds=1,
-        cold_repeats=2,
         warmup=0,
-        warm_repeats=2,
-        warm_iterations=3,
+        repeats=2,
+        iterations=3,
     )
 
     payload = _fixed_raw_payload(
@@ -381,30 +377,17 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
     assert isinstance(cases, list)
     json.dumps(payload)
     measurements = cases[0]["measurements"]
-    assert [measurement["phase"] for measurement in measurements] == [
-        "cold",
-        "warm",
-    ]
+    assert [measurement["phase"] for measurement in measurements] == ["steady"]
     assert measurements[0]["observations"][0]["unit_index"] == 1
     assert measurements[0]["comparisons"][0]["paired_unit_count"] == 4
-    assert set(measurements[0]) == set(measurements[1])
 
 
-@pytest.mark.parametrize(
-    ("arguments", "message"),
-    (
-        (["--cold-repeats", "1"], "cold-repeats must be >= 2"),
-        (["--warm-repeats", "1"], "warm-repeats must be >= 2"),
-    ),
-)
 def test_fixed_main_rejects_degenerate_paired_units(
     monkeypatch: pytest.MonkeyPatch,
-    arguments: list[str],
-    message: str,
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["einf_einops_einx.py", *arguments])
+    monkeypatch.setattr(sys, "argv", ["einf_einops_einx.py", "--repeats", "1"])
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="repeats must be >= 2"):
         fixed_main()
 
 

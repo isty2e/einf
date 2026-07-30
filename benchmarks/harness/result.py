@@ -30,24 +30,14 @@ class UnavailableRun:
 
 
 @dataclass(frozen=True, slots=True)
-class FixedRun:
-    """Fixed-shape timing summaries for one available library."""
-
-    cold: TimingSummary
-    warm: TimingSummary
-    warm_rounds: tuple[TimingSummary, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class DynamicRun:
-    """Dynamic-shape timing summaries for one available library."""
+class AvailableRun:
+    """Steady timing summaries for one available library."""
 
     summary: TimingSummary
     round_summaries: tuple[TimingSummary, ...]
 
 
-FixedRunResult = FixedRun | UnavailableRun
-DynamicRunResult = DynamicRun | UnavailableRun
+RunResult = AvailableRun | UnavailableRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,10 +125,9 @@ class FixedCaseResult:
     """One fixed-shape benchmark case run across libraries."""
 
     case: BenchmarkCase
-    runs: dict[LibraryName, FixedRunResult]
+    runs: dict[LibraryName, RunResult]
     round_orders: list[tuple[LibraryName, ...]]
-    cold_evidence: PairedEvidence
-    warm_evidence: PairedEvidence
+    evidence: PairedEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +136,7 @@ class DynamicCaseResult:
 
     case: BenchmarkCase
     workload: DynamicWorkloadMetadata
-    runs: dict[LibraryName, DynamicRunResult]
+    runs: dict[LibraryName, RunResult]
     round_orders: list[tuple[LibraryName, ...]]
     evidence: PairedEvidence
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from .config import BenchSizes
 from .generator import TensorGenerator
-from .types import Array, Reference, Runner
+from .types import Array, NumpyArray, Reference, Runner
 from .workload import DynamicShapeWorkload, DynamicWorkloadMetadata
 
 RunnerFactory = Callable[[], Runner]
@@ -58,11 +58,17 @@ class DynamicCaseSpec:
 
     def make_batch(self, generator: TensorGenerator, /) -> tuple[Array, ...]:
         """Generate one standard-normal backend batch from the shape workload."""
+        return generator.backend_batch(self.make_numpy_batch(generator))
+
+    def make_numpy_batch(
+        self,
+        generator: TensorGenerator,
+        /,
+    ) -> tuple[NumpyArray, ...]:
+        """Generate one standard-normal NumPy batch from the shape workload."""
         input_shapes = self.workload.draw_input_shapes(
             sizes=self.sizes,
             generator=generator,
             metadata=self.workload_metadata,
         )
-        return generator.backend_batch(
-            tuple(generator.randn_numpy(shape) for shape in input_shapes)
-        )
+        return tuple(generator.randn_numpy(shape) for shape in input_shapes)

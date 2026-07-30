@@ -82,10 +82,6 @@ class BackendSpec:
         """Wait until work submitted to the execution target is complete."""
         self._synchronize()
 
-    def is_torch_tensor(self, value: Array | Output) -> bool:
-        """Return whether value is a torch tensor."""
-        return torch is not None and isinstance(value, torch.Tensor)
-
     def to_backend_batch(
         self,
         batch: tuple[NumpyArray, ...],
@@ -122,18 +118,6 @@ class BackendSpec:
                     f"expected {self.resolved_device}, got {value.device}"
                 )
 
-    def clone_array(self, value: Array) -> Array:
-        """Clone one backend array to independent physical storage."""
-        if isinstance(value, np.ndarray):
-            return value.copy()
-        if torch is not None and isinstance(value, torch.Tensor):
-            return value.clone()
-        raise TypeError(f"unsupported output type: {type(value)!r}")
-
-    def clone_batch(self, batch: tuple[Array, ...]) -> tuple[Array, ...]:
-        """Clone one backend batch to independent physical storage."""
-        return tuple(self.clone_array(item) for item in batch)
-
     def to_numpy_array(self, value: Array) -> NumpyArray:
         """Convert one backend tensor to NumPy float32."""
         if isinstance(value, np.ndarray):
@@ -150,35 +134,3 @@ class BackendSpec:
         if isinstance(output, tuple):
             return tuple(self.to_numpy_array(item) for item in output)
         return (self.to_numpy_array(output),)
-
-    def touch_array(self, value: Array) -> None:
-        """Touch one synchronous CPU output to make it observable."""
-        _ = tuple(value.shape)
-        if isinstance(value, np.ndarray):
-            if value.size > 0:
-                if value.ndim == 0:
-                    _ = float(value.item())
-                else:
-                    _ = float(value[(0,) * value.ndim])
-            return
-        if torch is not None and isinstance(value, torch.Tensor):
-            if value.device.type != "cpu":
-                raise RuntimeError(
-                    "eager benchmark timing requires synchronous CPU outputs; "
-                    f"got torch device {value.device}"
-                )
-            if value.numel() > 0:
-                if value.ndim == 0:
-                    _ = float(value.item())
-                else:
-                    _ = float(value[(0,) * value.ndim].item())
-            return
-        raise TypeError(f"unsupported output type: {type(value)!r}")
-
-    def touch_output(self, output: Output) -> None:
-        """Touch one synchronous CPU output tuple or tensor."""
-        if isinstance(output, tuple):
-            for item in output:
-                self.touch_array(item)
-            return
-        self.touch_array(output)

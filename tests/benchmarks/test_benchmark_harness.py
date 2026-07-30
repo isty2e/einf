@@ -1,15 +1,16 @@
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
+from weakref import ReferenceType, ref
 
 import numpy as np
 import pytest
 
 import benchmarks.harness.backend as backend_module
 import benchmarks.harness.profiler as profiler_module
-import benchmarks.harness.runner as runner_module
 from benchmarks.harness import (
     Array,
+    AvailableRun,
     BackendSpec,
     BenchmarkCase,
     BenchmarkRunner,
@@ -17,7 +18,6 @@ from benchmarks.harness import (
     CaseCalls,
     DynamicCaseResult,
     DynamicCaseSpec,
-    DynamicRun,
     DynamicShapeWorkload,
     DynamicTaskConfig,
     FixedCaseSpec,
@@ -113,26 +113,20 @@ def _timing_case(*, events: list[str]) -> BenchmarkCase:
     )
 
 
-def test_fixed_timing_stops_before_output_observation(
+def test_fixed_runner_constructs_and_validates_before_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     backend = BackendSpec(name="numpy")
     runner = _single_library_runner(backend=backend)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         _recording_clock(
             events=events,
-            values=(1.0, 1.001, 2.0, 2.002),
+            values=(1.0, 1.002),
         ),
     )
-
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
-
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
 
     result = runner.run_fixed_case(
         case_spec=FixedCaseSpec(
@@ -144,51 +138,37 @@ def test_fixed_timing_stops_before_output_observation(
             scale="small",
             seed=1,
             rounds=1,
-            cold_repeats=1,
             warmup=0,
-            warm_repeats=1,
-            warm_iterations=1,
+            repeats=1,
+            iterations=1,
         ),
         order_seed=1,
     )
 
     assert events == [
-        "clock_start",
         "factory",
         "call",
-        "clock_stop",
-        "touch",
         "factory",
         "clock_start",
         "call",
         "clock_stop",
-        "touch",
     ]
-    assert [item.latency_ms for item in result.cold_evidence.observations] == [
-        pytest.approx(1.0)
-    ]
-    assert [item.latency_ms for item in result.warm_evidence.observations] == [
+    assert [item.latency_ms for item in result.evidence.observations] == [
         pytest.approx(2.0)
     ]
 
 
-def test_dynamic_timing_stops_before_output_observation(
+def test_dynamic_runner_warms_before_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     backend = BackendSpec(name="numpy")
     runner = _single_library_runner(backend=backend)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         _recording_clock(events=events, values=(1.0, 1.003)),
     )
-
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
-
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
 
     runner.run_dynamic_case(
         case_spec=DynamicCaseSpec(
@@ -213,11 +193,9 @@ def test_dynamic_timing_stops_before_output_observation(
     assert events == [
         "factory",
         "call",
-        "touch",
         "clock_start",
         "call",
         "clock_stop",
-        "touch",
     ]
 
 
@@ -459,10 +437,9 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
             scale="small",
             seed=1,
             rounds=1,
-            cold_repeats=2,
             warmup=0,
-            warm_repeats=2,
-            warm_iterations=2,
+            repeats=2,
+            iterations=2,
         ),
         order_seed=1234,
     )
@@ -470,7 +447,6 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
     order = result.round_orders[0]
     expected_orders = [
         order,
-        runner._rotate_order(order, offset=1),
         order,
         runner._rotate_order(order, offset=1),
         runner._rotate_order(order, offset=2),
@@ -482,21 +458,16 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
 
     for lib_name in ("einf", "einops", "einx"):
         arrays = captured[lib_name]
-        assert len(arrays) == 6
-        assert all(not np.shares_memory(array, original) for array in arrays)
-        assert all(np.array_equal(array, original) for array in arrays)
-        assert not np.shares_memory(arrays[0], arrays[1])
-        assert not np.shares_memory(arrays[0], arrays[2])
+        assert len(arrays) == 5
+        assert all(array is original for array in arrays)
 
-    assert len(result.cold_evidence.observations) == 6
-    assert len(result.warm_evidence.observations) == 12
-    assert len(result.cold_evidence.comparisons) == 2
-    assert len(result.warm_evidence.comparisons) == 2
+    assert len(result.evidence.observations) == 12
+    assert len(result.evidence.comparisons) == 2
 
-    warm_orders = expected_orders[2:]
-    for timing_index, expected_order in enumerate(warm_orders):
+    measured_orders = expected_orders[1:]
+    for timing_index, expected_order in enumerate(measured_orders):
         start = timing_index * 3
-        observations = result.warm_evidence.observations[start : start + 3]
+        observations = result.evidence.observations[start : start + 3]
         assert tuple(item.library for item in observations) == expected_order
         assert {item.unit_index for item in observations} == {timing_index // 2}
         assert {item.repeat_index for item in observations} == {timing_index % 2}
@@ -510,9 +481,7 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
         notes=[],
     )
     markdown = MarkdownPrinter().render_fixed(report)
-    assert "Cold paired latency ratios (competitor / einf):" in markdown
-    assert "Warm paired latency ratios (competitor / einf):" in markdown
-    assert "Paired trial units" in markdown
+    assert "Paired steady latency ratios (competitor / einf):" in markdown
     assert "Paired timing units" in markdown
 
 
@@ -588,9 +557,8 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         assert len(values) == 1
 
         arrays = [array for _, _, array in batch_events]
-        assert not np.shares_memory(arrays[0], arrays[1])
-        assert not np.shares_memory(arrays[0], arrays[2])
-        assert not np.shares_memory(arrays[1], arrays[2])
+        assert arrays[0] is arrays[1]
+        assert arrays[0] is arrays[2]
 
     assert len(result.evidence.observations) == 6
     measured_orders = expected_orders[1:]
@@ -625,7 +593,7 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
         clock_values.extend((started, started + (call_index + 1) / 1000.0))
     clock_iterator = iter(clock_values)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_iterator),
     )
@@ -653,6 +621,51 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
     assert [item.latency_ms for item in result.evidence.observations] == pytest.approx(
         list(range(1, 13))
     )
+
+
+def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared_references: list[ReferenceType[np.ndarray]] = []
+    live_batches_before_preparation: list[int] = []
+
+    def prepare_batch(
+        self: BackendSpec,
+        batch: tuple[np.ndarray, ...],
+    ) -> tuple[Array, ...]:
+        _ = self
+        live_batches_before_preparation.append(
+            sum(reference() is not None for reference in prepared_references)
+        )
+        prepared = tuple(array.copy() for array in batch)
+        prepared_references.extend(ref(array) for array in prepared)
+        return prepared
+
+    monkeypatch.setattr(BackendSpec, "to_backend_batch", prepare_batch)
+    backend = BackendSpec(name="numpy")
+    runner = _single_library_runner(backend=backend)
+
+    runner.run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=[]),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=DynamicTaskConfig(
+            backend="numpy",
+            scale="medium",
+            seed=7,
+            batches=3,
+            warmup_batches=1,
+            repeats=2,
+            rounds=1,
+            round_order_seed=1234,
+            parity_checks=0,
+        ),
+        case_index=0,
+    )
+
+    assert live_batches_before_preparation == [0, 0, 0, 0, 0]
 
 
 def test_run_dynamic_case_rejects_partial_round_orders(
@@ -722,21 +735,21 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
         case=case,
         workload=workload,
         runs={
-            "einf": DynamicRun(
+            "einf": AvailableRun(
                 summary=_summary(median_ms=1.0),
                 round_summaries=(
                     _summary(median_ms=1.0),
                     _summary(median_ms=1.1),
                 ),
             ),
-            "einops": DynamicRun(
+            "einops": AvailableRun(
                 summary=_summary(median_ms=2.0),
                 round_summaries=(
                     _summary(median_ms=2.0),
                     _summary(median_ms=2.1),
                 ),
             ),
-            "einx": DynamicRun(
+            "einx": AvailableRun(
                 summary=_summary(median_ms=3.0),
                 round_summaries=(
                     _summary(median_ms=3.0),
