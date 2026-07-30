@@ -55,6 +55,7 @@ def test_contract_equation_budget_counts_distinct_labels() -> None:
             output_axis_list=AxisTerms((distinct_axes[0],)),
         )
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert error.value.data == {"operation": "contract"}
 
 
 def test_scalar_equation_budget_counts_distinct_labels() -> None:
@@ -84,6 +85,7 @@ def test_scalar_equation_budget_counts_distinct_labels() -> None:
             output_axis_terms=ScalarAxisTerms((distinct_axes[0],)),
         )
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert error.value.data == {"operation": "contract"}
 
 
 def test_einop_equation_budget_counts_distinct_labels() -> None:
@@ -113,3 +115,4 @@ def test_einop_equation_budget_counts_distinct_labels() -> None:
             output_axis_lists=(AxisTerms((distinct_axes[0],)),),
         )
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert error.value.data == {"operation": "einop"}

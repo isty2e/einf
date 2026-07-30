@@ -22,7 +22,7 @@ def build_contract_equation(
                 message="inconsistent dims: too many atomic axes for einsum symbol budget",
                 help="use fewer distinct atomic axis symbols in one contract call",
                 related=("contract equation",),
-                data={},
+                data={"operation": "contract"},
             )
         assigned = symbols[len(key_to_symbol)]
         key_to_symbol[key] = assigned
@@ -45,7 +45,7 @@ def build_contract_equation(
                         "before using contract"
                     ),
                     related=("contract equation",),
-                    data={},
+                    data={"operation": "contract"},
                 )
             term_key = term.stable_token()
             subscript_chars.append(symbol_for(term_key))
@@ -67,7 +67,7 @@ def build_contract_equation(
                     "before using contract"
                 ),
                 related=("contract equation",),
-                data={},
+                data={"operation": "contract"},
             )
         term_key = term.stable_token()
         if term_key in seen_output_terms:
@@ -88,7 +88,7 @@ def build_contract_equation(
                 ),
                 help="ensure every output axis appears in at least one input axis-list",
                 related=("contract equation",),
-                data={},
+                data={"operation": "contract"},
             )
         output_subscript_chars.append(symbol_for(term_key))
 

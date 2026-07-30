@@ -206,7 +206,7 @@ def _build_equation_from_scalar_terms(
                 message="inconsistent dims: too many scalar axes for einsum symbol budget",
                 help="use fewer distinct scalar axes in one contraction step",
                 related=("einsum equation",),
-                data={},
+                data={"operation": "contract"},
             )
         assigned = _EINSUM_SYMBOLS[len(key_to_symbol)]
         key_to_symbol[term_key] = assigned
@@ -244,7 +244,7 @@ def _build_equation_from_scalar_terms(
                 ),
                 help="ensure every output axis appears in at least one input axis-list",
                 related=("contract equation",),
-                data={},
+                data={"operation": "contract"},
             )
         output_chars.append(symbol_for(token))
 
