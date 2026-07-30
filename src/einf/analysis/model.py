@@ -2,6 +2,15 @@ from dataclasses import dataclass
 from typing import Literal
 
 DiagnosticSeverity = Literal["error", "warning", "info"]
+AxisStructuralKind = Literal["axis", "pack"]
+AxisOccurrenceSide = Literal["lhs", "rhs"]
+AxisCrossSideRelation = Literal["shared", "side_only"]
+AxisOperationRole = Literal["introduced", "reduced", "contracted"]
+
+_AXIS_STRUCTURAL_KINDS = frozenset({"axis", "pack"})
+_AXIS_OCCURRENCE_SIDES = frozenset({"lhs", "rhs"})
+_AXIS_CROSS_SIDE_RELATIONS = frozenset({"shared", "side_only"})
+_AXIS_OPERATION_ROLES = frozenset({"introduced", "reduced", "contracted"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,9 +54,36 @@ class AnalysisDiagnostic:
 
 @dataclass(frozen=True, slots=True)
 class AxisToken:
-    """Axis token metadata for editor rendering."""
+    """Canonical axis occurrence metadata for analysis consumers."""
 
     name: str
+    kind: AxisStructuralKind
+    side: AxisOccurrenceSide
+    relation: AxisCrossSideRelation
+    role: AxisOperationRole | None
     span: TextSpan
     group: int
-    roles: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("axis token name must be a string")
+        if not self.name.isidentifier():
+            raise ValueError("axis token name must be a valid identifier")
+        if self.kind not in _AXIS_STRUCTURAL_KINDS:
+            raise ValueError(f"unsupported axis structural kind: {self.kind!r}")
+        if self.side not in _AXIS_OCCURRENCE_SIDES:
+            raise ValueError(f"unsupported axis occurrence side: {self.side!r}")
+        if self.relation not in _AXIS_CROSS_SIDE_RELATIONS:
+            raise ValueError(f"unsupported axis cross-side relation: {self.relation!r}")
+        if self.role is not None and self.role not in _AXIS_OPERATION_ROLES:
+            raise ValueError(f"unsupported axis operation role: {self.role!r}")
+        if isinstance(self.group, bool) or not isinstance(self.group, int):
+            raise TypeError("axis token group must be an integer")
+        if self.group < 0:
+            raise ValueError("axis token group must be non-negative")
+        if self.role is not None and self.relation != "side_only":
+            raise ValueError("axis operation roles require a side-only relation")
+        if self.role in {"contracted", "reduced"} and self.side != "lhs":
+            raise ValueError(f"{self.role} axes must occur on lhs")
+        if self.role == "introduced" and self.side != "rhs":
+            raise ValueError("introduced axes must occur on rhs")

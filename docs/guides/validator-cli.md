@@ -60,9 +60,14 @@ Each file entry:
 - `path`
 - `diagnostics[]` — `einf` semantic diagnostics,
 - `checker_diagnostics[]` — normalized external checker diagnostics,
-- `axis_tokens[]` — recognized axis identifier tokens,
+- `axis_tokens[]` — recognized axis identifier tokens with separate `kind`,
+  `side`, `relation`, and nullable operation `role` fields,
 - `failures[]` — validator ingress failures (unreadable files,
   parse errors).
+
+The current output schema version is `0.3`. Axis token `kind` distinguishes
+scalar axes from axis packs; `relation` records whether the same structural
+symbol appears on both sides of the operation.
 
 ## CI integration
 

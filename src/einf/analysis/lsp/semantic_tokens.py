@@ -1,5 +1,3 @@
-from functools import reduce
-from operator import or_
 from typing import TYPE_CHECKING
 
 from einf.analysis.model import AxisToken
@@ -18,9 +16,9 @@ TOKEN_TYPES = (
     "enumMember",
 )
 TOKEN_MODIFIERS = ("introduced", "reduced", "contracted", "pack")
-ROLE_TO_MODIFIER_INDEX = {
-    role_name: modifier_index
-    for modifier_index, role_name in enumerate(TOKEN_MODIFIERS)
+_MODIFIER_INDEX = {
+    modifier_name: modifier_index
+    for modifier_index, modifier_name in enumerate(TOKEN_MODIFIERS)
 }
 
 
@@ -51,15 +49,11 @@ def encode_semantic_tokens(
         start_column = start.character
         length = max(1, end.character - start.character)
         token_type_index = axis_token.group % len(TOKEN_TYPES)
-        modifier_mask = reduce(
-            or_,
-            (
-                1 << ROLE_TO_MODIFIER_INDEX[role_name]
-                for role_name in axis_token.roles
-                if role_name in ROLE_TO_MODIFIER_INDEX
-            ),
-            0,
-        )
+        modifier_mask = 0
+        if axis_token.role is not None:
+            modifier_mask |= 1 << _MODIFIER_INDEX[axis_token.role]
+        if axis_token.kind == "pack":
+            modifier_mask |= 1 << _MODIFIER_INDEX["pack"]
 
         if start_line == previous_line:
             delta_line = 0

@@ -36,21 +36,27 @@ def test_encode_semantic_tokens_uses_fixed_palette_and_modifiers() -> None:
     tokens = (
         AxisToken(
             name="b",
+            kind="axis",
+            side="rhs",
+            relation="side_only",
+            role="introduced",
             span=TextSpan(
                 start=TextPosition(line=2, column=4),
                 end=TextPosition(line=2, column=5),
             ),
             group=0,
-            roles=("introduced",),
         ),
         AxisToken(
             name="n",
+            kind="pack",
+            side="lhs",
+            relation="side_only",
+            role="contracted",
             span=TextSpan(
                 start=TextPosition(line=2, column=7),
                 end=TextPosition(line=2, column=8),
             ),
             group=9,
-            roles=("contracted", "pack"),
         ),
     )
 
@@ -229,9 +235,12 @@ def test_server_features_share_the_negotiated_position_codec(
     uri = "file:///workspace/sample.py"
     token = AxisToken(
         name="axis",
+        kind="axis",
+        side="rhs",
+        relation="side_only",
+        role="introduced",
         span=_AXIS_SPAN,
         group=0,
-        roles=("introduced",),
     )
     diagnostic = AnalysisDiagnostic(
         code="test-code",

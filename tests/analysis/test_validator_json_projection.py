@@ -18,7 +18,7 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
         end=TextPosition(line=2, column=7),
     )
     report = ValidationReport(
-        schema_version="0.2",
+        schema_version="0.3",
         parser_backend="ast",
         checker_failures=(
             CheckerFailure(
@@ -58,9 +58,12 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
                 axis_tokens=(
                     AxisToken(
                         name="batch",
+                        kind="pack",
+                        side="rhs",
+                        relation="side_only",
+                        role="introduced",
                         span=span,
                         group=1,
-                        roles=("input", "output"),
                     ),
                 ),
                 failures=(
@@ -77,7 +80,7 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
     projection = project_validation_report(report)
 
     assert projection == {
-        "schema_version": "0.2",
+        "schema_version": "0.3",
         "parser_backend": "ast",
         "checker_failures": [
             {
@@ -120,12 +123,15 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
                 "axis_tokens": [
                     {
                         "name": "batch",
+                        "kind": "pack",
+                        "side": "rhs",
+                        "relation": "side_only",
+                        "role": "introduced",
                         "span": {
                             "start": {"line": 2, "column": 3},
                             "end": {"line": 2, "column": 7},
                         },
                         "group": 1,
-                        "roles": ["input", "output"],
                     }
                 ],
                 "failures": [

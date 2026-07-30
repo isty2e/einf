@@ -51,8 +51,8 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 ### Richer editor affordances
 
 1. hover metadata for axis-group relationships and role summaries,
-2. inlay hints for selected non-trivial axis roles (`contracted`,
-   `reduced`, `introduced`, `pack`).
+2. inlay hints for selected operation roles (`contracted`, `reduced`,
+   `introduced`) and axis-pack structure.
 
 ## Responsiveness model
 

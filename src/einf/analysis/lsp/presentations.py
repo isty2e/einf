@@ -2,12 +2,10 @@ from dataclasses import dataclass
 
 from einf.analysis.model import AxisToken, TextPosition, TextSpan
 
-PRESENTATION_ROLE_ORDER = ("contracted", "reduced", "introduced", "pack")
-INLAY_LABELS = {
+_ROLE_INLAY_LABELS = {
     "contracted": "contract",
     "reduced": "reduce",
     "introduced": "introduce",
-    "pack": "pack",
 }
 
 
@@ -19,13 +17,14 @@ class AxisTokenContext:
     peers: tuple[AxisToken, ...]
 
     @property
-    def presentation_roles(self) -> tuple[str, ...]:
-        """Return roles that should surface in richer editor metadata."""
-        return tuple(
-            role_name
-            for role_name in PRESENTATION_ROLE_ORDER
-            if role_name in self.token.roles
-        )
+    def presentation_labels(self) -> tuple[str, ...]:
+        """Return labels that should surface in richer editor metadata."""
+        labels: list[str] = []
+        if self.token.role is not None:
+            labels.append(_ROLE_INLAY_LABELS[self.token.role])
+        if self.token.kind == "pack":
+            labels.append("pack")
+        return tuple(labels)
 
     @property
     def peer_count(self) -> int:
@@ -67,7 +66,7 @@ def iter_inlay_contexts(
             token=axis_token,
             peers=grouped_tokens.get(axis_token.group, (axis_token,)),
         )
-        if not context.presentation_roles:
+        if not context.presentation_labels:
             continue
         contexts.append(context)
     return tuple(contexts)
@@ -76,15 +75,18 @@ def iter_inlay_contexts(
 def build_hover_markdown(context: AxisTokenContext) -> str:
     """Build one markdown hover payload for an axis token context."""
     peer_lines = "\n".join(
-        f"- `{peer.name}` at {_format_span(peer.span)} ({', '.join(peer.roles)})"
+        f"- `{peer.name}` at {_format_span(peer.span)} "
+        f"(side: {peer.side}, relation: {peer.relation}, "
+        f"operation role: {peer.role or 'none'})"
         for peer in context.peers
     )
-    roles = ", ".join(context.token.roles)
-    presentation_roles = ", ".join(context.presentation_roles) or "none"
+    title = "Axis pack" if context.token.kind == "pack" else "Axis"
     return (
-        f"**Axis** `{context.token.name}`\n\n"
-        f"- roles: {roles}\n"
-        f"- richer roles: {presentation_roles}\n"
+        f"**{title}** `{context.token.name}`\n\n"
+        f"- kind: {context.token.kind}\n"
+        f"- side: {context.token.side}\n"
+        f"- relation: {context.token.relation}\n"
+        f"- operation role: {context.token.role or 'none'}\n"
         f"- group: {context.token.group}\n"
         f"- occurrences: {context.peer_count}\n\n"
         f"**Group peers**\n{peer_lines}"
@@ -93,11 +95,9 @@ def build_hover_markdown(context: AxisTokenContext) -> str:
 
 def build_inlay_label(context: AxisTokenContext) -> str | None:
     """Build one inlay-hint label for a token context."""
-    if not context.presentation_roles:
+    if not context.presentation_labels:
         return None
-    return ", ".join(
-        INLAY_LABELS[role_name] for role_name in context.presentation_roles
-    )
+    return ", ".join(context.presentation_labels)
 
 
 def _group_axis_tokens(
@@ -144,8 +144,6 @@ def _format_span(span: TextSpan) -> str:
 
 
 __all__ = [
-    "INLAY_LABELS",
-    "PRESENTATION_ROLE_ORDER",
     "AxisTokenContext",
     "build_hover_markdown",
     "build_inlay_label",
