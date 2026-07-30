@@ -20,6 +20,7 @@ from einf import (
     reduce,
     repeat,
 )
+from einf.backend import BackendPolicy, BackendProfile
 from einf.lowering import einop as einop_plan_module
 from einf.steps.expand import step as expand_step_module
 from einf.tensor_types import TensorLike
@@ -77,6 +78,40 @@ def test_contract_matrix_multiply_executes_with_numpy() -> None:
 
     expected = left @ right
     np.testing.assert_array_equal(result, expected)
+
+
+def test_einop_einsum_capability_validation_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_validate = BackendPolicy.validate_einsum_capability
+    validation_calls = 0
+
+    def count_validation(
+        policy: BackendPolicy,
+        *,
+        profile: BackendProfile,
+        op_name: str,
+    ) -> None:
+        nonlocal validation_calls
+        validation_calls += 1
+        original_validate(policy, profile=profile, op_name=op_name)
+
+    monkeypatch.setattr(
+        BackendPolicy,
+        "validate_einsum_capability",
+        count_validation,
+    )
+    i, k, j = axes("i", "k", "j")
+    op = einop((ax[i, k], ax[k, j]), ax[i, j])
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+
+    first = op(left, right)
+    second = op(left, right)
+
+    np.testing.assert_array_equal(first, left @ right)
+    np.testing.assert_array_equal(second, left @ right)
+    assert validation_calls == 1
 
 
 def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(

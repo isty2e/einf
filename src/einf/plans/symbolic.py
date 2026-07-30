@@ -28,6 +28,7 @@ class SymbolicPlan:
     input_arity: int
     output_arity: int
     steps: tuple[SymbolicStep[StepProgram], ...]
+    requires_einsum_backend: bool = field(init=False)
     _runtime: SymbolicPlanRuntimeCaches = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -49,6 +50,11 @@ class SymbolicPlan:
             raise ValueError(
                 f"symbolic plan output arity mismatch: expected {self.output_arity}, got {current_arity}"
             )
+        object.__setattr__(
+            self,
+            "requires_einsum_backend",
+            any(step.requires_einsum_backend() for step in self.steps),
+        )
         object.__setattr__(
             self,
             "_runtime",

@@ -39,6 +39,19 @@ def test_inflate_appends_axis_and_broadcasts_values() -> None:
     np.testing.assert_array_equal(result, expected)
 
 
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_repeat_appends_axis_and_broadcasts_values_with_torch() -> None:
+    assert torch is not None
+    b, c, r = axes("b", "c", "r")
+    op = repeat(ax[b, c], ax[b, c, r]).with_sizes(r=4)
+
+    tensor = torch.arange(2 * 3).reshape(2, 3)
+    result = op(tensor)
+
+    assert isinstance(result, torch.Tensor)
+    assert torch.equal(result, tensor.unsqueeze(2).expand(2, 3, 4))
+
+
 def test_repeat_uses_symbolic_fastpath_without_reindex(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -34,8 +34,11 @@ directory and sketches the dependency order.
   consumed by `reduce` and `einop`.
 - **`backend/`** — backend dispatch built on `array-api-compat`.
   `BackendPolicy`, `BackendResolver`, and `BackendProfile` detect the
-  active namespace (NumPy / PyTorch / JAX / …) and expose it to steps.
-  Also owns memory-alias policy.
+  active namespace and expose it to steps. NumPy and PyTorch use explicit
+  runtime primitive adapters; other namespaces use the Array API protocol
+  fallback, checked against each step's required methods. The portable fallback
+  is tested with `array-api-strict`. Memory-alias policy for strict `view`
+  supports only NumPy and PyTorch.
 
 ## Operations surface
 

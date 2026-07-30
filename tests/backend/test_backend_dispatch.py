@@ -328,7 +328,7 @@ def test_backend_dispatch_resolves_numpy_profile(numpy_tensor: np.ndarray) -> No
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="rearrange")
     assert profile.namespace_id == "array_api_compat.numpy"
     assert profile.backend_family == "numpy"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert profile.supports_strict_view
 
 
@@ -397,19 +397,17 @@ def test_backend_dispatch_requires_einsum_extension_for_contract() -> None:
     assert error.value.external_code == "BACKEND_REQUIRED_EXTENSION_MISSING"
 
 
-def test_backend_dispatch_requires_einsum_extension_for_einop() -> None:
-    with pytest.raises(ValidationError) as error:
-        _ = BACKEND_RESOLVER.resolve(FakeArrayA(shape=(2, 3)), op_name="einop")
+def test_backend_dispatch_defers_einop_einsum_requirement_to_selected_plan() -> None:
+    profile = BACKEND_RESOLVER.resolve(FakeArrayA(shape=(2, 3)), op_name="einop")
 
-    assert error.value.code == ErrorCode.BACKEND_REQUIRED_EXTENSION_MISSING.value
-    assert error.value.data["operation"] == "einop"
+    assert not profile.supports_einsum
 
 
 def test_backend_dispatch_allows_non_contract_ops_without_einsum_extension() -> None:
     profile = BACKEND_RESOLVER.resolve(FakeArrayB(shape=(2, 3)), op_name="rearrange")
     assert profile.namespace_id.endswith("._FakeNamespaceB")
     assert profile.backend_family is None
-    assert not profile.supports_contract_einsum
+    assert not profile.supports_einsum
     assert not profile.supports_strict_view
 
 
@@ -443,7 +441,7 @@ def test_backend_dispatch_operation_name_is_normalized_with_whitespace_for_valid
 ) -> None:
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="  ConTract  ")
     assert profile.backend_family == "numpy"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
 
 
 def test_backend_dispatch_rejects_non_string_operation_name() -> None:
@@ -488,7 +486,7 @@ def test_backend_dispatch_infers_opt_backend_from_root_namespace() -> None:
         RootNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family == "numpy"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert profile.supports_strict_view
 
 
@@ -503,7 +501,7 @@ def test_backend_dispatch_rejects_namespace_with_non_string_name() -> None:
 
 def test_backend_dispatch_allows_unknown_operation_without_einsum_requirement() -> None:
     profile = BACKEND_RESOLVER.resolve(FakeArrayA(shape=(2, 3)), op_name="mystery_op")
-    assert not profile.supports_contract_einsum
+    assert not profile.supports_einsum
 
 
 def test_backend_dispatch_rejects_namespace_with_non_string_module() -> None:
@@ -541,7 +539,7 @@ def test_backend_dispatch_einsum_probe_runtime_error_does_not_break_non_einsum_o
 
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="rearrange")
     assert profile.backend_family == "numpy"
-    assert not profile.supports_contract_einsum
+    assert not profile.supports_einsum
 
 
 def test_backend_dispatch_allows_namespace_with_none_module() -> None:
@@ -578,7 +576,7 @@ def test_backend_dispatch_treats_mixed_case_compat_backend_as_unknown() -> None:
         MixedCaseCompatNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family is None
-    assert not profile.supports_contract_einsum
+    assert not profile.supports_einsum
     assert not profile.supports_strict_view
 
 
@@ -594,7 +592,7 @@ def test_backend_dispatch_unknown_compat_backend_skips_einsum_probe(
         UnknownCompatNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family is None
-    assert not profile.supports_contract_einsum
+    assert not profile.supports_einsum
 
 
 def test_backend_dispatch_unknown_compat_backend_contract_reports_missing_extension(
@@ -628,7 +626,7 @@ def test_backend_dispatch_known_non_numpy_backend_uses_probe(
         CupyCompatNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family == "cupy"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert not profile.supports_strict_view
     assert seen_backends == ["cupy"]
 
@@ -648,7 +646,7 @@ def test_backend_dispatch_known_jax_backend_uses_probe(
         JaxCompatNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family == "jax"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert not profile.supports_strict_view
     assert seen_backends == ["jax"]
 
@@ -668,7 +666,7 @@ def test_backend_dispatch_known_mlx_backend_uses_mlx_core_probe(
         MlxCoreNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family == "mlx.core"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert not profile.supports_strict_view
     assert seen_backends == ["mlx.core"]
 
@@ -688,7 +686,7 @@ def test_backend_dispatch_known_mlx_compat_backend_uses_mlx_core_probe(
         MlxCompatNamespaceArray(shape=(2, 3)), op_name="rearrange"
     )
     assert profile.backend_family == "mlx.core"
-    assert profile.supports_contract_einsum
+    assert profile.supports_einsum
     assert not profile.supports_strict_view
     assert seen_backends == ["mlx.core"]
 
@@ -703,8 +701,8 @@ def test_backend_dispatch_coerces_probe_result_to_bool(
     monkeypatch.setattr("einf.backend.dispatch.oe_backends.has_einsum", weird_probe)
 
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="rearrange")
-    assert isinstance(profile.supports_contract_einsum, bool)
-    assert profile.supports_contract_einsum is True
+    assert isinstance(profile.supports_einsum, bool)
+    assert profile.supports_einsum is True
 
 
 def test_backend_dispatch_accepts_compat_subnamespaces_from_same_family() -> None:

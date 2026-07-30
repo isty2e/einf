@@ -137,6 +137,14 @@ class TensorMapSymbolicStep(SymbolicStep[TensorMapSymbolicProgram]):
             kernel_count=sum(score.kernel_count for score in scores),
         )
 
+    def requires_einsum_backend(self) -> bool:
+        """Return whether any nested unary chain requires einsum."""
+        return any(
+            step.requires_einsum_backend()
+            for chain in self.program.chains
+            for step in chain
+        )
+
 
 __all__ = [
     "TensorMapRuntimeProgram",

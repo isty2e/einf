@@ -585,7 +585,7 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy() -> Non
         namespace=numpy_profile.namespace,
         namespace_id=numpy_profile.namespace_id,
         backend_family=None,
-        supports_contract_einsum=numpy_profile.supports_contract_einsum,
+        supports_einsum=numpy_profile.supports_einsum,
         supports_strict_view=numpy_profile.supports_strict_view,
     )
     namespace_runtime = sum_step.specialize(

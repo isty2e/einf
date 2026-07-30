@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "array-api-strict>=2.5",
   "basedpyright>=1.31",
   "build>=1.2",
   "einx",
@@ -86,6 +87,7 @@ exclude = [
   "tests/analysis/test_conformance_analysis_lsp.py",
   # Checked by the optional PyTorch integration job.
   "tests/integration/test_array_api_contract_einop_execution.py",
+  "tests/integration/test_array_api_rearrange_execution.py",
   "tests/integration/test_array_api_repeat_reduce_execution.py",
   "tests/integration/test_array_api_view_execution.py",
 ]

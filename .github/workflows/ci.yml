@@ -31,6 +31,8 @@ jobs:
         run: python -m build
       - name: Check shipped entry points
         run: python tests/package/verify_wheel_entrypoints.py dist
+      - name: Check base install runtime
+        run: python tests/package/verify_wheel_base_install.py dist
       - name: Typecheck shipped wheel
         run: python tests/package/verify_wheel_typing.py dist
 
@@ -87,11 +89,13 @@ jobs:
           basedpyright
           --pythonpath "$(which python)"
           tests/integration/test_array_api_contract_einop_execution.py
+          tests/integration/test_array_api_rearrange_execution.py
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py
       - name: Test optional PyTorch integration
         run: >-
           pytest
           tests/integration/test_array_api_contract_einop_execution.py
+          tests/integration/test_array_api_rearrange_execution.py
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py

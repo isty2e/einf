@@ -24,10 +24,12 @@ simplifying boundaries between `TensorOp`, `AbstractPlan`,
 
 3. **Backend neutrality.**
    A plan describes structure in axis terms, not in backend arrays.
-   Binding to NumPy, PyTorch, JAX, or any other Array-API namespace
-   happens during specialization, not during planning. The same
-   `SymbolicPlan` can be specialized against multiple backends without
-   replanning.
+   Binding to a supported runtime backend happens during specialization,
+   not during planning. The same `SymbolicPlan` can be specialized against
+   different Array API namespaces without replanning. NumPy and PyTorch use
+   explicit primitive adapters; other namespaces use a capability-checked
+   protocol fallback. `array-api-strict` guards the standard-only subset
+   against accidental backend-specific dependencies.
 
 4. **Deterministic optimization.**
    Plan selection is scored lexicographically on computable quantities
