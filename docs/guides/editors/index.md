@@ -4,7 +4,7 @@
 
 | Editor | Status | Notes |
 | --- | --- | --- |
-| [Helix](helix.md) | **Supported** | Working copy-paste `languages.toml` recipe. |
+| [Helix](helix.md) | **Partial** | Diagnostics and inlay hints are supported; hover routing has a tradeoff and semantic tokens are unavailable. |
 | [Zed](zed.md) | **Adapter required** | Architectural fit is good, but no adapter ships from this repo yet. |
 | [VS Code](vscode.md) | **Not shipped** | Needs a thin extension; fall back to the validator CLI or another editor. |
 
@@ -17,8 +17,8 @@ server for Python.
 
 - Keep your primary Python language server for typing, completion, navigation,
   and general Python diagnostics.
-- Run `einf-lsp` alongside it for `einf` semantic diagnostics, semantic tokens,
-  hover metadata, and inlay hints.
+- Run `einf-lsp` alongside it for the `einf` semantic features that the editor
+  can route to the sidecar.
 - Keep `initializeOptions.checkers` empty in this mode.
 
 Install:
