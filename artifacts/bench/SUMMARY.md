@@ -3,7 +3,14 @@
 Torch backend. Fresh venv (`torch 2.11.0`, `numpy 2.4.4`,
 `einops 0.8.2`, `einx 0.4.3`), macOS ARM64, Python 3.11.10.
 
-Raw reports:
+> Historical descriptive snapshot. The dynamic Markdown reports predate the
+> current raw observation receipt, and the fixed reports likewise retain only
+> marginal summaries. Neither format retains the observation identities needed
+> to reconstruct paired effects or uncertainty intervals. Numeric tables are
+> preserved as captured; marginal IQR overlap or separation is not a
+> significance test.
+
+Archived reports:
 
 - `artifacts/bench/bench-torch-medium.md`
 - `artifacts/bench/bench-torch-large.md`
@@ -13,9 +20,11 @@ Raw reports:
 Configs:
 
 - Static: `--rounds 6 --cold-repeats 3 --warmup 4 --warm-repeats 5
-  --warm-iterations 60` → 30 warm samples per library per case.
+  --warm-iterations 60` → 30 warm observations per library per case,
+  each the arithmetic mean of 60 timed calls.
 - Dynamic: `--batches 32 --warmup-batches 4 --repeats 5 --rounds 3`
-  → 420 per-batch samples per library per case (medium and large).
+  → 420 call observations per library per case: 84 round/batch workload
+  units, each measured five times.
 
 ## Static (warm, ms — median [p25 – p75])
 
@@ -39,7 +48,7 @@ Configs:
 | contract_matmul        | 0.6688 [0.6634 – 0.6746] | 0.6906 [0.6842 – 0.6941] | 0.7230 [0.7169 – 0.7342] |
 | einop_contract_split   | 4.6868 [4.6594 – 4.7318] | 4.7129 [4.6788 – 4.7667] | 4.7783 [4.7330 – 4.8267] |
 
-## Dynamic (ms — median [p25 – p75], 420 batches / library / case)
+## Dynamic (ms — median [p25 – p75], 420 call observations / library / case)
 
 | Case | einf M | einops M | einx M |
 |---|---|---|---|
@@ -65,57 +74,53 @@ Configs:
 
 Both suites use paired scheduling: every library sees the same logical
 input at the same point in the round, with independently materialized
-tensors and rotating library order. That removes order, cache-state,
-and shape bias but does **not** remove random system jitter.
+tensors and rotating library order. That spreads order and cache-state
+effects but does not prove their absence, and it does not remove random
+system jitter.
 
-- **Static** dynamic range is tight because each sample is itself the
-  median of 60 tight warm iterations. The IQRs are narrow; non-overlapping
-  IQRs between einf and einops mean the gap is visible despite jitter.
-- **Dynamic** IQRs are wide because input shape is resampled per batch
-  over a ±40 % range. The spread is a property of the workload, not of
-  measurement noise. The median over 420 batches is well-settled, but
-  the IQRs overlap heavily and a single-number gap comparison is weaker
-  than on static.
+- **Static** measurements vary little because each observation is the arithmetic
+  mean of 60 timed calls. The marginal IQRs describe spread across 30 such
+  observations; overlap or separation is not significance.
+- **Dynamic** marginal IQRs mix workload-shape and timing variation across
+  420 calls. Those calls represent 84 round/batch workload units, not 420
+  independent samples. The archived artifact lacks the raw identities needed
+  to reconstruct the current paired estimator.
 
 ### Gap patterns
 
 | Family | Static M | Static L | Dyn M | Dyn L |
 |---|---|---|---|---|
-| rearrange / repeat | 5 – 17 % faster than einops, non-overlapping IQR | same | 9 – 17 % faster, partially overlapping | same |
-| reduce             | ~6 % faster, IQR touches               | tied              | ~9 % faster, overlapping | ~5 %, overlapping |
-| contract_matmul    | ~11 % faster, non-overlapping IQR      | ~3 %, just non-overlap | tied | ~5 %, overlapping |
-| einop_contract_split | ~2 %, overlapping                    | tied              | ~9 %, overlapping | tied |
+| rearrange / repeat | 6 – 17 % lower einf median | 6 – 15 % lower | 9 – 17 % lower | 6 – 18 % lower |
+| reduce             | ~6 % lower einf median | close medians | ~9 % lower | ~5 % lower |
+| contract_matmul    | ~11 % lower einf median | ~3 % lower | close medians | ~5 % lower |
+| einop_contract_split | ~2 % lower einf median | close medians | ~9 % lower | close medians |
 
-vs einx: 3 – 4× faster on all rearrange/repeat cases (non-overlapping
-by a wide margin), 5 – 15 % faster on reduce and contraction, same or
-smaller gap on the fused einop case at large shapes.
+Versus einx, the einf median is about 25 – 40 % as large on
+rearrange/repeat cases. The einf median is also lower on reduce and
+contraction, with a smaller gap on the fused einop case at large shapes.
 
-### What this does and doesn't support
+### What the snapshot shows
 
-Supported:
+Observed in the archived marginal summaries:
 
-- Dispatch tier (rearrange, repeat): einf is reliably ahead of einops
-  on torch by roughly a tenth to a fifth; non-overlapping IQRs in every
-  static case and in the low-jitter dynamic cases.
-- einx is consistently behind both on the dispatch tier — this is an
-  einx per-call overhead issue, not a claim about compiled-plan speed.
+- Dispatch-tier einf medians are roughly 5 – 20 % below einops
+  on torch in these runs.
+- einx has the highest dispatch-tier medians in these runs. The tables do
+  not isolate a causal explanation.
 - On heavy compute (`reduce L`, `contract L`, `einop_contract_split`),
-  the gap to einops shrinks toward zero as BLAS starts dominating. At
-  large shapes the fused-contract case is tied within noise.
+  the median gap to einops is generally smaller. That pattern is consistent
+  with backend compute taking a larger share of wall-clock time.
 
-Not supported:
+Not established:
 
 - Any "N× faster" headline across the whole suite.
-- A significance claim above the IQR test shown in the table. 30 static
-  samples and 420 dynamic samples are enough to pin medians down, but a
-  proper Wilcoxon on per-sample deltas would need the raw paired data
-  and is not done here.
+- Any significance claim from IQR overlap or separation.
+- Paired effects or uncertainty intervals: the required raw identities
+  were not retained in these historical Markdown reports.
 
-## Suggested pitch line
+## Snapshot summary
 
-> On torch, einf is 10 – 20 % faster than einops on dispatch-heavy
-> rearrange, repeat, and reduce calls (non-overlapping IQRs), a few
-> percent ahead on medium-shape contraction, and parity on large
-> compute-bound contractions. Versus einx, einf is 3 – 4× faster on
-> rearrange-family calls and 5 – 15 % faster on contraction. All with
-> a single compiled plan that reuses across shapes.
+In this 2026-04-17 torch CPU snapshot, einf has lower marginal medians
+than einops on dispatch-heavy operations and similar medians on the
+largest compute-bound contractions. These are descriptive historical
+values, not current performance guarantees or inferential conclusions.

@@ -30,6 +30,8 @@ More concretely:
 
 - fixed cold timing covers operation construction plus the first library call,
 - fixed warm benchmarks use paired per-call execution on the same logical input,
+- each fixed warm observation is the arithmetic mean of the configured timed
+  calls in one repeat,
 - dynamic benchmarks use paired same-batch execution on the same logical batch stream inside each round,
 - tuple traversal, shape access, indexing, `.item()`, and parity validation happen outside timed regions,
 - dynamic rounds still use different batch streams from one round to the next, so round summaries matter for heavy cases.
@@ -313,7 +315,8 @@ python -m benchmarks.compare.einf_einops_einx \
 What the script reports:
 
 - cold construction + first-call timing,
-- warm steady-state per-call timing,
+- warm steady-state observations, each an arithmetic mean over
+  `--warm-iterations` timed calls,
 - round-level warm summaries,
 - per-case library order for each round.
 
@@ -338,8 +341,63 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
 What matters here:
 
 - dynamic heavy cases can still have meaningful round-to-round spread,
-- aggregate medians should be read together with round summaries,
-- same-batch paired scheduling removes the older shared-input locality artifact, but it does not eliminate genuine workload-stream variance.
+- marginal call-observation summaries should be read together with round
+  summaries and paired comparisons,
+- independently materialized inputs avoid the older shared-input locality
+  artifact, but paired scheduling does not eliminate genuine workload-stream
+  variance.
+
+### Dynamic evidence contract
+
+The dynamic benchmark preserves two levels of evidence:
+
+1. **Call observations** retain
+   `(case, round, measured batch, repeat, library, order position, latency)`.
+   Marginal count/median/IQR tables summarize these calls descriptively.
+2. **Paired batch units** identify one measured batch inside one round. Repeated
+   calls for the same unit are technical replications, not independent samples,
+   and are averaged before comparison.
+
+For each competitor, the reported point effect is:
+
+```text
+mean competitor latency across paired batch units
+-------------------------------------------------
+mean einf latency across paired batch units
+```
+
+The 95% interval is a deterministic percentile bootstrap. It resamples paired
+batch units jointly across libraries within each observed round, preserving the
+round strata and library pairing. The interval is conditional on the observed
+run and rounds. It is not a p-value, does not turn marginal IQR overlap into a
+significance test, and does not establish cross-machine or long-run temporal
+generalization.
+
+At least two measured batches per round are required; otherwise the script
+rejects the comparison rather than emitting a degenerate interval.
+
+### Dynamic raw receipt
+
+When `--output report.md` is provided, the dynamic script also writes
+`report.json` unless `--raw-output` selects another path. The versioned JSON
+receipt includes:
+
+- environment and benchmark configuration,
+- case identities and execution forms,
+- per-library marginal and round summaries,
+- round execution orders,
+- every call observation with its pairing and order identity,
+- paired effects, interval bounds, bootstrap seed, and resample count.
+
+The raw receipt is written before the Markdown file. Keep it when a comparison
+may need re-analysis; Markdown alone intentionally does not contain enough
+information to reconstruct every pair.
+
+The dynamic reports currently stored under `artifacts/bench/` predate this
+receipt schema, and the archived fixed reports likewise retain only marginal
+summaries. Their numeric tables remain historical descriptive snapshots, but
+per-observation pairing and paired uncertainty cannot be reconstructed from the
+archived Markdown.
 
 ## Expression Parity
 

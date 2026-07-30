@@ -1,5 +1,10 @@
 # einf vs einops vs einx Benchmark
 
+> Historical descriptive artifact. This Markdown retains marginal summaries,
+> not observation-level pairing or inferential intervals. Numeric tables are
+> preserved as captured; marginal IQR overlap or separation is not a
+> significance test.
+
 ## Configuration
 
 - Python: `3.11.10`
@@ -16,8 +21,8 @@
 - warmup calls: `4`
 - warm repeats per round: `5`
 - warm iterations per repeat: `60`
-- aggregated cold samples per available library: `18`
-- aggregated warm samples per available library: `30`
+- cold observations per available library: `18`
+- warm observations per available library: `30`
 - table units: `ms`
 - `cold`: op construction + first execution
 - `warm`: post-warmup steady-state per-call latency
@@ -25,10 +30,11 @@
 ## Methodology
 
 - For each case, balanced round orders rotate libraries through first/middle/last positions deterministically.
-- Cold validation uses outputs captured during timed cold samples.
+- Cold validation uses outputs captured during timed cold observations.
 - Warm timing runs paired per-call execution on the same logical input while using independently materialized per-library tensors.
+- Each warm observation is the arithmetic mean of 60 timed calls in one repeat.
 - Within each round, per-call library order rotates from the reported base order to spread position bias.
-- Per-library summaries aggregate all samples across order rounds.
+- Per-library summaries aggregate all observations across order rounds.
 
 ## Results
 
@@ -274,4 +280,3 @@ Round median summaries (ms):
 
 - Cold and warm compare runs use the same logical workload while keeping physical input storage independent per library.
 - Comparisons are only meaningful when all libraries are available in one environment.
-
