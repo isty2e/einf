@@ -17,14 +17,16 @@ instead of starting the server.
 
 1. run `einf-lsp` alongside your primary Python language server,
 2. let the primary Python server handle Python typing and navigation,
-3. use `einf-lsp` for `einf` semantics, semantic tokens, hover metadata,
-   and inlay hints.
+3. use `einf-lsp` for the semantic features that the editor can route to it:
+   diagnostics, semantic tokens, hover metadata, and inlay hints.
 
 For editors that can comfortably run multiple language servers, keep
 `einf-lsp` focused on `einf` semantics and leave external checker
 execution to the primary Python toolchain.
 
-Per-editor setup lives under [Editors](editors/index.md).
+Editor clients differ in which capabilities they support and how they select
+between overlapping servers. Per-editor setup and limitations live under
+[Editors](editors/index.md).
 
 ## Configuration
 
@@ -74,7 +76,7 @@ metadata without paying the full semantic-analysis cost.
 
 | Editor | Status | Notes |
 | --- | --- | --- |
-| Helix | Supported | Clean documented sidecar path. |
+| Helix | Partial | Diagnostics and inlay hints are routable; hover has a server-ownership tradeoff and semantic tokens are unavailable. |
 | Zed | Adapter needed | Zed's sidecar model fits `einf-lsp`, but its settings target recognized adapters and this repository does not ship one yet. |
 | VS Code | Not first-class yet | A thin extension is the intended supported path. |
 

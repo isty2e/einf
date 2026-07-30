@@ -61,7 +61,7 @@ matmul(x, w)  # -> (2, 3, 5)
 | Core DSL runtime (`rearrange`, `reduce`, `contract`, `einop`) | Stable |
 | Validator CLI (`einf-validate`) | Stable |
 | `einf-lsp` sidecar | Supported |
-| Helix integration | Supported |
+| Helix integration | Partial |
 | Zed integration | Adapter needed |
 | VS Code integration | Not first-class yet |
 | Benchmark tooling | Supported for dev and release gates |
