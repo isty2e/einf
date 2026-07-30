@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 from einf.axis import AxisSide
 from einf.backend import (
+    BACKEND_POLICY,
     BACKEND_RESOLVER,
     BackendExecutionIdentity,
     BackendProfile,
@@ -323,6 +324,10 @@ class AbstractPlan:
         tensors: tuple[TensorLike, ...],
     ) -> RunnerKernel:
         """Build one runner kernel from one symbolic plan."""
+        self._validate_symbolic_plan_backend_profile(
+            symbolic_plan=symbolic_plan,
+            context=context,
+        )
         if symbolic_plan.kind == "route" and not symbolic_plan.steps:
             output_indices = self._resolve_route_output_indices(
                 context=context,
@@ -340,6 +345,23 @@ class AbstractPlan:
             output_arity=symbolic_plan.output_arity,
             runtime_steps=runtime_steps,
             fusions=fusions,
+        )
+
+    def _validate_symbolic_plan_backend_profile(
+        self,
+        *,
+        symbolic_plan: SymbolicPlan,
+        context: RuntimeSpecializationContext,
+    ) -> None:
+        """Validate selected-plan requirements against the resolved backend."""
+        if not symbolic_plan.requires_einsum_backend:
+            return
+        backend_profile = context.backend_profile
+        if backend_profile is None:
+            raise RuntimeError("symbolic plan validation requires a backend profile")
+        BACKEND_POLICY.validate_einsum_capability(
+            profile=backend_profile,
+            op_name=self.op_name,
         )
 
     def execute(

@@ -14,7 +14,23 @@ from .namespace import (
 )
 
 _STRICT_VIEW_FAMILIES = frozenset(("numpy", "torch"))
-_EINSUM_REQUIRED_OPS = frozenset(("contract", "einop"))
+_EINSUM_REQUIRED_OPS = frozenset(("contract",))
+
+
+def _missing_einsum_extension_error(operation: str) -> ValidationError:
+    return ValidationError(
+        code=ErrorCode.BACKEND_REQUIRED_EXTENSION_MISSING,
+        message=(
+            "backend required extension missing: "
+            f"{operation} requires an einsum-capable backend extension"
+        ),
+        help=(
+            "use an einsum-capable backend family "
+            "or avoid operations requiring contraction lowering"
+        ),
+        related=("backend capability",),
+        data={"operation": operation},
+    )
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -24,7 +40,7 @@ class BackendExecutionIdentity:
     namespace: ArrayNamespaceLike
     namespace_id: str
     backend_family: BackendFamily | None
-    supports_contract_einsum: bool
+    supports_einsum: bool
     supports_strict_view: bool
 
     def __hash__(self) -> int:
@@ -33,7 +49,7 @@ class BackendExecutionIdentity:
                 id(self.namespace),
                 self.namespace_id,
                 self.backend_family,
-                self.supports_contract_einsum,
+                self.supports_einsum,
                 self.supports_strict_view,
             )
         )
@@ -45,7 +61,7 @@ class BackendExecutionIdentity:
             self.namespace is other.namespace
             and self.namespace_id == other.namespace_id
             and self.backend_family == other.backend_family
-            and self.supports_contract_einsum == other.supports_contract_einsum
+            and self.supports_einsum == other.supports_einsum
             and self.supports_strict_view == other.supports_strict_view
         )
 
@@ -57,7 +73,7 @@ class BackendProfile:
     namespace: ArrayNamespaceLike
     namespace_id: str
     backend_family: BackendFamily | None
-    supports_contract_einsum: bool
+    supports_einsum: bool
     supports_strict_view: bool
     execution_identity: BackendExecutionIdentity = field(init=False)
 
@@ -69,14 +85,14 @@ class BackendProfile:
                 namespace=self.namespace,
                 namespace_id=self.namespace_id,
                 backend_family=self.backend_family,
-                supports_contract_einsum=self.supports_contract_einsum,
+                supports_einsum=self.supports_einsum,
                 supports_strict_view=self.supports_strict_view,
             ),
         )
 
 
 class BackendPolicy:
-    """Operation-level backend capability policy."""
+    """Backend capability policy for operations and selected plans."""
 
     def normalize_operation_name(self, op_name: str) -> str:
         """Normalize and validate one operation name for backend checks."""
@@ -94,24 +110,23 @@ class BackendPolicy:
         normalized_op_name = self.normalize_operation_name(op_name)
         if (
             normalized_op_name in _EINSUM_REQUIRED_OPS
-            and not profile.supports_contract_einsum
+            and not profile.supports_einsum
         ):
-            raise ValidationError(
-                code=ErrorCode.BACKEND_REQUIRED_EXTENSION_MISSING,
-                message=(
-                    "backend required extension missing: "
-                    f"{normalized_op_name} requires an einsum-capable backend extension"
-                ),
-                help=(
-                    "use an einsum-capable backend family "
-                    "or avoid operations requiring contraction lowering"
-                ),
-                related=("backend capability",),
-                data={"operation": normalized_op_name},
-            )
+            raise _missing_einsum_extension_error(normalized_op_name)
 
-    def supports_contract_einsum(self, backend_family: BackendFamily) -> bool:
-        """Return whether one backend family supports contract einsum."""
+    def validate_einsum_capability(
+        self,
+        *,
+        profile: BackendProfile,
+        op_name: str,
+    ) -> None:
+        """Validate a selected plan's einsum requirement."""
+        normalized_op_name = self.normalize_operation_name(op_name)
+        if not profile.supports_einsum:
+            raise _missing_einsum_extension_error(normalized_op_name)
+
+    def supports_einsum(self, backend_family: BackendFamily) -> bool:
+        """Return whether one backend family supports einsum execution."""
         try:
             return bool(oe_backends.has_einsum(backend_family))
         except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
@@ -193,9 +208,9 @@ class BackendResolver:
         namespace = namespaces[0]
         namespace_id = namespace_ids[0]
         backend_family = infer_backend_family(namespace_id)
-        supports_contract = (
+        supports_einsum = (
             backend_family is not None
-            and self.policy.supports_contract_einsum(backend_family)
+            and self.policy.supports_einsum(backend_family)
         )
         supports_view = self.policy.supports_strict_view(
             namespace_id=namespace_id,
@@ -205,7 +220,7 @@ class BackendResolver:
             namespace=namespace,
             namespace_id=namespace_id,
             backend_family=backend_family,
-            supports_contract_einsum=supports_contract,
+            supports_einsum=supports_einsum,
             supports_strict_view=supports_view,
         )
 

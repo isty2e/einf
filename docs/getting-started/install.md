@@ -35,20 +35,20 @@ names:
 | `repeat` | Yes | `reshape`, `expand_dims`, `broadcast_to` | NumPy, PyTorch, `array-api-strict` |
 | `reduce` | Yes for named reducers | Selected reducer, or a backend-compatible callable | NumPy, PyTorch, `array-api-strict` |
 | `contract` | No | An `einsum` implementation recognized by `opt_einsum` | NumPy, PyTorch |
-| `einop` | No | The current runtime requires recognized `einsum`, plus every selected step capability | NumPy, PyTorch |
+| `einop` | Plan-dependent | Every capability required by its selected steps | NumPy, PyTorch, `array-api-strict` for non-contraction plans |
 
 `array-api-strict` is a test-only minimal implementation of the standard. Its
-CI coverage verifies that `rearrange`, `repeat`, and named `reduce` do not
-accidentally depend on NumPy- or PyTorch-only behavior. It is not a runtime
-dependency or an end-user backend.
+CI coverage verifies that `rearrange`, `repeat`, named `reduce`, and
+non-contraction `einop` plans do not accidentally depend on NumPy- or
+PyTorch-only behavior. It is not a runtime dependency or an end-user backend.
 
 Other Array API namespaces take the same protocol path. A namespace with the
-required standard methods can run the three portable operations. If its
-backend family is recognized by `einf` and provides an `einsum` implementation
-discoverable by `opt_einsum`, it can run `contract` and `einop` as well. These
-capability checks allow implementations such as JAX, Dask, or MLX to work
-without a dedicated `einf` adapter, but only NumPy and PyTorch receive full
-named-backend CI coverage.
+required standard methods can run the three portable operations and `einop`
+plans composed from them. `contract` and contraction-bearing `einop` plans
+additionally require a backend family recognized by `einf` with an `einsum`
+implementation discoverable by `opt_einsum`. These capability checks allow
+implementations such as JAX, Dask, or MLX to work without a dedicated `einf`
+adapter, but only NumPy and PyTorch receive full named-backend CI coverage.
 
 `view` is stricter than the other operations: it succeeds only when `einf` can
 prove that the result shares storage with the input. NumPy and PyTorch have

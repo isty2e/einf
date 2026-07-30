@@ -391,6 +391,10 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
         except ValidationError:
             return ()
 
+    def requires_einsum_backend(self) -> bool:
+        """Return that einsum steps require an einsum-capable backend."""
+        return True
+
     def specialize(
         self,
         context: RuntimeSpecializationContext,

@@ -157,6 +157,10 @@ class SymbolicStep(ABC, Generic[StepProgramT_co]):
         """Return whether step specialization changes with runtime input shapes."""
         return False
 
+    def requires_einsum_backend(self) -> bool:
+        """Return whether this step requires an einsum-capable backend."""
+        return False
+
     @abstractmethod
     def specialize(
         self,

@@ -97,8 +97,9 @@ is in — the reuse just happens.
 The same op can transfer across Array API-compatible implementations without
 redefinition. The runtime picks the namespace from the input tensor's type and
 checks the capabilities required by the operation. Portable `rearrange`,
-`repeat`, and named `reduce` behavior is tested against `array-api-strict`;
-NumPy and PyTorch additionally have full named-backend CI coverage. See the
+`repeat`, named `reduce`, and non-contraction `einop` behavior is tested against
+`array-api-strict`; NumPy and PyTorch additionally have full named-backend CI
+coverage. See the
 [runtime backend matrix](../getting-started/install.md#runtime-backend-support).
 
 ```python
