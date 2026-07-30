@@ -37,7 +37,9 @@ More concretely:
 The shared compare harness supports synchronous CPU outputs. It rejects
 asynchronous device outputs instead of reporting incomplete eager-launch
 latency. Supporting an asynchronous backend requires explicit synchronization
-before the timer stops and a distinct synchronized metric label.
+both before the timer starts, to drain queued work, and after the library call,
+before the timer stops. Reports must label that interval as synchronized
+latency.
 
 Diagnostic scripts under `benchmarks/audit/` and `benchmarks/profile/` may
 define broader task-specific timed regions; their own methodology is
