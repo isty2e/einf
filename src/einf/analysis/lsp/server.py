@@ -367,7 +367,7 @@ async def _check_document_state(
         updated = current.with_checker_result(result)
         service.commit_document_state(updated)
         _publish_document_state(ls, updated)
-        _log_checker_failures(ls, result.failures)
+        _report_checker_failures(ls, result.failures)
         return True
 
     return await ls.einf_checker_coordinator.check(
@@ -458,10 +458,14 @@ def _range_from_span(
     return position_codec.to_lsp_range(span)
 
 
-def _log_checker_failures(
+def _report_checker_failures(
     ls: EinfLanguageServer,
     checker_failures: tuple[CheckerFailure, ...],
 ) -> None:
+    if not checker_failures:
+        return
+
+    summaries: list[str] = []
     for checker_failure in checker_failures:
         ls.window_log_message(
             lsp.LogMessageParams(
@@ -472,6 +476,17 @@ def _log_checker_failures(
                 ),
             )
         )
+        summaries.append(f"[{checker_failure.tool}] {checker_failure.kind}")
+    ls.window_show_message(
+        lsp.ShowMessageParams(
+            type=lsp.MessageType.Warning,
+            message=(
+                "Fallback checker coverage is incomplete:\n"
+                + "\n".join(summaries)
+                + "\nSee the einf LSP logs for details."
+            ),
+        )
+    )
 
 
 __all__ = ["SEMANTIC_TOKENS_LEGEND", "EinfLanguageServer", "build_server"]

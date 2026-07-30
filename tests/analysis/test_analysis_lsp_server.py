@@ -16,6 +16,7 @@ from einf.analysis.checkers import (
     CheckerDiagnostic,
     CheckerExecutionPolicy,
     CheckerExecutor,
+    CheckerFailure,
     CheckerRequest,
     CheckerResult,
 )
@@ -347,7 +348,7 @@ def test_server_reports_debounced_publication_failure_and_keeps_committed_state(
     asyncio.run(scenario())
 
 
-def test_server_commits_and_publishes_checker_result_for_current_state(
+def test_server_commits_publishes_and_reports_checker_result_for_current_state(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -366,7 +367,19 @@ def test_server_commits_and_publishes_checker_result_for_current_state(
             severity="warning",
             span=None,
         )
-        result = CheckerResult(diagnostics=(diagnostic,), failures=())
+        failures = (
+            CheckerFailure(
+                tool="stub",
+                kind="timeout",
+                message="checker timed out",
+            ),
+            CheckerFailure(
+                tool="other",
+                kind="unavailable",
+                message="checker executable not found",
+            ),
+        )
+        result = CheckerResult(diagnostics=(diagnostic,), failures=failures)
         server = EinfLanguageServer()
         server.einf_service = LspService()
         server.einf_checker_coordinator = _coordinator(result)
@@ -376,11 +389,15 @@ def test_server_commits_and_publishes_checker_result_for_current_state(
             version=1,
         )
         published_diagnostic_counts: list[int] = []
+        logged: list[lsp.LogMessageParams] = []
+        shown: list[lsp.ShowMessageParams] = []
         monkeypatch.setattr(
             server,
             "text_document_publish_diagnostics",
             lambda params: published_diagnostic_counts.append(len(params.diagnostics)),
         )
+        monkeypatch.setattr(server, "window_log_message", logged.append)
+        monkeypatch.setattr(server, "window_show_message", shown.append)
 
         checked = await _check_document_state(server, state=state)
         committed = server.einf_service.get_document_state(uri=state.uri)
@@ -391,6 +408,27 @@ def test_server_commits_and_publishes_checker_result_for_current_state(
         assert committed.checker_result == result
         assert committed.report.checker_diagnostics == (diagnostic,)
         assert published_diagnostic_counts == [1]
+        assert logged == [
+            lsp.LogMessageParams(
+                type=lsp.MessageType.Warning,
+                message="[stub] timeout: checker timed out",
+            ),
+            lsp.LogMessageParams(
+                type=lsp.MessageType.Warning,
+                message="[other] unavailable: checker executable not found",
+            ),
+        ]
+        assert shown == [
+            lsp.ShowMessageParams(
+                type=lsp.MessageType.Warning,
+                message=(
+                    "Fallback checker coverage is incomplete:\n"
+                    "[stub] timeout\n"
+                    "[other] unavailable\n"
+                    "See the einf LSP logs for details."
+                ),
+            )
+        ]
 
     asyncio.run(scenario())
 
@@ -401,7 +439,16 @@ def test_server_rejects_checker_result_for_stale_document_state(
 ) -> None:
     async def scenario() -> None:
         path = tmp_path / "sample.py"
-        result = CheckerResult(diagnostics=(), failures=())
+        result = CheckerResult(
+            diagnostics=(),
+            failures=(
+                CheckerFailure(
+                    tool="stub",
+                    kind="timeout",
+                    message="stale checker failure",
+                ),
+            ),
+        )
         server = EinfLanguageServer()
         server.einf_service = LspService()
         server.einf_checker_coordinator = _coordinator(result)
@@ -416,11 +463,15 @@ def test_server_rejects_checker_result_for_stale_document_state(
             version=2,
         )
         published_versions: list[int | None] = []
+        logged: list[lsp.LogMessageParams] = []
+        shown: list[lsp.ShowMessageParams] = []
         monkeypatch.setattr(
             server,
             "text_document_publish_diagnostics",
             lambda params: published_versions.append(params.version),
         )
+        monkeypatch.setattr(server, "window_log_message", logged.append)
+        monkeypatch.setattr(server, "window_show_message", shown.append)
 
         checked = await _check_document_state(server, state=stale_state)
         committed = server.einf_service.get_document_state(uri=stale_state.uri)
@@ -431,5 +482,7 @@ def test_server_rejects_checker_result_for_stale_document_state(
         assert committed is not None
         assert committed.checker_result is None
         assert published_versions == []
+        assert logged == []
+        assert shown == []
 
     asyncio.run(scenario())
