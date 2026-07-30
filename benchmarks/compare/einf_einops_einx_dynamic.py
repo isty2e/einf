@@ -2,6 +2,7 @@
 """Compare einf/einops/einx on dynamic-shape batches."""
 
 import argparse
+import json
 import platform
 from pathlib import Path
 
@@ -12,13 +13,17 @@ from benchmarks.harness import (
     BackendSpec,
     BenchmarkCase,
     BenchmarkRunner,
+    BenchSizes,
     CaseCalls,
+    DynamicCaseResult,
     DynamicCaseSpec,
     DynamicTaskConfig,
     MarkdownPrinter,
     Profiler,
     TensorGenerator,
     TestResult,
+    TimingSummary,
+    UnavailableRun,
     dynamic_sizes_for_scale,
 )
 from benchmarks.shared import as_single_array, available_libraries, version_or_missing
@@ -35,7 +40,7 @@ except ImportError:
     einx = None
 
 
-def _build_case_specs(*, sizes) -> list[DynamicCaseSpec]:
+def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
     b, n, d, h, w, r, j = axes("b", "n", "d", "h", "w", "r", "j")
 
     def ref_rearrange_transpose(inputs):
@@ -360,6 +365,144 @@ def _build_case_specs(*, sizes) -> list[DynamicCaseSpec]:
     ]
 
 
+def _summary_payload(summary: TimingSummary) -> dict[str, int | float]:
+    return {
+        "count": summary.count,
+        "p25_ms": summary.p25_ms,
+        "median_ms": summary.median_ms,
+        "p75_ms": summary.p75_ms,
+        "iqr_ms": summary.iqr_ms,
+        "p95_ms": summary.p95_ms,
+        "mean_ms": summary.mean_ms,
+        "min_ms": summary.min_ms,
+        "max_ms": summary.max_ms,
+    }
+
+
+def _raw_payload(
+    *,
+    config: DynamicTaskConfig,
+    sizes: BenchSizes,
+    case_results: list[DynamicCaseResult],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "benchmark": "einf-vs-einops-einx-dynamic",
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "numpy": version_or_missing("numpy"),
+            "torch": version_or_missing("torch"),
+            "einops": version_or_missing("einops"),
+            "einx": version_or_missing("einx"),
+            "einf": version_or_missing("einf"),
+        },
+        "configuration": {
+            "backend": config.backend,
+            "scale": config.scale,
+            "seed": config.seed,
+            "round_order_seed": config.round_order_seed,
+            "batches": config.batches,
+            "warmup_batches": config.warmup_batches,
+            "repeats": config.repeats,
+            "rounds": config.rounds,
+            "parity_checks": config.parity_checks,
+            "base_sizes": {
+                "b": sizes.b,
+                "n": sizes.n,
+                "d": sizes.d,
+                "h": sizes.h,
+                "w": sizes.w,
+                "r": sizes.r,
+                "j": sizes.j,
+            },
+        },
+        "cases": [
+            {
+                "case": {
+                    "name": case_result.case.name,
+                    "description": case_result.case.description,
+                    "calls": {
+                        "einf": case_result.case.calls.einf,
+                        "einops": case_result.case.calls.einops,
+                        "einx": case_result.case.calls.einx,
+                    },
+                },
+                "runs": {
+                    library: (
+                        {
+                            "status": "unavailable",
+                            "reason": run.reason,
+                        }
+                        if isinstance(run, UnavailableRun)
+                        else {
+                            "status": "available",
+                            "summary": _summary_payload(run.summary),
+                            "round_summaries": [
+                                _summary_payload(round_summary)
+                                for round_summary in run.round_summaries
+                            ],
+                        }
+                    )
+                    for library, run in case_result.runs.items()
+                },
+                "round_orders": [
+                    list(round_order) for round_order in case_result.round_orders
+                ],
+                "observations": [
+                    {
+                        "round_index": observation.round_index,
+                        "measured_batch_index": observation.measured_batch_index,
+                        "repeat_index": observation.repeat_index,
+                        "library": observation.library,
+                        "order_position": observation.order_position,
+                        "latency_ms": observation.latency_ms,
+                    }
+                    for observation in case_result.observations
+                ],
+                "comparisons": [
+                    {
+                        "baseline": comparison.baseline,
+                        "competitor": comparison.competitor,
+                        "call_pair_count": comparison.call_pair_count,
+                        "paired_batch_count": comparison.paired_batch_count,
+                        "latency_ratio": comparison.latency_ratio,
+                        "confidence_level": comparison.confidence_level,
+                        "confidence_interval": {
+                            "low": comparison.confidence_interval_low,
+                            "high": comparison.confidence_interval_high,
+                        },
+                        "bootstrap_resamples": comparison.bootstrap_resamples,
+                        "bootstrap_seed": comparison.bootstrap_seed,
+                    }
+                    for comparison in case_result.comparisons
+                ],
+            }
+            for case_result in case_results
+        ],
+    }
+
+
+def _resolve_raw_output_path(
+    *,
+    output: Path | None,
+    raw_output: Path | None,
+) -> Path | None:
+    if raw_output is not None:
+        if output is not None and raw_output == output:
+            raise ValueError("--output and --raw-output must use different paths")
+        return raw_output
+    if output is None:
+        return None
+    derived_path = output.with_suffix(".json")
+    if derived_path == output:
+        raise ValueError(
+            "--output must have a non-JSON suffix when --raw-output is omitted"
+        )
+    return derived_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Dynamic-shape benchmark for einf vs einops vs einx.",
@@ -404,6 +547,12 @@ def main() -> int:
         default=None,
         help="Optional markdown output path.",
     )
+    parser.add_argument(
+        "--raw-output",
+        type=Path,
+        default=None,
+        help="Optional raw JSON path; defaults to --output with a .json suffix.",
+    )
     args = parser.parse_args()
 
     if args.batches < 1:
@@ -414,6 +563,10 @@ def main() -> int:
         raise ValueError(
             "warmup-batches must be less than batches to leave measured batches"
         )
+    if args.batches - args.warmup_batches < 2:
+        raise ValueError(
+            "dynamic paired comparison requires at least two measured batches per round"
+        )
     if args.repeats < 1:
         raise ValueError(f"repeats must be >= 1, got {args.repeats}")
     if args.rounds < 1:
@@ -421,6 +574,10 @@ def main() -> int:
 
     round_order_seed = (
         args.seed if args.round_order_seed is None else args.round_order_seed
+    )
+    raw_output_path = _resolve_raw_output_path(
+        output=args.output,
+        raw_output=args.raw_output,
     )
     backend_name: BackendName = args.backend
     backend = BackendSpec(name=backend_name)
@@ -457,7 +614,10 @@ def main() -> int:
     ]
 
     measured_batches_per_repeat = args.batches - args.warmup_batches
-    total_samples_per_library = measured_batches_per_repeat * args.repeats * args.rounds
+    call_observations_per_library = (
+        measured_batches_per_repeat * args.repeats * args.rounds
+    )
+    paired_batch_units_per_library = measured_batches_per_repeat * args.rounds
 
     result = TestResult(
         title="# einf vs einops vs einx Dynamic-Shape Benchmark",
@@ -481,18 +641,29 @@ def main() -> int:
             f"repeats per round: `{args.repeats}`",
             f"rounds: `{args.rounds}`",
             f"measured batches per repeat: `{measured_batches_per_repeat}`",
-            f"expected samples per library/case: `{total_samples_per_library}`",
+            (f"call observations per library/case: `{call_observations_per_library}`"),
+            (
+                "paired batch units per library/case: "
+                f"`{paired_batch_units_per_library}`"
+            ),
             "table units: `ms`",
+            *(
+                [f"raw JSON artifact: `{raw_output_path}`"]
+                if raw_output_path is not None
+                else []
+            ),
         ],
         methodology=[
             "Timing uses eager CPU wall-clock latency for each library call; output observation is excluded.",
             "Each case uses deterministic dynamic inputs generated by seeded `RandomState`.",
             "In each round, every measured batch is executed in paired cross-library order on the same logical batch stream.",
-            "Latency is sampled per post-warmup batch call (no repeat-level averaging).",
+            "Raw latency is sampled per post-warmup batch call without repeat-level averaging.",
             "Each library receives independently materialized backend batches to avoid cross-library input locality artifacts.",
             "Within each round, per-batch library order rotates from the reported base order to spread position bias.",
-            "Round summaries expose residual order-sensitive variation; aggregate stats pool all per-batch samples across rounds.",
-            "Reported stats: `count`, `p25`, `median`, `p75`, `p95`, `mean`, `min`, `max`.",
+            "Marginal summaries pool call observations; their IQRs describe distributions and are not significance tests.",
+            "Paired comparisons average repeats within each round/batch unit, then report the competitor/einf ratio of mean latencies.",
+            "95% intervals use deterministic paired batch bootstrap resampling stratified by round.",
+            "Reported marginal stats: `count`, `p25`, `median`, `p75`, `p95`, `mean`, `min`, `max`.",
         ],
         case_results=case_results,
         notes=[
@@ -505,9 +676,25 @@ def main() -> int:
     report = MarkdownPrinter().render_dynamic(result)
     print(report)
 
+    if raw_output_path is not None:
+        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path.write_text(
+            json.dumps(
+                _raw_payload(
+                    config=config,
+                    sizes=sizes,
+                    case_results=case_results,
+                ),
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"\nWrote raw observations: {raw_output_path}")
+
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(report + "\n")
+        args.output.write_text(report + "\n", encoding="utf-8")
         print(f"\nWrote report: {args.output}")
 
     return 0

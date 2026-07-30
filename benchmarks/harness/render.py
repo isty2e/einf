@@ -1,6 +1,18 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from .result import CaseResult, TestResult, TimingSummary
+from .result import (
+    DynamicCaseResult,
+    DynamicRun,
+    FixedCaseResult,
+    FixedRun,
+    TestResult,
+    TimingSummary,
+    UnavailableRun,
+)
+from .types import LibraryName
+
+_LIBRARY_NAMES: tuple[LibraryName, ...] = ("einf", "einops", "einx")
 
 
 def _format_summary(summary: TimingSummary | None) -> str:
@@ -15,8 +27,8 @@ def _format_summary(summary: TimingSummary | None) -> str:
 def _format_round_medians(
     *,
     round_summaries: tuple[TimingSummary, ...] | None,
-    library_names: tuple[str, ...],
-    resolver,
+    library_names: tuple[LibraryName, ...],
+    resolver: Callable[[LibraryName, int], TimingSummary | None],
 ) -> list[str]:
     if round_summaries is None:
         return []
@@ -37,7 +49,7 @@ def _format_round_medians(
 class MarkdownPrinter:
     """Render benchmark test results to markdown."""
 
-    def _render_fixed_case_table(self, case_result: CaseResult) -> str:
+    def _render_fixed_case_table(self, case_result: FixedCaseResult) -> str:
         lines = [
             f"### {case_result.case.name}",
             "",
@@ -63,9 +75,9 @@ class MarkdownPrinter:
                 "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
-        for lib_name in ("einf", "einops", "einx"):
+        for lib_name in _LIBRARY_NAMES:
             run = case_result.runs[lib_name]
-            if not run.available:
+            if isinstance(run, UnavailableRun):
                 lines.append(
                     f"| {lib_name} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a ({run.reason}) |"
                 )
@@ -74,9 +86,11 @@ class MarkdownPrinter:
                 f"| {lib_name} | {_format_summary(run.cold)} | {_format_summary(run.warm)} |"
             )
 
-        def resolve_warm_round(lib_name: str, round_index: int) -> TimingSummary | None:
+        def resolve_warm_round(
+            lib_name: LibraryName, round_index: int
+        ) -> TimingSummary | None:
             run = case_result.runs[lib_name]
-            if not run.available or run.warm_rounds is None:
+            if not isinstance(run, FixedRun):
                 return None
             return run.warm_rounds[round_index]
 
@@ -85,18 +99,18 @@ class MarkdownPrinter:
                 (
                     run.warm_rounds
                     for run in case_result.runs.values()
-                    if run.available and run.warm_rounds is not None
+                    if isinstance(run, FixedRun)
                 ),
                 None,
             ),
-            library_names=("einf", "einops", "einx"),
+            library_names=_LIBRARY_NAMES,
             resolver=resolve_warm_round,
         )
         lines.extend(warm_round_lines)
         lines.append("")
         return "\n".join(lines)
 
-    def _render_dynamic_case_table(self, case_result: CaseResult) -> str:
+    def _render_dynamic_case_table(self, case_result: DynamicCaseResult) -> str:
         lines = [
             f"### {case_result.case.name}",
             "",
@@ -108,25 +122,45 @@ class MarkdownPrinter:
             f"- `einops`: `{case_result.case.calls.einops}`",
             f"- `einx`: `{case_result.case.calls.einx}`",
             "",
-            "| Library | Samples | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
+            "| Library | Call observations | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
-        for lib_name in ("einf", "einops", "einx"):
+        for lib_name in _LIBRARY_NAMES:
             run = case_result.runs[lib_name]
-            if not run.available:
+            if isinstance(run, UnavailableRun):
                 lines.append(
                     f"| {lib_name} | n/a ({run.reason}) | - | - | - | - | - | - | - |"
                 )
                 continue
-            summary = run.dynamic
-            if summary is None:
-                lines.append(f"| {lib_name} | n/a | - | - | - | - | - | - | - |")
-                continue
+            summary = run.summary
             lines.append(
                 f"| {lib_name} | {summary.count} | {summary.median_ms:.4f} | "
                 f"{summary.mean_ms:.4f} | {summary.p25_ms:.4f} | {summary.p75_ms:.4f} | "
                 f"{summary.p95_ms:.4f} | {summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
+
+        if case_result.comparisons:
+            lines.extend(
+                [
+                    "",
+                    "Paired latency ratios (competitor / einf):",
+                    "",
+                    "| Comparison | Call pairs | Paired batch units | Ratio | Bootstrap level | Bootstrap interval | Difference |",
+                    "|---|---:|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for comparison in case_result.comparisons:
+                percent_difference = (comparison.latency_ratio - 1.0) * 100.0
+                lines.append(
+                    f"| {comparison.competitor} / {comparison.baseline} | "
+                    f"{comparison.call_pair_count} | "
+                    f"{comparison.paired_batch_count} | "
+                    f"{comparison.latency_ratio:.4f} | "
+                    f"{comparison.confidence_level:.0%} | "
+                    f"[{comparison.confidence_interval_low:.4f}, "
+                    f"{comparison.confidence_interval_high:.4f}] | "
+                    f"{percent_difference:+.2f}% |"
+                )
 
         lines.extend(
             ["", "Round base order (paired execution rotates within each round):", ""]
@@ -141,30 +175,30 @@ class MarkdownPrinter:
             lines.append(f"- ... `{hidden}` additional rounds omitted for brevity")
 
         def resolve_dynamic_round(
-            lib_name: str, round_index: int
+            lib_name: LibraryName, round_index: int
         ) -> TimingSummary | None:
             run = case_result.runs[lib_name]
-            if not run.available or run.dynamic_rounds is None:
+            if not isinstance(run, DynamicRun):
                 return None
-            return run.dynamic_rounds[round_index]
+            return run.round_summaries[round_index]
 
         dynamic_round_lines = _format_round_medians(
             round_summaries=next(
                 (
-                    run.dynamic_rounds
+                    run.round_summaries
                     for run in case_result.runs.values()
-                    if run.available and run.dynamic_rounds is not None
+                    if isinstance(run, DynamicRun)
                 ),
                 None,
             ),
-            library_names=("einf", "einops", "einx"),
+            library_names=_LIBRARY_NAMES,
             resolver=resolve_dynamic_round,
         )
         lines.extend(dynamic_round_lines)
         lines.append("")
         return "\n".join(lines)
 
-    def render_fixed(self, result: TestResult) -> str:
+    def render_fixed(self, result: TestResult[FixedCaseResult]) -> str:
         """Render one fixed benchmark report."""
         lines = [result.title, "", "## Configuration", ""]
         lines.extend(f"- {entry}" for entry in result.configuration)
@@ -178,7 +212,7 @@ class MarkdownPrinter:
         lines.append("")
         return "\n".join(lines)
 
-    def render_dynamic(self, result: TestResult) -> str:
+    def render_dynamic(self, result: TestResult[DynamicCaseResult]) -> str:
         """Render one dynamic benchmark report."""
         lines = [result.title, "", "## Configuration", ""]
         lines.extend(f"- {entry}" for entry in result.configuration)

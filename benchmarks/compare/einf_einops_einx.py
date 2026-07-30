@@ -496,6 +496,7 @@ def main() -> int:
             "For each case, balanced round orders rotate libraries through first/middle/last positions deterministically.",
             "Cold validation uses outputs captured during timed cold samples.",
             "Warm timing runs paired per-call execution on the same logical input while using independently materialized per-library tensors.",
+            "Each warm sample is the arithmetic mean of the configured timed calls in one repeat.",
             "Within each round, per-call library order rotates from the reported base order to spread position bias.",
             "Per-library summaries aggregate all samples across order rounds.",
         ],

@@ -5,11 +5,22 @@ import numpy as np
 
 from .backend import BackendSpec
 from .case import BenchmarkCase, DynamicCaseSpec, FixedCaseSpec, RunnerFactory
+from .comparison import compare_paired_observations
 from .config import DynamicTaskConfig, FixedTaskConfig
 from .generator import TensorGenerator
 from .profiler import Profiler
-from .result import CaseResult, LibraryRun, TimingSummary
-from .types import Array, Runner
+from .result import (
+    DynamicCaseResult,
+    DynamicObservation,
+    DynamicRun,
+    DynamicRunResult,
+    FixedCaseResult,
+    FixedRun,
+    FixedRunResult,
+    TimingSummary,
+    UnavailableRun,
+)
+from .types import Array, LibraryName, Runner
 
 CASE_SEED_STRIDE = 1009
 ROUND_BATCH_SEED_STRIDE = 7919
@@ -25,10 +36,10 @@ class BenchmarkRunner:
 
     def _rotate_order(
         self,
-        order: tuple[str, ...],
+        order: tuple[LibraryName, ...],
         *,
         offset: int,
-    ) -> tuple[str, ...]:
+    ) -> tuple[LibraryName, ...]:
         """Rotate one round base order by offset steps."""
         if not order:
             return ()
@@ -38,16 +49,16 @@ class BenchmarkRunner:
     def _round_orders(
         self,
         *,
-        library_names: list[str],
+        library_names: list[LibraryName],
         rounds: int,
         seed: int,
-    ) -> list[tuple[str, ...]]:
+    ) -> list[tuple[LibraryName, ...]]:
         if rounds < 1:
             raise ValueError(f"rounds must be >= 1, got {rounds}")
         random_state = np.random.RandomState(seed)
         base_order = list(library_names)
         random_state.shuffle(base_order)
-        orders: list[tuple[str, ...]] = []
+        orders: list[tuple[LibraryName, ...]] = []
         for round_index in range(rounds):
             if round_index > 0 and round_index % len(base_order) == 0:
                 random_state.shuffle(base_order)
@@ -56,7 +67,10 @@ class BenchmarkRunner:
             orders.append(tuple(order))
         return orders
 
-    def _libraries_for_case(self, case: BenchmarkCase) -> dict[str, RunnerFactory]:
+    def _libraries_for_case(
+        self,
+        case: BenchmarkCase,
+    ) -> dict[LibraryName, RunnerFactory]:
         return {
             "einf": case.make_einf_runner,
             "einops": case.make_einops_runner,
@@ -109,36 +123,34 @@ class BenchmarkRunner:
         case_spec: FixedCaseSpec,
         config: FixedTaskConfig,
         order_seed: int,
-    ) -> CaseResult:
+    ) -> FixedCaseResult:
         """Run one fixed-shape case across libraries."""
         case = case_spec.case
         runners = self._libraries_for_case(case)
         inputs = case_spec.inputs
 
-        runs: dict[str, LibraryRun] = {}
-        available_libs: list[str] = []
+        runs: dict[LibraryName, FixedRunResult] = {}
+        available_libs: list[LibraryName] = []
         for lib_name in ("einf", "einops", "einx"):
             is_available, reason = self.available[lib_name]
             if not is_available:
-                runs[lib_name] = LibraryRun(
-                    available=False,
-                    reason=reason,
-                    cold=None,
-                    warm=None,
-                    dynamic=None,
-                )
+                runs[lib_name] = UnavailableRun(reason=reason)
                 continue
             available_libs.append(lib_name)
 
         if not available_libs:
-            return CaseResult(case=case, runs=runs, round_orders=[])
+            return FixedCaseResult(case=case, runs=runs, round_orders=[])
 
-        cold_samples: dict[str, list[float]] = {name: [] for name in available_libs}
-        warm_samples: dict[str, list[float]] = {name: [] for name in available_libs}
-        warm_rounds: dict[str, list[TimingSummary]] = {
+        cold_samples: dict[LibraryName, list[float]] = {
             name: [] for name in available_libs
         }
-        validated: set[str] = set()
+        warm_samples: dict[LibraryName, list[float]] = {
+            name: [] for name in available_libs
+        }
+        warm_rounds: dict[LibraryName, list[TimingSummary]] = {
+            name: [] for name in available_libs
+        }
+        validated: set[LibraryName] = set()
         round_orders = self._round_orders(
             library_names=available_libs,
             rounds=config.rounds,
@@ -180,9 +192,13 @@ class BenchmarkRunner:
                         warm_runners[lib_name](warm_inputs[lib_name])
                     )
 
-            round_warm_samples = {lib_name: [] for lib_name in available_libs}
+            round_warm_samples: dict[LibraryName, list[float]] = {
+                lib_name: [] for lib_name in available_libs
+            }
             for repeat_index in range(config.warm_repeats):
-                elapsed_ms_by_library = {lib_name: 0.0 for lib_name in available_libs}
+                elapsed_ms_by_library: dict[LibraryName, float] = {
+                    lib_name: 0.0 for lib_name in available_libs
+                }
                 for iteration_index in range(config.warm_iterations):
                     iteration_order = self._rotate_order(
                         order,
@@ -204,16 +220,13 @@ class BenchmarkRunner:
                 )
 
         for lib_name in available_libs:
-            runs[lib_name] = LibraryRun(
-                available=True,
-                reason="available",
+            runs[lib_name] = FixedRun(
                 cold=self.profiler.summarize(cold_samples[lib_name]),
                 warm=self.profiler.summarize(warm_samples[lib_name]),
-                dynamic=None,
                 warm_rounds=tuple(warm_rounds[lib_name]),
             )
 
-        return CaseResult(
+        return FixedCaseResult(
             case=case,
             runs=runs,
             round_orders=round_orders,
@@ -235,13 +248,13 @@ class BenchmarkRunner:
         case_spec: DynamicCaseSpec,
         config: DynamicTaskConfig,
         case_index: int,
-    ) -> CaseResult:
+    ) -> DynamicCaseResult:
         """Run one dynamic-shape case across libraries."""
         case = case_spec.case
         runners = self._libraries_for_case(case)
 
-        runs: dict[str, LibraryRun] = {}
-        available_libs = [
+        runs: dict[LibraryName, DynamicRunResult] = {}
+        available_libs: list[LibraryName] = [
             lib_name
             for lib_name in ("einf", "einops", "einx")
             if self.available[lib_name][0]
@@ -249,16 +262,16 @@ class BenchmarkRunner:
         for lib_name in ("einf", "einops", "einx"):
             if self.available[lib_name][0]:
                 continue
-            runs[lib_name] = LibraryRun(
-                available=False,
-                reason=self.available[lib_name][1],
-                cold=None,
-                warm=None,
-                dynamic=None,
-            )
+            runs[lib_name] = UnavailableRun(reason=self.available[lib_name][1])
 
         if not available_libs:
-            return CaseResult(case=case, runs=runs, round_orders=[])
+            return DynamicCaseResult(
+                case=case,
+                runs=runs,
+                round_orders=[],
+                observations=(),
+                comparisons=(),
+            )
 
         round_batches = [
             self._make_dynamic_batches(
@@ -278,7 +291,16 @@ class BenchmarkRunner:
             rounds=config.rounds,
             seed=config.round_order_seed + case_index * CASE_SEED_STRIDE,
         )
-        runner_by_library: dict[str, Runner] = {
+        expected_libraries = frozenset(available_libs)
+        if any(
+            len(round_order) != len(available_libs)
+            or frozenset(round_order) != expected_libraries
+            for round_order in round_orders
+        ):
+            raise RuntimeError(
+                "dynamic benchmark round orders must be full library permutations"
+            )
+        runner_by_library: dict[LibraryName, Runner] = {
             lib_name: runners[lib_name]() for lib_name in available_libs
         }
 
@@ -296,10 +318,10 @@ class BenchmarkRunner:
                     library_name=lib_name,
                 )
 
-        samples_by_library: dict[str, list[float]] = {
+        samples_by_library: dict[LibraryName, list[float]] = {
             lib_name: [] for lib_name in available_libs
         }
-        dynamic_rounds: dict[str, list[TimingSummary]] = {
+        dynamic_rounds: dict[LibraryName, list[TimingSummary]] = {
             lib_name: [] for lib_name in available_libs
         }
         for round_index, batches in enumerate(round_batches):
@@ -337,17 +359,61 @@ class BenchmarkRunner:
                 )
 
         for lib_name in available_libs:
-            runs[lib_name] = LibraryRun(
-                available=True,
-                reason="available",
-                cold=None,
-                warm=None,
-                dynamic=self.profiler.summarize(samples_by_library[lib_name]),
-                dynamic_rounds=tuple(dynamic_rounds[lib_name]),
+            runs[lib_name] = DynamicRun(
+                summary=self.profiler.summarize(samples_by_library[lib_name]),
+                round_summaries=tuple(dynamic_rounds[lib_name]),
             )
 
-        return CaseResult(
+        measured_batch_count = config.batches - config.warmup_batches
+        expected_sample_count = (
+            len(round_orders) * config.repeats * measured_batch_count
+        )
+        sample_counts = {
+            lib_name: len(samples_by_library[lib_name]) for lib_name in available_libs
+        }
+        if any(count != expected_sample_count for count in sample_counts.values()):
+            raise RuntimeError(
+                "dynamic observation reconstruction sample count mismatch: "
+                f"expected {expected_sample_count} per library, got {sample_counts}"
+            )
+
+        observations: list[DynamicObservation] = []
+        sample_index = 0
+        # Full round permutations append every per-library list in the same
+        # round/repeat/batch coordinate order, so one shared index is sufficient.
+        for round_index, round_order in enumerate(round_orders):
+            for repeat_index in range(config.repeats):
+                for measured_batch_index in range(measured_batch_count):
+                    batch_order = self._rotate_order(
+                        round_order,
+                        offset=(
+                            repeat_index * measured_batch_count + measured_batch_index
+                        ),
+                    )
+                    for order_position, lib_name in enumerate(batch_order):
+                        observations.append(
+                            DynamicObservation(
+                                round_index=round_index,
+                                measured_batch_index=measured_batch_index,
+                                repeat_index=repeat_index,
+                                library=lib_name,
+                                order_position=order_position,
+                                latency_ms=samples_by_library[lib_name][sample_index],
+                            )
+                        )
+                    sample_index += 1
+
+        observation_tuple = tuple(observations)
+        comparisons = compare_paired_observations(
+            observations=observation_tuple,
+            libraries=tuple(available_libs),
+            baseline="einf",
+            bootstrap_seed=config.seed + case_index * CASE_SEED_STRIDE,
+        )
+        return DynamicCaseResult(
             case=case,
             runs=runs,
             round_orders=round_orders,
+            observations=observation_tuple,
+            comparisons=comparisons,
         )
