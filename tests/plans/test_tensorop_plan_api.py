@@ -20,6 +20,8 @@ def test_plan_dict_rearrange_reports_one_step() -> None:
     op = rearrange(ax[b, n, d], ax[b, d, n])
 
     plan_dict = op.plan_dict()
+    assert plan_dict["schema_version"] == "v2"
+    assert plan_dict["trace"] == ["assemble", "transform", "route", "gather"]
     assert plan_dict["kind"] == "permute"
     assert plan_dict["executable_now"] is True
 
@@ -28,6 +30,8 @@ def test_plan_dict_rearrange_reports_one_step() -> None:
 
     plan_text = op.plan()
     assert "kind: permute" in plan_text
+    assert "trace: assemble -> transform -> route -> gather" in plan_text
+    assert "\nir:" not in plan_text
     assert "1. permute" in plan_text
 
 

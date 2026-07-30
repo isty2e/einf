@@ -29,7 +29,7 @@ class PlanDict(TypedDict):
     resolution: Literal["symbolic", "concrete"]
     executable_now: bool
     blockers: list[str]
-    ir: list[str]
+    trace: list[str]
     steps: list[PlanStepDict]
 
 
@@ -62,7 +62,7 @@ def build_plan_dict(
         kind = _derive_plan_kind(symbolic_plan=candidate, steps=steps)
 
     return {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "op": op_name,
         "lhs": [axis_terms.to_dsl() for axis_terms in lhs],
         "rhs": [axis_terms.to_dsl() for axis_terms in rhs],
@@ -70,7 +70,7 @@ def build_plan_dict(
         "resolution": _plan_resolution(signature=signature, sizes=sizes),
         "executable_now": len(blockers) == 0 and candidate is not None,
         "blockers": blockers,
-        "ir": list(abstract_plan.ir_program.node_kinds()),
+        "trace": [stage.value for stage in abstract_plan.ir_program.trace],
         "steps": steps,
     }
 
@@ -99,9 +99,9 @@ def render_plan_text(plan: PlanDict) -> str:
             lines.append(f"- {blocker}")
 
     steps = plan["steps"]
-    ir_kinds = plan["ir"]
-    if ir_kinds:
-        lines.append(f"ir: {' -> '.join(ir_kinds)}")
+    trace = plan["trace"]
+    if trace:
+        lines.append(f"trace: {' -> '.join(trace)}")
     if steps:
         lines.append("steps:")
         for index, step in enumerate(steps, start=1):
