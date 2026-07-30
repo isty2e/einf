@@ -3,25 +3,29 @@
 
 import argparse
 import json
+import math
 import platform
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, cast
 
 import numpy as np
 
 from benchmarks.harness import (
     BackendSpec,
     DynamicTaskConfig,
+    PairedComparison,
     Profiler,
     TensorGenerator,
     TimingSummary,
     dynamic_sizes_for_scale,
     torch,
 )
+from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
-from benchmarks.harness.types import Array, NumpyArray, Output, Runner, TorchTensor
+from benchmarks.harness.types import Array, NumpyArray, Output, Runner
 from benchmarks.shared import as_single_array, version_or_missing
 from einf import ax, axes, einop
 
@@ -31,12 +35,18 @@ except ImportError:
     einops = None
 
 try:
-    import einx
+    import einx as _einx
 except ImportError:
     einx = None
+else:
+
+    class _EinxModule(Protocol):
+        def dot(self, expression: str, *tensors: Array) -> Output: ...
+
+    einx = cast(_EinxModule, _einx)
 
 
-ExpressionRole = Literal["equivalent", "baseline"]
+ExpressionSemantics = Literal["output_equivalent", "lower_bound"]
 Reference = Callable[[tuple[NumpyArray, ...]], Output]
 BatchFactory = Callable[[TensorGenerator], tuple[Array, ...]]
 RunnerFactory = Callable[[], Runner]
@@ -50,13 +60,22 @@ class ExpressionRunnerSpec:
     """One expression strategy benchmarked within one gap case."""
 
     name: str
-    role: ExpressionRole
+    semantics: ExpressionSemantics
     description: str
     call_repr: str
     available: bool
     reason: str
     reference: Reference
     make_runner: RunnerFactory
+
+    def __post_init__(self) -> None:
+        """Reject strategy definitions without stable display identities."""
+        if not self.name:
+            raise ValueError("expression strategy name must be non-empty")
+        if not self.reason:
+            raise ValueError(
+                "expression strategy availability reason must be non-empty"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,18 +84,63 @@ class ExpressionParityCase:
 
     name: str
     description: str
+    target_name: str
     batch_factory: BatchFactory
     runner_specs: tuple[ExpressionRunnerSpec, ...]
+
+    def __post_init__(self) -> None:
+        """Require unique strategy names and one comparison target."""
+        strategy_names = tuple(spec.name for spec in self.runner_specs)
+        if len(frozenset(strategy_names)) != len(strategy_names):
+            raise ValueError("expression strategy names must be unique")
+        if self.target_name not in strategy_names:
+            raise ValueError("expression parity target must name one strategy")
+        if self.target.semantics != "output_equivalent":
+            raise ValueError("expression parity target must be output-equivalent")
+        if not self.target.available:
+            raise ValueError("expression parity target strategy must be available")
+
+    @property
+    def target(self) -> ExpressionRunnerSpec:
+        """Return the strategy used as the paired comparison target."""
+        return next(spec for spec in self.runner_specs if spec.name == self.target_name)
 
 
 @dataclass(frozen=True, slots=True)
 class ExpressionRun:
-    """One expression strategy timing result."""
+    """Timing summaries for one available expression strategy."""
 
-    available: bool
-    reason: str
-    role: ExpressionRole
-    dynamic: TimingSummary | None
+    summary: TimingSummary
+    round_summaries: tuple[TimingSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExpressionObservation:
+    """One timed expression call with pairing and execution identity."""
+
+    round_index: int
+    measured_batch_index: int
+    repeat_index: int
+    strategy: str
+    order_position: int
+    latency_ms: float
+
+    def __post_init__(self) -> None:
+        """Reject invalid observation coordinates and timing values."""
+        for field_name, value in (
+            ("round_index", self.round_index),
+            ("measured_batch_index", self.measured_batch_index),
+            ("repeat_index", self.repeat_index),
+            ("order_position", self.order_position),
+        ):
+            if value < 0:
+                raise ValueError(f"{field_name} must be non-negative, got {value}")
+        if not self.strategy:
+            raise ValueError("strategy must be non-empty")
+        if not math.isfinite(self.latency_ms) or self.latency_ms <= 0.0:
+            raise ValueError(
+                f"latency_ms must be finite and positive, got {self.latency_ms}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +150,59 @@ class ExpressionCaseResult:
     case: ExpressionParityCase
     runs: dict[str, ExpressionRun]
     round_orders: list[tuple[str, ...]]
+    observations: tuple[ExpressionObservation, ...]
+    comparisons: tuple[PairedComparison[str], ...]
+
+    def __post_init__(self) -> None:
+        """Keep measured evidence aligned with the case definition."""
+        available_names = frozenset(
+            spec.name for spec in self.case.runner_specs if spec.available
+        )
+        if frozenset(self.runs) != available_names:
+            raise ValueError(
+                "expression runs must match the available strategy definitions"
+            )
+        if any(
+            len(round_order) != len(available_names)
+            or frozenset(round_order) != available_names
+            for round_order in self.round_orders
+        ):
+            raise ValueError(
+                "expression round orders must be full available strategy permutations"
+            )
+        if any(
+            len(run.round_summaries) != len(self.round_orders)
+            for run in self.runs.values()
+        ):
+            raise ValueError(
+                "expression round summaries must match the measured round count"
+            )
+        observed_names = frozenset(
+            observation.strategy for observation in self.observations
+        )
+        if observed_names != available_names:
+            raise ValueError(
+                "expression observations must cover every available strategy"
+            )
+        if any(
+            observation.round_index >= len(self.round_orders)
+            for observation in self.observations
+        ):
+            raise ValueError("expression observation references an unknown round")
+
+        target_name = self.case.target.name
+        expected_competitors = available_names - {target_name}
+        actual_competitors = frozenset(
+            comparison.competitor for comparison in self.comparisons
+        )
+        if (
+            any(comparison.baseline != target_name for comparison in self.comparisons)
+            or len(actual_competitors) != len(self.comparisons)
+            or actual_competitors != expected_competitors
+        ):
+            raise ValueError(
+                "expression comparisons must cover each available non-target strategy"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,17 +220,35 @@ def _round_orders(
     *,
     strategy_names: list[str],
     rounds: int,
+    coordinates_per_round: int,
     seed: int,
 ) -> list[tuple[str, ...]]:
     if rounds < 1:
         raise ValueError(f"rounds must be >= 1, got {rounds}")
+    if coordinates_per_round < 0:
+        raise ValueError(
+            f"coordinates_per_round must be non-negative, got {coordinates_per_round}"
+        )
+    if not strategy_names:
+        raise ValueError("strategy_names must be non-empty")
     random_state = np.random.RandomState(seed)
-    orders: list[tuple[str, ...]] = []
-    for _ in range(rounds):
-        order = list(strategy_names)
-        random_state.shuffle(order)
-        orders.append(tuple(order))
-    return orders
+    base_order = list(strategy_names)
+    random_state.shuffle(base_order)
+    base_order_tuple = tuple(base_order)
+    return [
+        _rotate_order(
+            base_order_tuple,
+            offset=round_index * coordinates_per_round,
+        )
+        for round_index in range(rounds)
+    ]
+
+
+def _rotate_order(order: tuple[str, ...], *, offset: int) -> tuple[str, ...]:
+    if not order:
+        return ()
+    index = offset % len(order)
+    return order[index:] + order[:index]
 
 
 def _numpy_batch(
@@ -196,7 +331,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
     split_index = sizes.h * sizes.r
     second_split = sizes.w * sizes.r
 
-    def torch_pair(inputs: tuple[Array, ...]) -> tuple[TorchTensor, TorchTensor]:
+    def torch_pair(inputs: tuple[Array, ...]) -> tuple[Array, Array]:
         lhs, rhs = inputs
         if torch is None:
             raise RuntimeError("torch is not available")
@@ -280,11 +415,12 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 "Compares library implementations against plain torch expression "
                 "variants to separate DSL/runtime overhead from expression choice."
             ),
+            target_name="einf",
             batch_factory=batch_factory,
             runner_specs=(
                 ExpressionRunnerSpec(
                     name="einf",
-                    role="equivalent",
+                    semantics="output_equivalent",
                     description="einf lowering + runtime",
                     call_repr=(
                         "einop((ax[b, ((h + w) * r), n], ax[n, d]), "
@@ -300,7 +436,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 ),
                 ExpressionRunnerSpec(
                     name="einops",
-                    role="equivalent",
+                    semantics="output_equivalent",
                     description="einops two-stage contract then slicing",
                     call_repr=(
                         'tmp = einops.einsum(lhs, rhs, "b t n, n d -> b t d"); '
@@ -315,7 +451,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 ),
                 ExpressionRunnerSpec(
                     name="einx",
-                    role="equivalent",
+                    semantics="output_equivalent",
                     description="einx dot then slicing",
                     call_repr=(
                         'tmp = einx.dot("b t n, n d -> b t d", lhs, rhs); '
@@ -330,7 +466,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 ),
                 ExpressionRunnerSpec(
                     name="torch_matmul_only",
-                    role="baseline",
+                    semantics="lower_bound",
                     description="lower bound: contract only, no split tail",
                     call_repr="torch.matmul(lhs, rhs)",
                     available=torch is not None,
@@ -340,7 +476,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 ),
                 ExpressionRunnerSpec(
                     name="torch_matmul_split",
-                    role="equivalent",
+                    semantics="output_equivalent",
                     description="plain torch matmul plus split_with_sizes",
                     call_repr=(
                         "tmp = torch.matmul(lhs, rhs); tmp.split((h*r, w*r), dim=1)"
@@ -354,7 +490,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
                 ),
                 ExpressionRunnerSpec(
                     name="torch_matmul_slice",
-                    role="equivalent",
+                    semantics="output_equivalent",
                     description="plain torch matmul plus direct slicing",
                     call_repr=(
                         "tmp = torch.matmul(lhs, rhs); "
@@ -393,102 +529,205 @@ def _run_dynamic_case(
     case_index: int,
 ) -> ExpressionCaseResult:
     available_specs = tuple(spec for spec in case.runner_specs if spec.available)
-    runs: dict[str, ExpressionRun] = {
-        spec.name: ExpressionRun(
-            available=spec.available,
-            reason=spec.reason,
-            role=spec.role,
-            dynamic=None,
-        )
-        for spec in case.runner_specs
-        if not spec.available
-    }
+    runs: dict[str, ExpressionRun] = {}
 
-    if not available_specs:
-        return ExpressionCaseResult(case=case, runs=runs, round_orders=[])
-
-    round_batches = [
-        [
-            case.batch_factory(
-                TensorGenerator.from_seed(
-                    backend=backend,
-                    seed=(
-                        config.seed
-                        + case_index * CASE_SEED_STRIDE
-                        + round_index * ROUND_BATCH_SEED_STRIDE
-                        + batch_index
-                    ),
-                )
-            )
-            for batch_index in range(config.batches)
-        ]
-        for round_index in range(config.rounds)
-    ]
-    round_orders = _round_orders(
-        strategy_names=[spec.name for spec in available_specs],
-        rounds=config.rounds,
-        seed=config.round_order_seed + case_index * CASE_SEED_STRIDE,
-    )
-    runners = {spec.name: spec.make_runner() for spec in available_specs}
-    reference_batches = round_batches[0]
-    checks = min(len(reference_batches), config.parity_checks)
-    spec_by_name = {spec.name: spec for spec in case.runner_specs}
-
-    for spec in available_specs:
-        runner = runners[spec.name]
-        for batch_index in range(checks):
-            batch = reference_batches[batch_index]
-            output = runner(batch)
-            _validate_output(
+    def make_batch(*, round_index: int, batch_index: int) -> tuple[Array, ...]:
+        return case.batch_factory(
+            TensorGenerator.from_seed(
                 backend=backend,
-                runner_spec=spec,
-                batch=batch,
-                output=output,
+                seed=(
+                    config.seed
+                    + case_index * CASE_SEED_STRIDE
+                    + round_index * ROUND_BATCH_SEED_STRIDE
+                    + batch_index
+                ),
             )
+        )
+
+    measured_batch_count = config.batches - config.warmup_batches
+    strategy_names = [spec.name for spec in available_specs]
+    order_seed = config.round_order_seed + case_index * CASE_SEED_STRIDE
+    round_orders = _round_orders(
+        strategy_names=strategy_names,
+        rounds=config.rounds,
+        coordinates_per_round=config.repeats * measured_batch_count,
+        seed=order_seed,
+    )
+    warmup_round_orders = _round_orders(
+        strategy_names=strategy_names,
+        rounds=config.rounds,
+        coordinates_per_round=config.warmup_batches,
+        seed=order_seed,
+    )
+    expected_strategies = frozenset(spec.name for spec in available_specs)
+    if any(
+        len(round_order) != len(available_specs)
+        or frozenset(round_order) != expected_strategies
+        for round_order in round_orders
+    ):
+        raise RuntimeError(
+            "expression benchmark round orders must be full strategy permutations"
+        )
+    runners = {spec.name: spec.make_runner() for spec in available_specs}
 
     samples_by_name: dict[str, list[float]] = {
         spec.name: [] for spec in available_specs
     }
-    for round_index, batches in enumerate(round_batches):
-        for name in round_orders[round_index]:
-            samples_by_name[name].extend(
-                profiler.measure_dynamic(
-                    runner=runners[name],
-                    batches=batches,
-                    warmup_batches=config.warmup_batches,
-                    repeats=config.repeats,
-                )
+    round_summaries_by_name: dict[str, list[TimingSummary]] = {
+        spec.name: [] for spec in available_specs
+    }
+    for round_index, round_order in enumerate(round_orders):
+        round_samples = {spec.name: [] for spec in available_specs}
+
+        for batch_index in range(config.warmup_batches):
+            canonical_batch = make_batch(
+                round_index=round_index,
+                batch_index=batch_index,
             )
+            batch_order = _rotate_order(
+                warmup_round_orders[round_index],
+                offset=batch_index,
+            )
+            for name in batch_order:
+                batch = backend.clone_batch(canonical_batch)
+                backend.touch_output(runners[name](batch))
+                del batch
+            del canonical_batch
+
+        for repeat_index in range(config.repeats):
+            for measured_batch_index in range(measured_batch_count):
+                canonical_batch = make_batch(
+                    round_index=round_index,
+                    batch_index=(config.warmup_batches + measured_batch_index),
+                )
+                batch_order = _rotate_order(
+                    round_order,
+                    offset=(repeat_index * measured_batch_count + measured_batch_index),
+                )
+                for name in batch_order:
+                    batch = backend.clone_batch(canonical_batch)
+                    started = time.perf_counter()
+                    output = runners[name](batch)
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                    backend.touch_output(output)
+                    samples_by_name[name].append(elapsed_ms)
+                    round_samples[name].append(elapsed_ms)
+                    del output, batch
+                del canonical_batch
+
+        for spec in available_specs:
+            round_summaries_by_name[spec.name].append(
+                profiler.summarize(round_samples[spec.name])
+            )
+
+    checks = min(config.batches, config.parity_checks)
+    for spec in available_specs:
+        validation_runner = spec.make_runner()
+        for batch_index in range(checks):
+            canonical_batch = make_batch(round_index=0, batch_index=batch_index)
+            batch = backend.clone_batch(canonical_batch)
+            output = validation_runner(batch)
+            _validate_output(
+                backend=backend,
+                runner_spec=spec,
+                batch=canonical_batch,
+                output=output,
+            )
+            del output, batch, canonical_batch
+        del validation_runner
 
     for spec in available_specs:
         runs[spec.name] = ExpressionRun(
-            available=True,
-            reason="available",
-            role=spec_by_name[spec.name].role,
-            dynamic=profiler.summarize(samples_by_name[spec.name]),
+            summary=profiler.summarize(samples_by_name[spec.name]),
+            round_summaries=tuple(round_summaries_by_name[spec.name]),
         )
 
+    expected_sample_count = len(round_orders) * config.repeats * measured_batch_count
+    sample_counts = {
+        spec.name: len(samples_by_name[spec.name]) for spec in available_specs
+    }
+    if any(count != expected_sample_count for count in sample_counts.values()):
+        raise RuntimeError(
+            "expression observation reconstruction sample count mismatch: "
+            f"expected {expected_sample_count} per strategy, got {sample_counts}"
+        )
+
+    observations: list[ExpressionObservation] = []
+    sample_index = 0
+    for round_index, round_order in enumerate(round_orders):
+        for repeat_index in range(config.repeats):
+            for measured_batch_index in range(measured_batch_count):
+                batch_order = _rotate_order(
+                    round_order,
+                    offset=(repeat_index * measured_batch_count + measured_batch_index),
+                )
+                for order_position, name in enumerate(batch_order):
+                    observations.append(
+                        ExpressionObservation(
+                            round_index=round_index,
+                            measured_batch_index=measured_batch_index,
+                            repeat_index=repeat_index,
+                            strategy=name,
+                            order_position=order_position,
+                            latency_ms=samples_by_name[name][sample_index],
+                        )
+                    )
+                sample_index += 1
+
+    observation_tuple = tuple(observations)
+    available_names = tuple(spec.name for spec in available_specs)
+
+    def strategy_of(observation: ExpressionObservation) -> str:
+        return observation.strategy
+
+    comparisons = compare_paired_timings(
+        observations=observation_tuple,
+        members=available_names,
+        baseline=case.target.name,
+        member_of=strategy_of,
+        bootstrap_seed=config.seed + case_index * CASE_SEED_STRIDE,
+    )
     return ExpressionCaseResult(
         case=case,
         runs=runs,
         round_orders=round_orders,
+        observations=observation_tuple,
+        comparisons=comparisons,
     )
 
 
 def _to_json(report: ExpressionParityReport) -> dict[str, object]:
     return {
+        "schema_version": 1,
         "title": report.title,
         "configuration": list(report.configuration),
         "methodology": list(report.methodology),
+        "measurement_contract": {
+            "schedule": "interleaved_per_logical_batch",
+            "order": "continuous_rotation_from_one_deterministic_shuffled_order",
+            "pairing_identity": [
+                "round_index",
+                "measured_batch_index",
+                "repeat_index",
+            ],
+            "estimand": (
+                "competitor_mean_batch_latency_over_target_mean_batch_latency"
+            ),
+            "repeat_handling": "average_within_round_and_measured_batch",
+            "batch_materialization": ("regenerated_from_the_same_seed_for_each_repeat"),
+            "uncertainty": "round_stratified_batch_bootstrap",
+        },
         "case_results": [
             {
                 "case": {
                     "name": case_result.case.name,
                     "description": case_result.case.description,
+                    "target": case_result.case.target_name,
                     "runner_specs": [
                         {
                             "name": spec.name,
-                            "role": spec.role,
+                            "is_target": spec.name == case_result.case.target_name,
+                            "semantics": spec.semantics,
                             "description": spec.description,
                             "call_repr": spec.call_repr,
                             "available": spec.available,
@@ -498,15 +737,56 @@ def _to_json(report: ExpressionParityReport) -> dict[str, object]:
                     ],
                 },
                 "runs": {
-                    name: {
-                        "available": run.available,
-                        "reason": run.reason,
-                        "role": run.role,
-                        "dynamic": None if run.dynamic is None else asdict(run.dynamic),
-                    }
-                    for name, run in case_result.runs.items()
+                    spec.name: (
+                        {
+                            "status": "available",
+                            "summary": asdict(case_result.runs[spec.name].summary),
+                            "round_summaries": [
+                                asdict(round_summary)
+                                for round_summary in case_result.runs[
+                                    spec.name
+                                ].round_summaries
+                            ],
+                        }
+                        if spec.available
+                        else {
+                            "status": "unavailable",
+                            "reason": spec.reason,
+                        }
+                    )
+                    for spec in case_result.case.runner_specs
                 },
-                "round_orders": [list(order) for order in case_result.round_orders],
+                "measured_round_start_orders": [
+                    list(order) for order in case_result.round_orders
+                ],
+                "observations": [
+                    {
+                        "round_index": observation.round_index,
+                        "measured_batch_index": observation.measured_batch_index,
+                        "repeat_index": observation.repeat_index,
+                        "strategy": observation.strategy,
+                        "order_position": observation.order_position,
+                        "latency_ms": observation.latency_ms,
+                    }
+                    for observation in case_result.observations
+                ],
+                "comparisons": [
+                    {
+                        "target": comparison.baseline,
+                        "competitor": comparison.competitor,
+                        "call_pair_count": comparison.call_pair_count,
+                        "paired_batch_count": comparison.paired_batch_count,
+                        "latency_ratio": comparison.latency_ratio,
+                        "confidence_level": comparison.confidence_level,
+                        "confidence_interval": {
+                            "low": comparison.confidence_interval_low,
+                            "high": comparison.confidence_interval_high,
+                        },
+                        "bootstrap_resamples": comparison.bootstrap_resamples,
+                        "bootstrap_seed": comparison.bootstrap_seed,
+                    }
+                    for comparison in case_result.comparisons
+                ],
             }
             for case_result in report.case_results
         ],
@@ -534,29 +814,97 @@ def _render_markdown(report: ExpressionParityReport) -> str:
             ]
         )
         for spec in case_result.case.runner_specs:
-            lines.append(f"- `{spec.name}` (`{spec.role}`): `{spec.call_repr}`")
+            availability = "" if spec.available else f"; unavailable: {spec.reason}"
+            target = "; target" if spec.name == case_result.case.target_name else ""
+            lines.append(
+                f"- `{spec.name}` (`{spec.semantics}`{target}{availability}): "
+                f"`{spec.call_repr}`"
+            )
         lines.extend(
             [
                 "",
-                "| Strategy | Role | Samples | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
-                "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| Strategy | Target | Semantics | Samples | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
+                "|---|:---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for spec in case_result.case.runner_specs:
-            run = case_result.runs[spec.name]
-            if not run.available or run.dynamic is None:
+            target = "yes" if spec.name == case_result.case.target_name else ""
+            if not spec.available:
                 lines.append(
-                    f"| {spec.name} | {spec.role} | n/a ({run.reason}) | - | - | - | - | - | - | - |"
+                    f"| {spec.name} | {target} | {spec.semantics} | "
+                    f"n/a ({spec.reason}) | - | - | - | - | - | - | - |"
                 )
                 continue
-            summary = run.dynamic
+            summary = case_result.runs[spec.name].summary
             lines.append(
-                f"| {spec.name} | {spec.role} | {summary.count} | "
+                f"| {spec.name} | {target} | {spec.semantics} | {summary.count} | "
                 f"{summary.median_ms:.4f} | {summary.mean_ms:.4f} | "
                 f"{summary.p25_ms:.4f} | {summary.p75_ms:.4f} | "
                 f"{summary.p95_ms:.4f} | {summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
-        lines.extend(["", "Round strategy order (deterministic shuffle):", ""])
+
+        spec_by_name = {spec.name: spec for spec in case_result.case.runner_specs}
+        comparison_sections: tuple[
+            tuple[ExpressionSemantics, str, str],
+            ...,
+        ] = (
+            (
+                "output_equivalent",
+                "Equivalent-output comparisons",
+                (
+                    "Ratios compare each output-equivalent strategy with the "
+                    f"target `{case_result.case.target.name}`. Values below 1.0 "
+                    "favor the competitor."
+                ),
+            ),
+            (
+                "lower_bound",
+                "Lower-bound diagnostic",
+                (
+                    "This ratio removes part of the target work. It estimates a "
+                    "floor, not the performance of an equivalent replacement."
+                ),
+            ),
+        )
+        for semantics, heading, explanation in comparison_sections:
+            comparisons = [
+                comparison
+                for comparison in case_result.comparisons
+                if spec_by_name[comparison.competitor].semantics == semantics
+            ]
+            if not comparisons:
+                continue
+            lines.extend(
+                [
+                    "",
+                    f"#### {heading}",
+                    "",
+                    explanation,
+                    "",
+                    "| Competitor | Ratio vs target | 95% CI | Paired batches | Paired call coordinates |",
+                    "|---|---:|---:|---:|---:|",
+                ]
+            )
+            for comparison in comparisons:
+                lines.append(
+                    f"| {comparison.competitor} | "
+                    f"{comparison.latency_ratio:.4f} | "
+                    f"[{comparison.confidence_interval_low:.4f}, "
+                    f"{comparison.confidence_interval_high:.4f}] | "
+                    f"{comparison.paired_batch_count} | "
+                    f"{comparison.call_pair_count} |"
+                )
+
+        lines.extend(
+            [
+                "",
+                (
+                    "Measured starting order for each round (then rotated once "
+                    "per batch coordinate):"
+                ),
+                "",
+            ]
+        )
         max_orders = 12
         for round_index, order in enumerate(
             case_result.round_orders[:max_orders], start=1
@@ -597,7 +945,7 @@ def main() -> int:
         "--round-order-seed",
         type=int,
         default=None,
-        help="Optional seed controlling deterministic per-round strategy order.",
+        help="Optional seed controlling the initial deterministic strategy order.",
     )
     parser.add_argument(
         "--parity-checks",
@@ -627,10 +975,18 @@ def main() -> int:
         raise ValueError(
             "warmup-batches must be less than batches to leave measured batches"
         )
+    if args.batches - args.warmup_batches < 2:
+        raise ValueError(
+            "at least two measured batches are required for paired uncertainty"
+        )
     if args.repeats < 1:
         raise ValueError(f"repeats must be >= 1, got {args.repeats}")
     if args.rounds < 1:
         raise ValueError(f"rounds must be >= 1, got {args.rounds}")
+    if args.parity_checks < 0:
+        raise ValueError(f"parity-checks must be >= 0, got {args.parity_checks}")
+    if args.output is not None and args.output == args.raw_output:
+        raise ValueError("output and raw-output must use different paths")
 
     backend = BackendSpec(name="torch")
     backend.validate_available()
@@ -676,7 +1032,7 @@ def main() -> int:
             ),
             "dynamic dimensions sample per batch in `[0.6x, 1.4x]` of base size",
             f"seed: `{args.seed}`",
-            f"round order seed: `{round_order_seed}`",
+            f"strategy order seed: `{round_order_seed}`",
             f"total batches per case: `{args.batches}`",
             f"warmup batches: `{args.warmup_batches}`",
             f"repeats: `{args.repeats}`",
@@ -685,30 +1041,68 @@ def main() -> int:
             "table units: `ms`",
         ],
         methodology=[
-            "Timing uses eager CPU wall-clock latency for each strategy call; output observation is excluded.",
-            "Each expression strategy is benchmarked over identical deterministic torch batches.",
-            "Per round, strategy order is shuffled deterministically and all post-warmup per-batch latencies are recorded.",
-            "Equivalent strategies validate against the full split result; baseline strategies validate against their own stage output.",
-            "This benchmark is gap-attribution oriented: it compares total runtime across DSL and plain torch expression choices.",
+            (
+                "Each logical batch is regenerated from the same seed for every "
+                "repeat, then cloned once per available strategy. This bounds "
+                "memory without changing the paired input."
+            ),
+            (
+                "Strategies run back-to-back on each logical batch, and their "
+                "order rotates continuously across measured coordinates from one "
+                "deterministically shuffled base order."
+            ),
+            (
+                "Batch generation, cloning, and output observation happen outside "
+                "the timed interval. Only the strategy call is timed."
+            ),
+            (
+                "Parity checks run after timing on disposable runners. A mismatch "
+                "aborts the report, and validation cannot warm caches before the "
+                "measured calls."
+            ),
+            (
+                "Every timed call retains its round, measured batch, repeat, "
+                "strategy, execution position, and latency identity."
+            ),
+            (
+                "The paired ratio averages repeats within each round and batch, "
+                "then divides the competitor's mean batch latency by the target's."
+            ),
+            (
+                "The 95% interval resamples measured batches within each round. "
+                "Repeated calls are not treated as independent batches."
+            ),
+            (
+                "Equivalent strategies validate the full split result. The "
+                "lower-bound strategy validates only the contraction it performs "
+                "and is reported separately."
+            ),
         ],
         case_results=(case_result,),
         notes=[
-            "torch_matmul_only is a lower-bound baseline and does not produce the final split tuple.",
-            "Use this report before profiling internals: if plain torch split/slice already differs materially, the gap is expression-level before DSL overhead.",
+            (
+                "`torch_matmul_only` is a lower bound and does not produce the "
+                "final split tuple."
+            ),
+            (
+                "Use this report before profiling internals. A material gap in "
+                "plain torch split or slice variants points to expression-level "
+                "work before `einf` internals are considered."
+            ),
         ],
     )
 
     markdown = _render_markdown(report)
     print(markdown)
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(markdown, encoding="utf-8")
     if args.raw_output is not None:
         args.raw_output.parent.mkdir(parents=True, exist_ok=True)
         args.raw_output.write_text(
             json.dumps(_to_json(report), indent=2),
             encoding="utf-8",
         )
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(markdown, encoding="utf-8")
     return 0
 
 

@@ -77,12 +77,15 @@ class DynamicObservation:
             )
 
 
+_ComparisonMemberT = TypeVar("_ComparisonMemberT", bound=str)
+
+
 @dataclass(frozen=True, slots=True)
-class PairedComparison:
+class PairedComparison(Generic[_ComparisonMemberT]):
     """Paired latency-ratio estimate with batch-level uncertainty."""
 
-    baseline: LibraryName
-    competitor: LibraryName
+    baseline: _ComparisonMemberT
+    competitor: _ComparisonMemberT
     call_pair_count: int
     paired_batch_count: int
     latency_ratio: float
@@ -95,7 +98,7 @@ class PairedComparison:
     def __post_init__(self) -> None:
         """Reject malformed paired-effect evidence."""
         if self.baseline == self.competitor:
-            raise ValueError("paired comparison requires distinct libraries")
+            raise ValueError("paired comparison requires distinct members")
         if self.paired_batch_count < 1:
             raise ValueError("paired_batch_count must be positive")
         if self.call_pair_count < self.paired_batch_count:
@@ -137,7 +140,7 @@ class DynamicCaseResult:
     runs: dict[LibraryName, DynamicRunResult]
     round_orders: list[tuple[LibraryName, ...]]
     observations: tuple[DynamicObservation, ...]
-    comparisons: tuple[PairedComparison, ...]
+    comparisons: tuple[PairedComparison[LibraryName], ...]
 
 
 _CaseResultT = TypeVar("_CaseResultT", FixedCaseResult, DynamicCaseResult)

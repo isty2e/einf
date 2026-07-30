@@ -413,7 +413,11 @@ archived Markdown.
 
 ## Expression Parity
 
-Use `benchmarks/compare/expression_parity.py` when a gap case needs a more focused comparison against plain `torch` expression strategies.
+Use `benchmarks/compare/expression_parity.py` to decide whether a gap comes from
+the expression itself or from `einf` runtime overhead. It compares the target
+with output-equivalent library and plain `torch` strategies on the same logical
+batches. A contraction-only lower bound is reported separately because it does
+not produce the final split outputs.
 
 Example:
 
@@ -438,6 +442,41 @@ Current built-in strategies include:
 - `torch_matmul_only`
 - `torch_matmul_split`
 - `torch_matmul_slice`
+
+For each measured batch and repeat, every available strategy receives an
+independent clone of the same input. The logical batch is regenerated from the
+same seed for each repeat instead of retaining every large tensor in memory.
+This keeps peak memory near one batch while preserving the paired input. The
+strategies run back-to-back, with their order rotated from one deterministic
+shuffle across all measured coordinates. Warmup uses a separate continuous
+rotation. Batch generation, cloning, and output observation are outside the
+timed interval.
+
+Parity checks run after timing on disposable strategy instances. A mismatch
+aborts report generation, while `--parity-checks` cannot warm instance-local or
+process-global caches before measurement.
+
+The report estimates each competitor's mean batch latency relative to the
+`einf` target. Repeats are averaged within each round and measured batch before
+the ratio is computed. The 95% interval resamples batches within each round, so
+repeated calls are not counted as independent inputs.
+
+Keep the JSON receipt when the result may need re-analysis. It records the
+schedule and estimand, per-round summaries, every call's round, batch, repeat,
+strategy, order, and latency identity, and the paired estimates. The Markdown
+report is meant for interpretation; it does not replace the raw evidence.
+
+Read the two comparison sections differently:
+
+- **Equivalent-output comparisons** show whether another complete expression
+  performs the same work faster or slower than the target.
+- **Lower-bound diagnostic** estimates how much time remains when the final
+  split work is removed. It is a floor, not an interchangeable implementation.
+
+If a plain `torch` split or slice strategy shows a material gap, inspect the
+expression and tensor layout before profiling `einf` internals. If the
+equivalent plain `torch` strategies stay close to the target while the lower
+bound does not, the next useful step is internal overhead profiling.
 
 ## Layout Audit
 

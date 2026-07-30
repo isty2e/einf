@@ -1,6 +1,7 @@
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from statistics import fmean
+from typing import Protocol, TypeVar
 
 import numpy as np
 
@@ -13,15 +14,34 @@ _BOOTSTRAP_CHUNK_SIZE = 256
 
 _Coordinate = tuple[int, int, int]
 _BatchCoordinate = tuple[int, int]
+_ComparisonMemberT = TypeVar("_ComparisonMemberT", bound=str)
+
+
+class _TimingObservation(Protocol):
+    @property
+    def round_index(self) -> int: ...
+
+    @property
+    def measured_batch_index(self) -> int: ...
+
+    @property
+    def repeat_index(self) -> int: ...
+
+    @property
+    def latency_ms(self) -> float: ...
+
+
+_TimingObservationT = TypeVar("_TimingObservationT", bound=_TimingObservation)
 
 
 def _paired_batch_means(
     *,
-    observations: Sequence[DynamicObservation],
-    libraries: tuple[LibraryName, ...],
-) -> tuple[dict[LibraryName, dict[_BatchCoordinate, float]], int]:
-    expected_libraries = frozenset(libraries)
-    latency_by_coordinate: dict[_Coordinate, dict[LibraryName, float]] = {}
+    observations: Sequence[_TimingObservationT],
+    members: tuple[_ComparisonMemberT, ...],
+    member_of: Callable[[_TimingObservationT], _ComparisonMemberT],
+) -> tuple[dict[_ComparisonMemberT, dict[_BatchCoordinate, float]], int]:
+    expected_members = frozenset(members)
+    latency_by_coordinate: dict[_Coordinate, dict[_ComparisonMemberT, float]] = {}
 
     for observation in observations:
         coordinate = (
@@ -29,68 +49,68 @@ def _paired_batch_means(
             observation.measured_batch_index,
             observation.repeat_index,
         )
-        latency_by_library = latency_by_coordinate.setdefault(coordinate, {})
-        if observation.library in latency_by_library:
+        member = member_of(observation)
+        latency_by_member = latency_by_coordinate.setdefault(coordinate, {})
+        if member in latency_by_member:
             raise ValueError(
-                "duplicate dynamic observation for "
-                f"coordinate={coordinate}, library={observation.library}"
+                "duplicate paired timing observation for "
+                f"coordinate={coordinate}, member={member}"
             )
-        latency_by_library[observation.library] = observation.latency_ms
+        latency_by_member[member] = observation.latency_ms
 
     if not latency_by_coordinate:
         raise ValueError("paired comparison requires dynamic observations")
 
-    latency_by_batch: dict[_BatchCoordinate, dict[LibraryName, dict[int, float]]] = (
-        defaultdict(lambda: defaultdict(dict))
-    )
-    for coordinate, latency_by_library in latency_by_coordinate.items():
-        actual_libraries = frozenset(latency_by_library)
-        if actual_libraries != expected_libraries:
-            missing = sorted(expected_libraries - actual_libraries)
-            unexpected = sorted(actual_libraries - expected_libraries)
+    latency_by_batch: dict[
+        _BatchCoordinate, dict[_ComparisonMemberT, dict[int, float]]
+    ] = defaultdict(lambda: defaultdict(dict))
+    for coordinate, latency_by_member in latency_by_coordinate.items():
+        actual_members = frozenset(latency_by_member)
+        if actual_members != expected_members:
+            missing = sorted(expected_members - actual_members)
+            unexpected = sorted(actual_members - expected_members)
             raise ValueError(
-                "incomplete dynamic observation pairing for "
+                "incomplete paired timing observation for "
                 f"coordinate={coordinate}: missing={missing}, "
                 f"unexpected={unexpected}"
             )
         round_index, measured_batch_index, repeat_index = coordinate
         batch_coordinate = (round_index, measured_batch_index)
-        for library in libraries:
-            latency_by_batch[batch_coordinate][library][repeat_index] = (
-                latency_by_library[library]
+        for member in members:
+            latency_by_batch[batch_coordinate][member][repeat_index] = (
+                latency_by_member[member]
             )
 
-    batch_means: dict[LibraryName, dict[_BatchCoordinate, float]] = {
-        library: {} for library in libraries
+    batch_means: dict[_ComparisonMemberT, dict[_BatchCoordinate, float]] = {
+        member: {} for member in members
     }
     expected_repeat_indices: frozenset[int] | None = None
     for batch_coordinate in sorted(latency_by_batch):
-        latency_by_library = latency_by_batch[batch_coordinate]
-        library_repeat_indices = {
-            frozenset(latencies) for latencies in latency_by_library.values()
+        latency_by_member = latency_by_batch[batch_coordinate]
+        member_repeat_indices = {
+            frozenset(latencies) for latencies in latency_by_member.values()
         }
-        if len(library_repeat_indices) != 1:
+        if len(member_repeat_indices) != 1:
             raise ValueError(
-                "dynamic observation repeat identities differ for "
-                f"batch={batch_coordinate}"
+                f"paired timing repeat identities differ for batch={batch_coordinate}"
             )
-        repeat_indices = library_repeat_indices.pop()
+        repeat_indices = member_repeat_indices.pop()
         if expected_repeat_indices is None:
             expected_repeat_indices = repeat_indices
         elif repeat_indices != expected_repeat_indices:
             raise ValueError(
-                "dynamic observation repeat identities differ across measured batches"
+                "paired timing repeat identities differ across measured batches"
             )
-        for library in libraries:
-            batch_means[library][batch_coordinate] = fmean(
-                latency_by_library[library][repeat_index]
+        for member in members:
+            batch_means[member][batch_coordinate] = fmean(
+                latency_by_member[member][repeat_index]
                 for repeat_index in sorted(repeat_indices)
             )
 
     if expected_repeat_indices is None:
         raise ValueError("paired comparison requires measured batch observations")
     repeat_count = len(expected_repeat_indices)
-    return batch_means, len(batch_means[libraries[0]]) * repeat_count
+    return batch_means, len(batch_means[members[0]]) * repeat_count
 
 
 def _round_stratified_ratio_interval(
@@ -150,31 +170,33 @@ def _round_stratified_ratio_interval(
     return float(low), float(high)
 
 
-def compare_paired_observations(
+def compare_paired_timings(
     *,
-    observations: Sequence[DynamicObservation],
-    libraries: tuple[LibraryName, ...],
-    baseline: LibraryName,
+    observations: Sequence[_TimingObservationT],
+    members: tuple[_ComparisonMemberT, ...],
+    baseline: _ComparisonMemberT,
+    member_of: Callable[[_TimingObservationT], _ComparisonMemberT],
     bootstrap_seed: int,
-) -> tuple[PairedComparison, ...]:
-    """Compare available libraries using paired batch resampling units."""
-    if baseline not in libraries:
+) -> tuple[PairedComparison[_ComparisonMemberT], ...]:
+    """Compare timed members using paired batch resampling units."""
+    if len(frozenset(members)) != len(members):
+        raise ValueError("paired comparison members must be unique")
+    if baseline not in members:
         return ()
-    if len(libraries) < 2:
+    if len(members) < 2:
         return ()
 
     batch_means, call_pair_count = _paired_batch_means(
         observations=observations,
-        libraries=libraries,
+        members=members,
+        member_of=member_of,
     )
     baseline_by_batch = batch_means[baseline]
     paired_batch_count = len(baseline_by_batch)
     baseline_mean = fmean(baseline_by_batch.values())
 
-    comparisons: list[PairedComparison] = []
-    competitors: tuple[LibraryName, ...] = tuple(
-        library for library in libraries if library != baseline
-    )
+    comparisons: list[PairedComparison[_ComparisonMemberT]] = []
+    competitors = tuple(member for member in members if member != baseline)
     for competitor_index, competitor in enumerate(competitors):
         competitor_by_batch = batch_means[competitor]
         competitor_mean = fmean(competitor_by_batch.values())
@@ -199,3 +221,24 @@ def compare_paired_observations(
             )
         )
     return tuple(comparisons)
+
+
+def compare_paired_observations(
+    *,
+    observations: Sequence[DynamicObservation],
+    libraries: tuple[LibraryName, ...],
+    baseline: LibraryName,
+    bootstrap_seed: int,
+) -> tuple[PairedComparison[LibraryName], ...]:
+    """Compare available libraries using paired batch resampling units."""
+
+    def library_of(observation: DynamicObservation) -> LibraryName:
+        return observation.library
+
+    return compare_paired_timings(
+        observations=observations,
+        members=libraries,
+        baseline=baseline,
+        member_of=library_of,
+        bootstrap_seed=bootstrap_seed,
+    )
