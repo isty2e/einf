@@ -101,7 +101,7 @@ class ReduceAxesResolver:
                     ),
                     help="ensure phased reducers partition reduced terms exactly",
                     related=("reduce_by phase mapping",),
-                    data={},
+                    data={"operation": "reduce"},
                 )
             selected.append(found)
             used.add(found)

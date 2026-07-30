@@ -103,7 +103,7 @@ class ReducerRuntimeContext:
             message="inconsistent dims: reducer output must be tensor-like",
             help="return a tensor or scalar value from reducer",
             related=("reduce reducer output",),
-            data={},
+            data={"operation": "reduce"},
         )
 
     def string_reducer_error(
@@ -124,7 +124,7 @@ class ReducerRuntimeContext:
                 "(for example non-empty domain for max/min)"
             ),
             related=("reduce reducer",),
-            data={"reducer": reducer_name.value},
+            data={"operation": "reduce", "reducer": reducer_name.value},
         )
 
     def custom_reducer_error(
@@ -138,7 +138,7 @@ class ReducerRuntimeContext:
             message=f"inconsistent dims: custom reducer failed: {error}",
             help="ensure reducer domain is valid for selected axes",
             related=("reduce reducer",),
-            data={},
+            data={"operation": "reduce"},
         )
 
     def raise_unsupported_reducer_signature(self) -> Never:
@@ -148,7 +148,7 @@ class ReducerRuntimeContext:
             message="inconsistent dims: reducer signature is unsupported",
             help="use (tensor), (tensor, axes), or (tensor, *, axis=...)",
             related=("reduce reducer",),
-            data={},
+            data={"operation": "reduce"},
         )
 
     def _is_tensor_like(self, value: ReducerResult) -> TypeGuard[TensorLike]:
@@ -375,7 +375,10 @@ class ReducerCompiler:
                 ),
                 help="choose a reducer available on the active backend namespace",
                 related=("reduce reducer",),
-                data={},
+                data={
+                    "operation": "reduce",
+                    "reducer": reducer_name.value,
+                },
             )
         return CompiledStringReducer(
             name=reducer_name,
@@ -406,7 +409,7 @@ class ReducerCompiler:
             message="inconsistent dims: reducer signature is unsupported",
             help="use (tensor), (tensor, axes), or (tensor, *, axis=...)",
             related=("reduce reducer",),
-            data={},
+            data={"operation": "reduce"},
         )
 
     def _can_bind(
