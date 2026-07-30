@@ -23,8 +23,6 @@ jobs:
         run: ruff check --extend-select I,UP src tests benchmarks
       - name: Typecheck project
         run: basedpyright --pythonpath "$(which python)"
-      - name: Typecheck profiling tool
-        run: basedpyright --pythonpath "$(which python)" benchmarks/profile/lsp_latency.py
       - name: Test
         run: pytest
       - name: Docs
@@ -50,20 +48,27 @@ jobs:
         run: >-
           basedpyright
           --pythonpath "$(which python)"
+          benchmarks/profile/lsp_latency.py
           src/einf/analysis/lsp/cli.py
           src/einf/analysis/lsp/server.py
           src/einf/analysis/lsp/hover.py
           src/einf/analysis/lsp/inlay_hints.py
+          src/einf/analysis/lsp/position_codec.py
+          src/einf/analysis/lsp/semantic_tokens.py
+          tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis_lsp.py
+          tests/benchmarks/test_benchmark_lsp_latency.py
       - name: Test optional LSP transport
         run: >-
           pytest
           tests/analysis/test_analysis_lsp.py
           tests/analysis/test_analysis_lsp_debounce.py
+          tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
           tests/analysis/test_conformance_analysis.py
           tests/analysis/test_conformance_analysis_lsp.py
+          tests/benchmarks/test_benchmark_lsp_latency.py
 
   torch:
     name: torch-extra

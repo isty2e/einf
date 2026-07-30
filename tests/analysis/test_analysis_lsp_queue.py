@@ -17,6 +17,7 @@ def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
         uri=request.uri,
         path=Path(request.uri.removeprefix("file://")),
         version=request.version,
+        source=request.source,
         semantic_report=ValidationFileReport(
             path=request.uri,
             diagnostics=(),
