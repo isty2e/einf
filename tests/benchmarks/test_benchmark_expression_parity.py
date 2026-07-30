@@ -669,12 +669,26 @@ def test_expression_parity_renderers_preserve_inference_contract(
         notes=["lower bound is not output-equivalent"],
     )
 
-    payload = _to_json(report)
+    payload = _to_json(report, backend=BackendSpec(name="numpy"))
     json.dumps(payload)
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    assert {"python", "platform", "machine", "numpy", "torch", "einops", "einx", "einf"} <= set(
+        environment
+    )
+    assert payload["execution_target"] == {
+        "backend": "numpy",
+        "requested_device": "cpu",
+        "resolved_device": "cpu",
+    }
     measurement_contract = payload["measurement_contract"]
     assert isinstance(measurement_contract, dict)
-    assert measurement_contract["schedule"] == "interleaved_per_logical_batch"
+    assert measurement_contract["schedule"] == "paired_coordinate_rotating_order"
+    assert (
+        measurement_contract["synchronization"]
+        == "before_timer_start_and_before_timer_stop"
+    )
     case_results = payload["case_results"]
     assert isinstance(case_results, list)
     case_payload = case_results[0]

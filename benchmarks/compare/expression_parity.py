@@ -24,6 +24,10 @@ from benchmarks.harness import (
 )
 from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
+from benchmarks.harness.receipt import (
+    execution_target_payload,
+    synchronized_measurement_contract_payload,
+)
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
 from benchmarks.shared import as_single_array, version_or_missing
 from einf import ax, axes, einop
@@ -680,14 +684,30 @@ def _run_dynamic_case(
     )
 
 
-def _to_json(report: ExpressionParityReport) -> dict[str, object]:
+def _to_json(
+    report: ExpressionParityReport,
+    *,
+    backend: BackendSpec,
+) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "title": report.title,
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "numpy": version_or_missing("numpy"),
+            "torch": version_or_missing("torch"),
+            "einops": version_or_missing("einops"),
+            "einx": version_or_missing("einx"),
+            "einf": version_or_missing("einf"),
+        },
         "configuration": list(report.configuration),
         "methodology": list(report.methodology),
+        "execution_target": execution_target_payload(backend),
         "measurement_contract": {
-            "schedule": "interleaved_per_logical_batch",
+            **synchronized_measurement_contract_payload(),
+            "schedule": "paired_coordinate_rotating_order",
             "order": "continuous_rotation_from_one_deterministic_shuffled_order",
             "pairing_identity": [
                 "round_index",
@@ -698,7 +718,7 @@ def _to_json(report: ExpressionParityReport) -> dict[str, object]:
                 "competitor_mean_batch_latency_over_target_mean_batch_latency"
             ),
             "repeat_handling": "average_within_round_and_measured_batch",
-            "batch_materialization": ("regenerated_from_the_same_seed_for_each_repeat"),
+            "batch_stream": "regenerated_from_the_same_seed_for_each_repeat",
             "uncertainty": "round_stratified_batch_bootstrap",
         },
         "case_results": [
@@ -1013,6 +1033,8 @@ def main() -> int:
             f"einops: `{version_or_missing('einops')}`",
             f"einx: `{version_or_missing('einx')}`",
             "backend: `torch`",
+            f"requested device: `{backend.requested_device}`",
+            f"resolved device: `{backend.resolved_device}`",
             f"case: `{args.case}`",
             (
                 f"sizes(base): `b={sizes.b}, n={sizes.n}, d={sizes.d}, "
@@ -1030,9 +1052,9 @@ def main() -> int:
         ],
         methodology=[
             (
-                "Each logical batch is regenerated from the same seed for every "
-                "repeat, then cloned once per available strategy. This bounds "
-                "memory without changing the paired input."
+                "Each repeat regenerates the logical batch from the same seed. "
+                "One target batch is then shared by every strategy at that paired "
+                "coordinate."
             ),
             (
                 "Strategies run back-to-back on each logical batch, and their "
@@ -1040,13 +1062,13 @@ def main() -> int:
                 "deterministically shuffled base order."
             ),
             (
-                "Batch generation, cloning, and output observation happen outside "
-                "the timed interval. Only the strategy call is timed."
+                "The timer starts after target synchronization and stops when the "
+                "strategy's submitted work has completed. Batch generation, device "
+                "transfer, and output validation stay outside the interval."
             ),
             (
-                "Parity checks run after timing on disposable runners. A mismatch "
-                "aborts the report, and validation cannot warm caches before the "
-                "measured calls."
+                "Parity checks run before timing on disposable runners. A mismatch "
+                "aborts without warming the runner instances used for measurement."
             ),
             (
                 "Every timed call retains its round, measured batch, repeat, "
@@ -1085,7 +1107,7 @@ def main() -> int:
     if args.raw_output is not None:
         args.raw_output.parent.mkdir(parents=True, exist_ok=True)
         args.raw_output.write_text(
-            json.dumps(_to_json(report), indent=2),
+            json.dumps(_to_json(report, backend=backend), indent=2),
             encoding="utf-8",
         )
     if args.output is not None:

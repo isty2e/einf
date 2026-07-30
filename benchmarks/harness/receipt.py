@@ -1,6 +1,40 @@
 from pathlib import Path
 
+from .backend import BackendSpec
 from .result import PairedEvidence, TimingSummary
+
+
+def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
+    """Serialize the resolved benchmark execution target."""
+    return {
+        "backend": backend.name,
+        "requested_device": backend.requested_device,
+        "resolved_device": backend.resolved_device,
+    }
+
+
+def synchronized_measurement_contract_payload() -> dict[str, object]:
+    """Serialize the shared synchronized-completion timing contract."""
+    return {
+        "phase": "steady",
+        "clock": "host_perf_counter",
+        "synchronization": "before_timer_start_and_before_timer_stop",
+        "input_pairing": "same_prepared_tensor_objects_per_coordinate",
+        "timed_region": [
+            "library_call",
+            "target_completion_wait",
+        ],
+        "excluded": [
+            "runner_construction",
+            "parity_validation",
+            "warmup",
+            "input_preparation",
+            "input_device_transfer",
+            "output_validation",
+            "output_device_to_host_transfer",
+            "summary_and_serialization",
+        ],
+    }
 
 
 def resolve_raw_output_path(

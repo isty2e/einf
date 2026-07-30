@@ -15,6 +15,7 @@ from benchmarks.compare.einf_einops_einx_dynamic import (
 )
 from benchmarks.harness import (
     AvailableRun,
+    BackendSpec,
     BenchmarkCase,
     BenchSizes,
     CaseCalls,
@@ -255,9 +256,25 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         sizes=sizes,
         case_results=[result],
         workload_comparisons={"dynamic_case": workload_comparison},
+        backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
+    assert payload["execution_target"] == {
+        "backend": "numpy",
+        "requested_device": "cpu",
+        "resolved_device": "cpu",
+    }
+    measurement_contract = payload["measurement_contract"]
+    assert isinstance(measurement_contract, dict)
+    assert (
+        measurement_contract["synchronization"]
+        == "before_timer_start_and_before_timer_stop"
+    )
+    assert (
+        measurement_contract["input_pairing"]
+        == "same_prepared_tensor_objects_per_coordinate"
+    )
     cases = payload["cases"]
     assert isinstance(cases, list)
     json.dumps(payload)
@@ -370,9 +387,15 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
         config=config,
         sizes=sizes,
         case_results=[result],
+        backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
+    assert payload["execution_target"] == {
+        "backend": "numpy",
+        "requested_device": "cpu",
+        "resolved_device": "cpu",
+    }
     cases = payload["cases"]
     assert isinstance(cases, list)
     json.dumps(payload)

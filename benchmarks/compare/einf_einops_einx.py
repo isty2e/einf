@@ -26,8 +26,10 @@ from benchmarks.harness import (
     fixed_sizes_for_scale,
 )
 from benchmarks.harness.receipt import (
+    execution_target_payload,
     paired_evidence_payload,
     resolve_raw_output_path,
+    synchronized_measurement_contract_payload,
     timing_summary_payload,
 )
 from benchmarks.shared import as_single_array, available_libraries, version_or_missing
@@ -399,9 +401,10 @@ def _raw_payload(
     config: FixedTaskConfig,
     sizes: BenchSizes,
     case_results: list[FixedCaseResult],
+    backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "benchmark": "einf-vs-einops-einx-fixed",
         "environment": {
             "python": platform.python_version(),
@@ -413,6 +416,8 @@ def _raw_payload(
             "einx": version_or_missing("einx"),
             "einf": version_or_missing("einf"),
         },
+        "execution_target": execution_target_payload(backend),
+        "measurement_contract": synchronized_measurement_contract_payload(),
         "configuration": {
             "backend": config.backend,
             "scale": config.scale,
@@ -562,6 +567,8 @@ def main() -> int:
         configuration=[
             f"Python: `{platform.python_version()}`",
             f"backend: `{args.backend}`",
+            f"requested device: `{backend.requested_device}`",
+            f"resolved device: `{backend.resolved_device}`",
             f"NumPy: `{version_or_missing('numpy')}`",
             f"torch: `{version_or_missing('torch')}`",
             f"einops: `{version_or_missing('einops')}`",
@@ -589,10 +596,10 @@ def main() -> int:
             "phase: synchronized steady completion latency",
         ],
         methodology=[
-            "Timing uses host wall-clock latency from the library call through target synchronization.",
+            "The timer starts after target synchronization and stops when the call's submitted work has completed on that target.",
             "For each case, balanced round orders rotate libraries through first/middle/last positions deterministically.",
-            "Runner construction, parity validation, warmup, and input preparation occur before timed calls.",
-            "Every library receives the same prepared input tensor objects at one paired coordinate.",
+            "Runner construction, parity validation, warmup, input preparation, and device transfer stay outside the timed interval.",
+            "At each paired coordinate, every library receives the same prepared tuple and tensor objects.",
             "Every timed call remains an individual observation.",
             "Within each round, per-call library order rotates from the reported base order to spread position bias.",
             "Repeat blocks are paired across libraries before ratio estimation.",
@@ -601,7 +608,7 @@ def main() -> int:
         ],
         case_results=case_results,
         notes=[
-            "Fixed compare runs reuse one prepared input batch across all libraries.",
+            "Fixed comparisons reuse one prepared input batch across libraries and measured coordinates.",
             "Comparisons are only meaningful when all libraries are available in one environment.",
         ],
     )
@@ -617,6 +624,7 @@ def main() -> int:
                     config=config,
                     sizes=sizes,
                     case_results=case_results,
+                    backend=backend,
                 ),
                 indent=2,
             )

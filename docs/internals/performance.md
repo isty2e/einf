@@ -6,6 +6,12 @@ archived measurements, not current performance claims. The operation-level
 "Why" sections propose explanations consistent with the measurements; this
 benchmark does not decompose latency causally.
 
+The archived reports use a retired CPU-only harness that materialized separate
+inputs for each library. The current harness shares one prepared input per
+paired coordinate and measures synchronized completion on the resolved device.
+Do not compare these tables directly with receipts produced by the current
+harness.
+
 ## Snapshot scope
 
 - Date captured: 2026-04-17
@@ -24,10 +30,9 @@ Absolute milliseconds are hardware-dependent. Relative gaps are usually
 more portable than raw wall-clock numbers, but they still depend on
 this machine, these library versions, and this benchmark harness.
 
-For how the measurements are produced, see
-[Benchmarking](benchmarking.md). All numbers below are warm-state
-medians with `[p25 – p75]` inter-quartile ranges, from the same paired
-scheduling harness described there.
+For the current measurement contract, see [Benchmarking](benchmarking.md). All
+numbers below are archived warm-state medians with `[p25 – p75]`
+inter-quartile ranges from the retired harness.
 
 The archived dynamic reports predate the current versioned raw observation
 receipt, and the fixed reports likewise retain only marginal summaries. They
@@ -316,31 +321,32 @@ and `torch` installed:
 
 ```bash
 python -m benchmarks.compare.einf_einops_einx \
-  --backend torch --scale medium \
-  --rounds 6 --cold-repeats 3 --warmup 4 --warm-repeats 5 --warm-iterations 60 \
-  --output artifacts/bench/bench-torch-medium.md
+  --backend torch --device cpu --scale medium \
+  --rounds 6 --warmup 4 --repeats 5 --iterations 60 \
+  --output artifacts/bench/current/bench-torch-medium.md
 
 python -m benchmarks.compare.einf_einops_einx \
-  --backend torch --scale large \
-  --rounds 6 --cold-repeats 3 --warmup 4 --warm-repeats 5 --warm-iterations 60 \
-  --output artifacts/bench/bench-torch-large.md
+  --backend torch --device cpu --scale large \
+  --rounds 6 --warmup 4 --repeats 5 --iterations 60 \
+  --output artifacts/bench/current/bench-torch-large.md
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
-  --backend torch --scale medium \
+  --backend torch --device cpu --scale medium \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
-  --output artifacts/bench/bench-torch-medium-dynamic.md \
-  --raw-output artifacts/bench/raw/bench-torch-medium-dynamic.json
+  --output artifacts/bench/current/bench-torch-medium-dynamic.md \
+  --raw-output artifacts/bench/current/raw/bench-torch-medium-dynamic.json
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
-  --backend torch --scale large \
+  --backend torch --device cpu --scale large \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
-  --output artifacts/bench/bench-torch-large-dynamic.md \
-  --raw-output artifacts/bench/raw/bench-torch-large-dynamic.json
+  --output artifacts/bench/current/bench-torch-large-dynamic.md \
+  --raw-output artifacts/bench/current/raw/bench-torch-large-dynamic.json
 ```
 
 Running these commands now produces current-harness Markdown and raw JSON
-receipts. It does not recreate the archived 2026-04-17 environment or restore
-pairing identities that were not recorded in the historical Markdown.
+receipts. It does not recreate the archived 2026-04-17 environment, measurement
+contract, or missing pairing identities. Use new output paths rather than
+overwriting the historical artifacts listed above.
 
 See [Benchmarking](benchmarking.md) for the full methodology, other
 backends, and audit tools.
