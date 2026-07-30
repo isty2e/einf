@@ -240,7 +240,7 @@ class BenchmarkRunner:
         seed: int,
     ) -> list[tuple[Array, ...]]:
         generator = TensorGenerator.from_seed(backend=self.backend, seed=seed)
-        return [case_spec.batch_factory(generator) for _ in range(count)]
+        return [case_spec.make_batch(generator) for _ in range(count)]
 
     def run_dynamic_case(
         self,
@@ -267,6 +267,7 @@ class BenchmarkRunner:
         if not available_libs:
             return DynamicCaseResult(
                 case=case,
+                workload=case_spec.workload_metadata,
                 runs=runs,
                 round_orders=[],
                 observations=(),
@@ -412,6 +413,7 @@ class BenchmarkRunner:
         )
         return DynamicCaseResult(
             case=case,
+            workload=case_spec.workload_metadata,
             runs=runs,
             round_orders=round_orders,
             observations=observation_tuple,

@@ -4,6 +4,8 @@
 import argparse
 import json
 import platform
+from collections.abc import Mapping
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -17,10 +19,12 @@ from benchmarks.harness import (
     CaseCalls,
     DynamicCaseResult,
     DynamicCaseSpec,
+    DynamicShapeWorkload,
     DynamicTaskConfig,
+    DynamicWorkloadComparison,
+    DynamicWorkloadMetadata,
     MarkdownPrinter,
     Profiler,
-    TensorGenerator,
     TestResult,
     TimingSummary,
     UnavailableRun,
@@ -42,16 +46,89 @@ except ImportError:
 
 def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
     b, n, d, h, w, r, j = axes("b", "n", "d", "h", "w", "r", "j")
+    rearrange_transpose_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "n", "d"),
+        input_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["n"], dimensions["d"]),
+        ),
+        output_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["d"], dimensions["n"]),
+        ),
+    )
+    rearrange_flatten_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "h", "w", "d"),
+        input_shapes=lambda dimensions: (
+            (
+                dimensions["b"],
+                dimensions["h"],
+                dimensions["w"],
+                dimensions["d"],
+            ),
+        ),
+        output_shapes=lambda dimensions: (
+            (
+                dimensions["b"],
+                dimensions["h"] * dimensions["w"],
+                dimensions["d"],
+            ),
+        ),
+    )
+    repeat_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "d"),
+        input_shapes=lambda dimensions: ((dimensions["b"], dimensions["d"]),),
+        output_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["d"], dimensions["r"]),
+        ),
+    )
+    reduce_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "h", "w", "d"),
+        input_shapes=lambda dimensions: (
+            (
+                dimensions["b"],
+                dimensions["h"],
+                dimensions["w"],
+                dimensions["d"],
+            ),
+        ),
+        output_shapes=lambda dimensions: ((dimensions["b"], dimensions["d"]),),
+    )
+    contract_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "n", "d", "j"),
+        input_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["n"], dimensions["d"]),
+            (dimensions["d"], dimensions["j"]),
+        ),
+        output_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["n"], dimensions["j"]),
+        ),
+    )
+    einop_contract_split_workload = DynamicShapeWorkload(
+        sampled_dimensions=("b", "n", "d"),
+        input_shapes=lambda dimensions: (
+            (
+                dimensions["b"],
+                (dimensions["h"] + dimensions["w"]) * dimensions["r"],
+                dimensions["n"],
+            ),
+            (dimensions["n"], dimensions["d"]),
+        ),
+        output_shapes=lambda dimensions: (
+            (
+                dimensions["b"],
+                dimensions["h"] * dimensions["r"],
+                dimensions["d"],
+            ),
+            (
+                dimensions["b"],
+                dimensions["w"] * dimensions["r"],
+                dimensions["d"],
+            ),
+        ),
+    )
 
     def ref_rearrange_transpose(inputs):
         (x,) = inputs
         return np.transpose(x, (0, 2, 1))
-
-    def batch_rearrange_transpose(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        n_dim = generator.draw_dimension(base=sizes.n)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        return generator.backend_batch((generator.randn_numpy((b_dim, n_dim, d_dim)),))
 
     def make_einf_rearrange_transpose():
         op = rearrange(ax[b, n, d], ax[b, d, n])
@@ -76,15 +153,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
         b_dim, h_dim, w_dim, d_dim = x.shape
         return x.reshape((b_dim, h_dim * w_dim, d_dim))
 
-    def batch_rearrange_flatten(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        h_dim = generator.draw_dimension(base=sizes.h)
-        w_dim = generator.draw_dimension(base=sizes.w)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        return generator.backend_batch(
-            (generator.randn_numpy((b_dim, h_dim, w_dim, d_dim)),)
-        )
-
     def make_einf_rearrange_flatten():
         op = rearrange(ax[b, h, w, d], ax[b, (h * w), d])
         return lambda inputs: as_single_array(op(inputs[0]))
@@ -108,11 +176,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
         b_dim, d_dim = x.shape
         return np.broadcast_to(x[..., None], (b_dim, d_dim, sizes.r))
 
-    def batch_repeat(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        return generator.backend_batch((generator.randn_numpy((b_dim, d_dim)),))
-
     def make_einf_repeat():
         op = repeat(ax[b, d], ax[b, d, r]).with_sizes(r=sizes.r)
         return lambda inputs: as_single_array(op(inputs[0]))
@@ -135,15 +198,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
         (x,) = inputs
         return np.sum(x, axis=(1, 2))
 
-    def batch_reduce(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        h_dim = generator.draw_dimension(base=sizes.h)
-        w_dim = generator.draw_dimension(base=sizes.w)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        return generator.backend_batch(
-            (generator.randn_numpy((b_dim, h_dim, w_dim, d_dim)),)
-        )
-
     def make_einf_reduce():
         op = reduce(ax[b, h, w, d], ax[b, d])
         return lambda inputs: as_single_array(op(inputs[0]))
@@ -165,15 +219,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
     def ref_contract(inputs):
         lhs, rhs = inputs
         return np.einsum("bnd,dj->bnj", lhs, rhs)
-
-    def batch_contract(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        n_dim = generator.draw_dimension(base=sizes.n)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        j_dim = generator.draw_dimension(base=sizes.j)
-        lhs = generator.randn_numpy((b_dim, n_dim, d_dim))
-        rhs = generator.randn_numpy((d_dim, j_dim))
-        return generator.backend_batch((lhs, rhs))
 
     def make_einf_contract():
         op = contract((ax[b, n, d], ax[d, j]), ax[b, n, j])
@@ -200,14 +245,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
         split_index = sizes.h * sizes.r
         contracted = np.einsum("btn,nd->btd", lhs, rhs)
         return (contracted[:, :split_index, :], contracted[:, split_index:, :])
-
-    def batch_einop_contract_split(generator: TensorGenerator):
-        b_dim = generator.draw_dimension(base=sizes.b)
-        n_dim = generator.draw_dimension(base=sizes.n)
-        d_dim = generator.draw_dimension(base=sizes.d)
-        lhs = generator.randn_numpy((b_dim, (sizes.h + sizes.w) * sizes.r, n_dim))
-        rhs = generator.randn_numpy((n_dim, d_dim))
-        return generator.backend_batch((lhs, rhs))
 
     def make_einf_einop_contract_split():
         op = einop(
@@ -249,7 +286,7 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
             case=BenchmarkCase(
                 name="rearrange_transpose_dynamic",
                 description=(
-                    "Transpose with (b, n, d) varying every batch. "
+                    "Transpose the sequence and feature axes. "
                     "einf: rearrange(ax[b, n, d], ax[b, d, n]); "
                     "einops/einx: 'b n d -> b d n'."
                 ),
@@ -263,13 +300,14 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_rearrange_transpose,
                 make_einx_runner=make_einx_rearrange_transpose,
             ),
-            batch_factory=batch_rearrange_transpose,
+            sizes=sizes,
+            workload=rearrange_transpose_workload,
         ),
         DynamicCaseSpec(
             case=BenchmarkCase(
                 name="rearrange_flatten_hw_dynamic",
                 description=(
-                    "Flatten (h, w) where b/h/w/d vary every batch. "
+                    "Flatten the two spatial axes. "
                     "einf: rearrange(ax[b, h, w, d], ax[b, (h * w), d]); "
                     "einops/einx: 'b h w d -> b (h w) d'."
                 ),
@@ -283,12 +321,13 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_rearrange_flatten,
                 make_einx_runner=make_einx_rearrange_flatten,
             ),
-            batch_factory=batch_rearrange_flatten,
+            sizes=sizes,
+            workload=rearrange_flatten_workload,
         ),
         DynamicCaseSpec(
             case=BenchmarkCase(
                 name="repeat_expand_axis_dynamic",
-                description="Repeat with fixed r but b/d varying every batch.",
+                description="Repeat values along a new trailing axis.",
                 calls=CaseCalls(
                     einf="repeat(ax[b, d], ax[b, d, r]).with_sizes(r=r)(x)",
                     einops='einops.repeat(x, "b d -> b d r", r=r)',
@@ -299,12 +338,13 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_repeat,
                 make_einx_runner=make_einx_repeat,
             ),
-            batch_factory=batch_repeat,
+            sizes=sizes,
+            workload=repeat_workload,
         ),
         DynamicCaseSpec(
             case=BenchmarkCase(
                 name="reduce_sum_axes_dynamic",
-                description="Reduce sum with b/h/w/d varying every batch.",
+                description="Reduce the two spatial axes by summation.",
                 calls=CaseCalls(
                     einf="reduce(ax[b, h, w, d], ax[b, d])(x)",
                     einops='einops.reduce(x, "b h w d -> b d", "sum")',
@@ -315,12 +355,13 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_reduce,
                 make_einx_runner=make_einx_reduce,
             ),
-            batch_factory=batch_reduce,
+            sizes=sizes,
+            workload=reduce_workload,
         ),
         DynamicCaseSpec(
             case=BenchmarkCase(
                 name="contract_matmul_dynamic",
-                description="Contract with b/n/d/j varying every batch.",
+                description="Contract a batched sequence with a projection matrix.",
                 calls=CaseCalls(
                     einf="contract((ax[b, n, d], ax[d, j]), ax[b, n, j])(lhs, rhs)",
                     einops='einops.einsum(lhs, rhs, "b n d, d j -> b n j")',
@@ -331,15 +372,13 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_contract,
                 make_einx_runner=make_einx_contract,
             ),
-            batch_factory=batch_contract,
+            sizes=sizes,
+            workload=contract_workload,
         ),
         DynamicCaseSpec(
             case=BenchmarkCase(
                 name="einop_contract_split_dynamic",
-                description=(
-                    "Two-stage contract+split with dynamic b/n/d and fixed h/w/r "
-                    "split boundary."
-                ),
+                description="Contract, then split the projected sequence.",
                 calls=CaseCalls(
                     einf=(
                         "einop((ax[b, ((h + w) * r), n], ax[n, d]), "
@@ -360,7 +399,8 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
                 make_einops_runner=make_einops_two_stage_contract_split,
                 make_einx_runner=make_einx_two_stage_contract_split,
             ),
-            batch_factory=batch_einop_contract_split,
+            sizes=sizes,
+            workload=einop_contract_split_workload,
         ),
     ]
 
@@ -379,14 +419,62 @@ def _summary_payload(summary: TimingSummary) -> dict[str, int | float]:
     }
 
 
+def _fraction_payload(ratio: Fraction) -> dict[str, int]:
+    return {
+        "numerator": ratio.numerator,
+        "denominator": ratio.denominator,
+    }
+
+
+def _workload_payload(
+    metadata: DynamicWorkloadMetadata,
+    comparison: DynamicWorkloadComparison,
+    /,
+) -> dict[str, object]:
+    return {
+        "dimensions": [
+            {
+                "name": dimension.name,
+                "mode": dimension.mode.value,
+                "base": dimension.base,
+                "minimum": dimension.minimum,
+                "maximum": dimension.maximum,
+            }
+            for dimension in metadata.dimensions
+        ],
+        "base_input_shapes": [list(shape) for shape in metadata.base_input_shapes],
+        "base_output_shapes": [list(shape) for shape in metadata.base_output_shapes],
+        "base_input_elements": metadata.base_input_elements,
+        "base_output_elements": metadata.base_output_elements,
+        "scale_comparison": {
+            "scale": comparison.scale,
+            "reference_scale": comparison.reference_scale,
+            "dimension_ratios": [
+                {
+                    "name": name,
+                    **_fraction_payload(ratio),
+                }
+                for name, ratio in comparison.dimension_ratios
+            ],
+            "base_input_elements_ratio": _fraction_payload(
+                comparison.base_input_elements_ratio
+            ),
+            "base_output_elements_ratio": _fraction_payload(
+                comparison.base_output_elements_ratio
+            ),
+        },
+    }
+
+
 def _raw_payload(
     *,
     config: DynamicTaskConfig,
     sizes: BenchSizes,
     case_results: list[DynamicCaseResult],
+    workload_comparisons: Mapping[str, DynamicWorkloadComparison],
 ) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -429,6 +517,10 @@ def _raw_payload(
                         "einx": case_result.case.calls.einx,
                     },
                 },
+                "workload": _workload_payload(
+                    case_result.workload,
+                    workload_comparisons[case_result.case.name],
+                ),
                 "runs": {
                     library: (
                         {
@@ -481,6 +573,23 @@ def _raw_payload(
             }
             for case_result in case_results
         ],
+    }
+
+
+def _compare_workloads_to_medium(
+    case_specs: list[DynamicCaseSpec],
+    /,
+    *,
+    scale: str,
+) -> dict[str, DynamicWorkloadComparison]:
+    reference_sizes = dynamic_sizes_for_scale("medium")
+    return {
+        case_spec.case.name: case_spec.workload_metadata.compare_to(
+            case_spec.workload.metadata(sizes=reference_sizes),
+            scale=scale,
+            reference_scale="medium",
+        )
+        for case_spec in case_specs
     }
 
 
@@ -608,6 +717,10 @@ def main() -> int:
     )
 
     case_specs = _build_case_specs(sizes=sizes)
+    workload_comparisons = _compare_workloads_to_medium(
+        case_specs,
+        scale=args.scale,
+    )
     case_results = [
         runner.run_dynamic_case(case_spec=case_spec, config=config, case_index=index)
         for index, case_spec in enumerate(case_specs)
@@ -633,7 +746,7 @@ def main() -> int:
                 f"sizes(base): `b={sizes.b}, n={sizes.n}, d={sizes.d}, "
                 f"h={sizes.h}, w={sizes.w}, r={sizes.r}, j={sizes.j}`"
             ),
-            "each dimension is sampled per batch in `[0.6x, 1.4x]` of base size",
+            "sampling ranges and fixed dimensions are reported for each case",
             f"seed: `{args.seed}`",
             f"round order seed: `{round_order_seed}`",
             f"total batches per case: `{args.batches}`",
@@ -673,7 +786,10 @@ def main() -> int:
         ],
     )
 
-    report = MarkdownPrinter().render_dynamic(result)
+    report = MarkdownPrinter().render_dynamic(
+        result,
+        workload_comparisons=workload_comparisons,
+    )
     print(report)
 
     if raw_output_path is not None:
@@ -684,6 +800,7 @@ def main() -> int:
                     config=config,
                     sizes=sizes,
                     case_results=case_results,
+                    workload_comparisons=workload_comparisons,
                 ),
                 indent=2,
             )

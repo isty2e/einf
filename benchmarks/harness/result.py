@@ -4,6 +4,7 @@ from typing import Generic, TypeVar
 
 from .case import BenchmarkCase
 from .types import LibraryName
+from .workload import DynamicWorkloadMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +133,7 @@ class DynamicCaseResult:
     """One dynamic-shape benchmark case with raw and derived evidence."""
 
     case: BenchmarkCase
+    workload: DynamicWorkloadMetadata
     runs: dict[LibraryName, DynamicRunResult]
     round_orders: list[tuple[LibraryName, ...]]
     observations: tuple[DynamicObservation, ...]

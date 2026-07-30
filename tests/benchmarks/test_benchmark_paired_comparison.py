@@ -14,7 +14,9 @@ from benchmarks.harness import (
     DynamicCaseResult,
     DynamicObservation,
     DynamicRun,
+    DynamicShapeWorkload,
     DynamicTaskConfig,
+    DynamicWorkloadMetadata,
     PairedComparison,
     TimingSummary,
 )
@@ -69,6 +71,18 @@ def _case() -> BenchmarkCase:
         make_einops_runner=lambda: lambda inputs: inputs[0],
         make_einx_runner=lambda: lambda inputs: inputs[0],
     )
+
+
+def _workload() -> tuple[BenchSizes, DynamicWorkloadMetadata]:
+    sizes = BenchSizes(b=1, n=2, d=3, h=4, w=5, r=6, j=7)
+    workload = DynamicShapeWorkload(
+        sampled_dimensions=("b",),
+        input_shapes=lambda dimensions: ((dimensions["b"], dimensions["d"]),),
+        output_shapes=lambda dimensions: (
+            (dimensions["b"], dimensions["d"], dimensions["r"]),
+        ),
+    )
+    return sizes, workload.metadata(sizes=sizes)
 
 
 def test_paired_comparison_aggregates_repeats_at_batch_level() -> None:
@@ -153,6 +167,12 @@ def test_paired_comparison_rejects_duplicate_call_identity() -> None:
 
 
 def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> None:
+    sizes, workload = _workload()
+    workload_comparison = workload.compare_to(
+        workload,
+        scale="medium",
+        reference_scale="medium",
+    )
     observation = DynamicObservation(
         round_index=1,
         measured_batch_index=2,
@@ -175,6 +195,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
     )
     result = DynamicCaseResult(
         case=_case(),
+        workload=workload,
         runs={
             "einf": DynamicRun(
                 summary=_summary(mean_ms=1.0),
@@ -207,16 +228,57 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
 
     payload = _raw_payload(
         config=config,
-        sizes=BenchSizes(b=1, n=2, d=3, h=4, w=5, r=6, j=7),
+        sizes=sizes,
         case_results=[result],
+        workload_comparisons={"dynamic_case": workload_comparison},
     )
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     cases = payload["cases"]
     assert isinstance(cases, list)
     json.dumps(payload)
     case_payload = cases[0]
     assert case_payload["case"]["name"] == "dynamic_case"
+    assert case_payload["workload"] == {
+        "dimensions": [
+            {
+                "name": "b",
+                "mode": "sampled",
+                "base": 1,
+                "minimum": 1,
+                "maximum": 1,
+            },
+            {
+                "name": "d",
+                "mode": "fixed",
+                "base": 3,
+                "minimum": 3,
+                "maximum": 3,
+            },
+            {
+                "name": "r",
+                "mode": "fixed",
+                "base": 6,
+                "minimum": 6,
+                "maximum": 6,
+            },
+        ],
+        "base_input_shapes": [[1, 3]],
+        "base_output_shapes": [[1, 3, 6]],
+        "base_input_elements": 3,
+        "base_output_elements": 18,
+        "scale_comparison": {
+            "scale": "medium",
+            "reference_scale": "medium",
+            "dimension_ratios": [
+                {"name": "b", "numerator": 1, "denominator": 1},
+                {"name": "d", "numerator": 1, "denominator": 1},
+                {"name": "r", "numerator": 1, "denominator": 1},
+            ],
+            "base_input_elements_ratio": {"numerator": 1, "denominator": 1},
+            "base_output_elements_ratio": {"numerator": 1, "denominator": 1},
+        },
+    }
     assert case_payload["observations"] == [
         {
             "round_index": 1,

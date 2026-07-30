@@ -1,5 +1,6 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from fractions import Fraction
 
 from .result import (
     DynamicCaseResult,
@@ -11,6 +12,11 @@ from .result import (
     UnavailableRun,
 )
 from .types import LibraryName
+from .workload import (
+    DimensionMode,
+    DynamicWorkloadComparison,
+    DynamicWorkloadMetadata,
+)
 
 _LIBRARY_NAMES: tuple[LibraryName, ...] = ("einf", "einops", "einx")
 
@@ -22,6 +28,68 @@ def _format_summary(summary: TimingSummary | None) -> str:
         f"{summary.count} | {summary.p25_ms:.4f} | {summary.median_ms:.4f} | "
         f"{summary.p75_ms:.4f} | {summary.iqr_ms:.4f} | {summary.p95_ms:.4f}"
     )
+
+
+def _format_shape(shape: tuple[int, ...]) -> str:
+    return " x ".join(map(str, shape)) if shape else "scalar"
+
+
+def _format_shapes(shapes: tuple[tuple[int, ...], ...]) -> str:
+    return ", ".join(f"`{_format_shape(shape)}`" for shape in shapes)
+
+
+def _format_ratio(ratio: Fraction) -> str:
+    exact = (
+        str(ratio.numerator)
+        if ratio.denominator == 1
+        else f"{ratio.numerator}/{ratio.denominator}"
+    )
+    return f"`{exact}` ({float(ratio):.3f}x)"
+
+
+def _render_workload(
+    *,
+    metadata: DynamicWorkloadMetadata,
+    comparison: DynamicWorkloadComparison,
+) -> list[str]:
+    ratios = dict(comparison.dimension_ratios)
+    lines = [
+        "Workload:",
+        "",
+        (
+            f"- Profile comparison: `{comparison.scale}` / "
+            f"`{comparison.reference_scale}`"
+        ),
+    ]
+    for dimension in metadata.dimensions:
+        mode = (
+            "sampled per batch"
+            if dimension.mode is DimensionMode.SAMPLED
+            else "fixed at profile base"
+        )
+        lines.append(
+            f"- `{dimension.name}`: {mode}; base `{dimension.base}`; "
+            f"inclusive range `[{dimension.minimum}, {dimension.maximum}]`; "
+            f"base ratio {_format_ratio(ratios[dimension.name])}"
+        )
+    lines.extend(
+        [
+            f"- Base input shapes: {_format_shapes(metadata.base_input_shapes)}",
+            f"- Base output shapes: {_format_shapes(metadata.base_output_shapes)}",
+            (
+                f"- Total base input elements: `{metadata.base_input_elements}`; "
+                "ratio "
+                f"{_format_ratio(comparison.base_input_elements_ratio)}"
+            ),
+            (
+                f"- Total base output elements: `{metadata.base_output_elements}`; "
+                "ratio "
+                f"{_format_ratio(comparison.base_output_elements_ratio)}"
+            ),
+            "",
+        ]
+    )
+    return lines
 
 
 def _format_round_medians(
@@ -110,21 +178,35 @@ class MarkdownPrinter:
         lines.append("")
         return "\n".join(lines)
 
-    def _render_dynamic_case_table(self, case_result: DynamicCaseResult) -> str:
+    def _render_dynamic_case_table(
+        self,
+        case_result: DynamicCaseResult,
+        workload_comparison: DynamicWorkloadComparison,
+    ) -> str:
         lines = [
             f"### {case_result.case.name}",
             "",
             case_result.case.description,
             "",
-            "Execution forms:",
-            "",
-            f"- `einf`: `{case_result.case.calls.einf}`",
-            f"- `einops`: `{case_result.case.calls.einops}`",
-            f"- `einx`: `{case_result.case.calls.einx}`",
-            "",
-            "| Library | Call observations | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
+        lines.extend(
+            _render_workload(
+                metadata=case_result.workload,
+                comparison=workload_comparison,
+            )
+        )
+        lines.extend(
+            [
+                "Execution forms:",
+                "",
+                f"- `einf`: `{case_result.case.calls.einf}`",
+                f"- `einops`: `{case_result.case.calls.einops}`",
+                f"- `einx`: `{case_result.case.calls.einx}`",
+                "",
+                "| Library | Call observations | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
         for lib_name in _LIBRARY_NAMES:
             run = case_result.runs[lib_name]
             if isinstance(run, UnavailableRun):
@@ -212,7 +294,12 @@ class MarkdownPrinter:
         lines.append("")
         return "\n".join(lines)
 
-    def render_dynamic(self, result: TestResult[DynamicCaseResult]) -> str:
+    def render_dynamic(
+        self,
+        result: TestResult[DynamicCaseResult],
+        *,
+        workload_comparisons: Mapping[str, DynamicWorkloadComparison],
+    ) -> str:
         """Render one dynamic benchmark report."""
         lines = [result.title, "", "## Configuration", ""]
         lines.extend(f"- {entry}" for entry in result.configuration)
@@ -220,7 +307,12 @@ class MarkdownPrinter:
         lines.extend(f"- {entry}" for entry in result.methodology)
         lines.extend(["", "## Results", ""])
         for case_result in result.case_results:
-            lines.append(self._render_dynamic_case_table(case_result))
+            lines.append(
+                self._render_dynamic_case_table(
+                    case_result,
+                    workload_comparisons[case_result.case.name],
+                )
+            )
         lines.extend(["## Notes", ""])
         lines.extend(f"- {entry}" for entry in result.notes)
         lines.append("")

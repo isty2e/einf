@@ -4,6 +4,7 @@ from .backend import BackendSpec
 from .case import BenchmarkCase, CaseCalls, DynamicCaseSpec, FixedCaseSpec
 from .config import (
     BenchSizes,
+    DimensionName,
     DynamicScaleName,
     DynamicTaskConfig,
     FixedTaskConfig,
@@ -37,6 +38,13 @@ from .types import (
     Runner,
     torch,
 )
+from .workload import (
+    DimensionMode,
+    DynamicShapeWorkload,
+    DynamicWorkloadComparison,
+    DynamicWorkloadMetadata,
+    WorkloadDimension,
+)
 
 __all__ = [
     "Array",
@@ -46,12 +54,17 @@ __all__ = [
     "BenchmarkCase",
     "BenchmarkRunner",
     "CaseCalls",
+    "DimensionMode",
+    "DimensionName",
     "DynamicCaseResult",
     "DynamicCaseSpec",
     "DynamicObservation",
     "DynamicRun",
     "DynamicScaleName",
+    "DynamicShapeWorkload",
     "DynamicTaskConfig",
+    "DynamicWorkloadComparison",
+    "DynamicWorkloadMetadata",
     "FixedCaseResult",
     "FixedCaseSpec",
     "FixedRun",
@@ -70,6 +83,7 @@ __all__ = [
     "TestResult",
     "TimingSummary",
     "UnavailableRun",
+    "WorkloadDimension",
     "dynamic_sizes_for_scale",
     "fixed_sizes_for_scale",
     "torch",
