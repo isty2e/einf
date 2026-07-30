@@ -41,20 +41,24 @@ median and IQR separation is not a statistical significance or noise test.
   warmup. Each of the 30 warm observations per library/case is the
   arithmetic mean of 60 timed calls. Their marginal IQRs describe
   observation spread; overlap or separation does not establish significance.
-- **Dynamic** cases resample every batch dimension in `[0.6×, 1.4×]`
-  of the base size and report 420 call observations per library/case:
-  84 round/batch workload units, each measured five times. Their marginal
-  IQRs mix workload-shape variation and timing variation. Repeats are not
-  independent workload units.
+- **Dynamic** cases resample the dimensions declared dynamic for that case;
+  the remaining dimensions stay fixed at their profile values. Each archived
+  case reports 420 call observations per library/case: 84 round/batch workload
+  units, each measured five times. Their marginal IQRs mix workload-shape
+  variation and timing variation. Repeats are not independent workload units.
 - In both suites every library sees the same logical input at each
   round position with independently materialised tensors and rotated
   order. That design spreads cache-state, first-executor, and order effects,
   but it does not prove that those effects or system jitter are absent.
 
-Two scale families are reported, `M` (medium) and `L` (large).
-Dimension bases: `b=16, n=192, d=96, h=32, w=24, r=16, j=128` at medium;
-4× larger per applicable axis at large. Large shapes push per-call
-compute up; dispatch overhead becomes a smaller fraction of the total.
+Two scale families are reported, `M` (medium) and `L` (large). The medium
+dimension bases are `b=16, n=192, d=96, h=32, w=24, r=16, j=128`; the large
+bases are `b=24, n=384, d=128, h=48, w=32, r=24, j=192`. The exact
+large-to-medium ratios are `3/2` for `b`, `h`, `r`, and `j`; `2` for `n`; and
+`4/3` for `d` and `w`. Input and output volume therefore scale differently by
+case.
+Current generated reports list these ratios and each case's sampling ranges
+from the executable workload definition.
 
 ## Per-op breakdown
 
