@@ -38,12 +38,15 @@ def _shift_diagnostic(
 def _shift_axis_token(token: AxisToken, *, line_delta: int) -> AxisToken:
     return AxisToken(
         name=token.name,
+        kind=token.kind,
+        side=token.side,
+        relation=token.relation,
+        role=token.role,
         span=TextSpan(
             start=_shift_position(token.span.start, line_delta=line_delta),
             end=_shift_position(token.span.end, line_delta=line_delta),
         ),
         group=token.group,
-        roles=token.roles,
     )
 
 
@@ -93,9 +96,12 @@ def test_contract_marks_contracted_axes() -> None:
     contracted_d_tokens = [
         token
         for token in result.axis_tokens
-        if token.name == "d" and "contracted" in token.roles
+        if token.name == "d" and token.role == "contracted"
     ]
     assert len(contracted_d_tokens) == 2
+    assert all(token.kind == "axis" for token in contracted_d_tokens)
+    assert all(token.side == "lhs" for token in contracted_d_tokens)
+    assert all(token.relation == "side_only" for token in contracted_d_tokens)
     assert result.diagnostics == ()
 
 
@@ -114,8 +120,12 @@ def test_same_axis_name_keeps_same_group() -> None:
         "rearrange(ax[b, n, d], ax[b, d, n])\nrearrange(ax[b, d, n], ax[b, n, d])\n"
     )
     result = _analyze(source)
-    b_groups = {token.group for token in result.axis_tokens if token.name == "b"}
+    b_tokens = [token for token in result.axis_tokens if token.name == "b"]
+    b_groups = {token.group for token in b_tokens}
     assert len(b_groups) == 1
+    assert all(token.kind == "axis" for token in b_tokens)
+    assert all(token.relation == "shared" for token in b_tokens)
+    assert all(token.role is None for token in b_tokens)
 
 
 def test_invalid_side_expression_reports_span() -> None:
@@ -529,10 +539,11 @@ def test_repeat_marks_rhs_only_axis_as_introduced() -> None:
     introduced_tokens = [
         token
         for token in result.axis_tokens
-        if token.name == "n" and "introduced" in token.roles
+        if token.name == "n" and token.role == "introduced"
     ]
     assert len(introduced_tokens) == 1
-    assert "rhs" in introduced_tokens[0].roles
+    assert introduced_tokens[0].side == "rhs"
+    assert introduced_tokens[0].relation == "side_only"
 
 
 def test_reduce_marks_lhs_only_axes_as_reduced() -> None:
@@ -540,10 +551,11 @@ def test_reduce_marks_lhs_only_axes_as_reduced() -> None:
     reduced_tokens = [
         token
         for token in result.axis_tokens
-        if token.name in {"n", "d"} and "reduced" in token.roles
+        if token.name in {"n", "d"} and token.role == "reduced"
     ]
     assert len(reduced_tokens) == 2
-    assert all("lhs" in token.roles for token in reduced_tokens)
+    assert all(token.side == "lhs" for token in reduced_tokens)
+    assert all(token.relation == "side_only" for token in reduced_tokens)
 
 
 def test_base_call_rejects_extra_positional_arguments() -> None:
@@ -605,10 +617,83 @@ def test_attribute_ax_subscript_is_accepted() -> None:
     assert len(n_tokens) == 2
 
 
-def test_axis_pack_only_specs_do_not_emit_named_axis_tokens() -> None:
-    result = _analyze("rearrange(ax[*T], ax[*T])\n")
+def test_axis_pack_specs_emit_structured_identifier_tokens() -> None:
+    source = "rearrange(ax[*T], ax[*T])\n"
+    result = _analyze(source)
     assert result.diagnostics == ()
-    assert result.axis_tokens == ()
+    assert len(result.axis_tokens) == 2
+    lhs_token, rhs_token = result.axis_tokens
+    assert lhs_token.name == rhs_token.name == "T"
+    assert lhs_token.kind == rhs_token.kind == "pack"
+    assert lhs_token.side == "lhs"
+    assert rhs_token.side == "rhs"
+    assert lhs_token.relation == rhs_token.relation == "shared"
+    assert lhs_token.role is rhs_token.role is None
+    assert lhs_token.group == rhs_token.group
+    assert all(
+        _slice_span_text(
+            source,
+            line=token.span.start.line,
+            start=token.span.start.column,
+            end=token.span.end.column,
+        )
+        == "T"
+        for token in result.axis_tokens
+    )
+
+
+def test_scalar_axis_and_pack_with_same_name_use_distinct_groups() -> None:
+    result = _analyze("rearrange(ax[T], ax[*T])\n")
+    assert len(result.axis_tokens) == 2
+    scalar_token, pack_token = result.axis_tokens
+    assert scalar_token.kind == "axis"
+    assert pack_token.kind == "pack"
+    assert scalar_token.group != pack_token.group
+    assert scalar_token.relation == pack_token.relation == "side_only"
+    assert any(
+        diagnostic.code == "ANALYSIS_CALL_SHAPE_ERROR"
+        for diagnostic in result.diagnostics
+    )
+
+
+def test_pack_operation_roles_are_derived_separately_from_structure() -> None:
+    introduced = _analyze("repeat(ax[b], ax[b, *T])\n")
+    reduced = _analyze("reduce(ax[b, *T], ax[b])\n")
+
+    introduced_pack = next(
+        token for token in introduced.axis_tokens if token.kind == "pack"
+    )
+    reduced_pack = next(token for token in reduced.axis_tokens if token.kind == "pack")
+
+    assert introduced_pack.side == "rhs"
+    assert introduced_pack.relation == "side_only"
+    assert introduced_pack.role == "introduced"
+    assert reduced_pack.side == "lhs"
+    assert reduced_pack.relation == "side_only"
+    assert reduced_pack.role == "reduced"
+
+
+def test_reduce_reports_rhs_pack_missing_from_lhs_at_identifier_span() -> None:
+    source = "reduce(ax[b], ax[b, *T])\n"
+    result = _analyze(source)
+    diagnostics = [
+        diagnostic
+        for diagnostic in result.diagnostics
+        if diagnostic.code == "ANALYSIS_AXIS_NOT_IN_INPUT"
+    ]
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert "axis pack 'T'" in diagnostic.message
+    assert diagnostic.span is not None
+    assert (
+        _slice_span_text(
+            source,
+            line=diagnostic.span.start.line,
+            start=diagnostic.span.start.column,
+            end=diagnostic.span.end.column,
+        )
+        == "T"
+    )
 
 
 def test_rearrange_does_not_emit_rhs_subset_diagnostic() -> None:
@@ -666,6 +751,24 @@ def test_axis_tokens_survive_unicode_prefix_on_same_line() -> None:
     assert result.diagnostics == ()
     assert len([token for token in result.axis_tokens if token.name == "b"]) == 2
     assert len([token for token in result.axis_tokens if token.name == "n"]) == 2
+
+
+def test_axis_pack_tokens_survive_unicode_prefix_on_same_line() -> None:
+    source = "é = 1; rearrange(ax[*T], ax[*T])\n"
+    result = _analyze(source)
+    assert result.diagnostics == ()
+    assert len(result.axis_tokens) == 2
+    assert all(token.kind == "pack" for token in result.axis_tokens)
+    assert all(
+        _slice_span_text(
+            source,
+            line=token.span.start.line,
+            start=token.span.start.column,
+            end=token.span.end.column,
+        )
+        == "T"
+        for token in result.axis_tokens
+    )
 
 
 def test_diagnostics_are_sorted_by_source_position() -> None:
@@ -793,8 +896,8 @@ def test_repeat_marks_introduced_axis_role() -> None:
     result = _analyze("repeat(ax[b, n], ax[b, n, z])\n")
     z_tokens = [token for token in result.axis_tokens if token.name == "z"]
     assert len(z_tokens) == 1
-    assert "introduced" in z_tokens[0].roles
-    assert "rhs" in z_tokens[0].roles
+    assert z_tokens[0].role == "introduced"
+    assert z_tokens[0].side == "rhs"
 
 
 def test_reduce_marks_reduced_axis_roles() -> None:
@@ -802,6 +905,6 @@ def test_reduce_marks_reduced_axis_roles() -> None:
     reduced_tokens = [
         token
         for token in result.axis_tokens
-        if token.name in {"n", "d"} and "reduced" in token.roles
+        if token.name in {"n", "d"} and token.role == "reduced"
     ]
     assert len(reduced_tokens) == 2

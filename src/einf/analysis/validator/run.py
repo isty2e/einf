@@ -25,7 +25,7 @@ from einf.analysis.validator.model import (
     ValidationReport,
 )
 
-SCHEMA_VERSION = "0.2"
+SCHEMA_VERSION = "0.3"
 SUPPORTED_PARSER_NAMES = ("ast", "libcst")
 
 

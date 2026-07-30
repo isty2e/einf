@@ -23,6 +23,9 @@ _INVALID_DSL_SOURCE = """from einf import ax, axes, reduce
 b, n, z = axes("b", "n", "z")
 reduce(ax[b, n], ax[b, z])
 """
+_PACK_SOURCE = """from einf import ax, rearrange
+rearrange(ax[*T], ax[*T])
+"""
 _MALFORMED_SOURCE = "from einf import rearrange\nrearrange(\n"
 
 
@@ -231,6 +234,26 @@ def test_libcst_backend_matches_ast_diagnostics_and_tokens_when_installed() -> N
 
     assert libcst_output.diagnostics == ast_output.diagnostics
     assert libcst_output.axis_tokens == ast_output.axis_tokens
+
+
+def test_libcst_backend_matches_ast_pack_tokens_when_installed() -> None:
+    if importlib.util.find_spec("libcst") is None:
+        pytest.skip("libcst is not installed in this environment")
+
+    ast_output = analyze_module(
+        source=_PACK_SOURCE,
+        path=Path("sample.py"),
+        parser_backend=AstParserBackend(),
+    )
+    libcst_output = analyze_module(
+        source=_PACK_SOURCE,
+        path=Path("sample.py"),
+        parser_backend=LibCstParserBackend(),
+    )
+
+    assert libcst_output.diagnostics == ast_output.diagnostics == ()
+    assert libcst_output.axis_tokens == ast_output.axis_tokens
+    assert tuple(token.kind for token in libcst_output.axis_tokens) == ("pack", "pack")
 
 
 def test_libcst_backend_normalizes_syntax_error_when_installed() -> None:

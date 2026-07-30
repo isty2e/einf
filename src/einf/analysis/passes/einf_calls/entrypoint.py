@@ -1,10 +1,19 @@
-from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextSpan
+from einf.analysis.model import (
+    AnalysisDiagnostic,
+    AxisStructuralKind,
+    AxisToken,
+    TextSpan,
+)
 from einf.analysis.parser import ParsedModule
 from einf.analysis.passes.call_resolution import build_call_bindings
 from einf.analysis.source import SourceText
 
 from .semantics import _parse_call_expression
-from .tokens import _axis_roles, _build_missing_rhs_axis_diagnostics
+from .tokens import (
+    _axis_relation,
+    _axis_role,
+    _build_missing_rhs_symbol_diagnostics,
+)
 
 
 def _parent_map(module: ParsedModule) -> dict[int, int]:
@@ -48,7 +57,8 @@ def analyze_einf_calls(
         source_text=module_source,
     )
     diagnostics: list[AnalysisDiagnostic] = []
-    raw_tokens: list[tuple[str, TextSpan, tuple[str, ...]]] = []
+    group_by_symbol: dict[tuple[AxisStructuralKind, str], int] = {}
+    axis_tokens: list[AxisToken] = []
     seen_base_call_spans: set[TextSpan] = set()
 
     parent_by_child = _parent_map(module)
@@ -82,43 +92,39 @@ def analyze_einf_calls(
             continue
         seen_base_call_spans.add(call.span)
 
-        lhs_axis_names = call.lhs.axis_names
-        rhs_axis_names = call.rhs.axis_names
-        diagnostics.extend(_build_missing_rhs_axis_diagnostics(call=call))
+        diagnostics.extend(_build_missing_rhs_symbol_diagnostics(call=call))
 
         for occurrence in (*call.lhs.occurrences, *call.rhs.occurrences):
-            raw_tokens.append(
-                (
-                    occurrence.name,
-                    occurrence.span,
-                    _axis_roles(
-                        op_name=call.op_name,
-                        side=occurrence.side,
-                        axis_name=occurrence.name,
-                        lhs_axis_names=lhs_axis_names,
-                        rhs_axis_names=rhs_axis_names,
-                    ),
+            relation = _axis_relation(call=call, occurrence=occurrence)
+            role = _axis_role(
+                op_name=call.op_name,
+                side=occurrence.side,
+                relation=relation,
+            )
+            group_key = (occurrence.kind, occurrence.name)
+            group = group_by_symbol.get(group_key)
+            if group is None:
+                group = len(group_by_symbol)
+                group_by_symbol[group_key] = group
+            axis_tokens.append(
+                AxisToken(
+                    name=occurrence.name,
+                    kind=occurrence.kind,
+                    side=occurrence.side,
+                    relation=relation,
+                    role=role,
+                    span=occurrence.span,
+                    group=group,
                 )
             )
 
-    group_by_axis_name: dict[str, int] = {}
-    axis_tokens: list[AxisToken] = []
-    for axis_name, span, roles in raw_tokens:
-        group = group_by_axis_name.get(axis_name)
-        if group is None:
-            group = len(group_by_axis_name)
-            group_by_axis_name[axis_name] = group
-        axis_tokens.append(
-            AxisToken(
-                name=axis_name,
-                span=span,
-                group=group,
-                roles=roles,
-            )
-        )
-
     axis_tokens.sort(
-        key=lambda token: (token.span.start.line, token.span.start.column, token.name)
+        key=lambda token: (
+            token.span.start.line,
+            token.span.start.column,
+            token.name,
+            token.kind,
+        )
     )
     diagnostics.sort(
         key=lambda diagnostic: (

@@ -7,6 +7,9 @@ CONTRACT_SOURCE = """from einf import ax, axes, contract
 i, k, j = axes("i", "k", "j")
 contract((ax[i, k], ax[k, j]), ax[i, j])
 """
+PACK_SOURCE = """from einf import ax, rearrange
+rearrange(ax[*T], ax[*T])
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,5 +112,24 @@ LSP_CASES = (
         hover_line=3,
         hover_column=16,
         expected_hover_contains=("**Axis** `k`", "occurrences: 2", "contracted"),
+    ),
+    LspConformanceCase(
+        name="lsp_axis_pack_metadata",
+        source=PACK_SOURCE,
+        expected_diagnostic_codes=(),
+        expected_failure_kinds=(),
+        expect_checker_refresh_on_save=False,
+        expected_axis_token_count=2,
+        expected_semantic_token_int_count=10,
+        expected_inlay_labels=("pack", "pack"),
+        hover_line=2,
+        hover_column=14,
+        expected_hover_contains=(
+            "**Axis pack** `T`",
+            "kind: pack",
+            "relation: shared",
+            "operation role: none",
+            "occurrences: 2",
+        ),
     ),
 )

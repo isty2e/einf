@@ -4,6 +4,10 @@ from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
 from einf.analysis.checkers.model import CheckerFailureKind
 from einf.analysis.model import (
     AnalysisDiagnostic,
+    AxisCrossSideRelation,
+    AxisOccurrenceSide,
+    AxisOperationRole,
+    AxisStructuralKind,
     AxisToken,
     DiagnosticSeverity,
     TextPosition,
@@ -58,9 +62,12 @@ class _ValidationDiscoveryFailureJson(TypedDict):
 
 class _AxisTokenJson(TypedDict):
     name: str
+    kind: AxisStructuralKind
+    side: AxisOccurrenceSide
+    relation: AxisCrossSideRelation
+    role: AxisOperationRole | None
     span: _TextSpanJson
     group: int
-    roles: list[str]
 
 
 class _ValidationFailureJson(TypedDict):
@@ -149,9 +156,12 @@ def _project_discovery_failure(
 def _project_axis_token(token: AxisToken) -> _AxisTokenJson:
     return {
         "name": token.name,
+        "kind": token.kind,
+        "side": token.side,
+        "relation": token.relation,
+        "role": token.role,
         "span": _project_text_span(token.span),
         "group": token.group,
-        "roles": list(token.roles),
     }
 
 

@@ -1,15 +1,19 @@
 import ast
 from dataclasses import dataclass
-from typing import Literal
 
-from einf.analysis.model import AnalysisDiagnostic, TextPosition, TextSpan
+from einf.analysis.model import (
+    AnalysisDiagnostic,
+    AxisOccurrenceSide,
+    AxisStructuralKind,
+    TextPosition,
+    TextSpan,
+)
 from einf.analysis.passes.call_resolution import CallBindings
 from einf.analysis.source import SourceText
 from einf.axis import AxisSide, AxisTerms
 from einf.operations.tensor_op import TensorOp
 from einf.reduction.schema import Reducer
 
-_CallSide = Literal["lhs", "rhs"]
 _ReducePhaseArg = tuple[AxisTerms, Reducer]
 _ReduceByFirstArg = Reducer | _ReducePhaseArg
 
@@ -19,7 +23,8 @@ class _AxisOccurrence:
     """One axis-token occurrence from one side expression."""
 
     name: str
-    side: _CallSide
+    kind: AxisStructuralKind
+    side: AxisOccurrenceSide
     span: TextSpan
 
 
@@ -29,7 +34,14 @@ class _SideParseResult:
 
     axis_side: AxisSide
     axis_names: frozenset[str]
+    pack_names: frozenset[str]
     occurrences: tuple[_AxisOccurrence, ...]
+
+    def symbol_names(self, kind: AxisStructuralKind) -> frozenset[str]:
+        """Return canonical symbol names for one structural kind."""
+        if kind == "axis":
+            return self.axis_names
+        return self.pack_names
 
 
 @dataclass(frozen=True, slots=True)

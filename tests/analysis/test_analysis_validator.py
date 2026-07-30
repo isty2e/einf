@@ -76,7 +76,7 @@ def test_run_validation_reports_semantic_diagnostics(tmp_path: Path) -> None:
 
     report = run_validation(targets=(target,), parser_backend=AstParserBackend())
 
-    assert report.schema_version == "0.2"
+    assert report.schema_version == "0.3"
     assert report.parser_backend == "ast"
     assert len(report.files) == 1
     file_report = report.files[0]
@@ -226,7 +226,7 @@ def test_validator_cli_main_prints_json_and_returns_exit_code(
     payload = json.loads(captured.out)
 
     assert exit_code == 0
-    assert payload["schema_version"] == "0.2"
+    assert payload["schema_version"] == "0.3"
     assert payload["parser_backend"] == "ast"
     assert payload["checker_failures"] == []
     assert payload["discovery_failures"] == []

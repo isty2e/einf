@@ -1,6 +1,6 @@
 import ast
 
-from einf.analysis.model import AnalysisDiagnostic
+from einf.analysis.model import AnalysisDiagnostic, AxisOccurrenceSide
 from einf.axis import Axis, AxisExpr, AxisPack, AxisSide, AxisTerms, ScalarAxisTermBase
 
 from .diagnostics import (
@@ -8,7 +8,7 @@ from .diagnostics import (
     _ANALYSIS_SIDE_SPEC_ERROR,
     _diagnostic,
 )
-from .model import _AxisOccurrence, _CallSide, _SideParseResult, _SnippetContext
+from .model import _AxisOccurrence, _SideParseResult, _SnippetContext
 
 
 def _is_ax_subscript(expr: ast.expr) -> bool:
@@ -26,7 +26,7 @@ def _is_ax_subscript(expr: ast.expr) -> bool:
 def _parse_scalar_axis_term(
     *,
     term: ast.AST,
-    side: _CallSide,
+    side: AxisOccurrenceSide,
     context: _SnippetContext,
     occurrences: list[_AxisOccurrence],
     diagnostics: list[AnalysisDiagnostic],
@@ -35,7 +35,14 @@ def _parse_scalar_axis_term(
     if isinstance(term, ast.Name):
         term_span = context.span_from_ast_node(term)
         if term_span is not None:
-            occurrences.append(_AxisOccurrence(name=term.id, side=side, span=term_span))
+            occurrences.append(
+                _AxisOccurrence(
+                    name=term.id,
+                    kind="axis",
+                    side=side,
+                    span=term_span,
+                )
+            )
         return Axis(term.id)
 
     if isinstance(term, ast.Constant):
@@ -130,7 +137,7 @@ def _parse_scalar_axis_term(
 def _parse_axis_term(
     *,
     term: ast.AST,
-    side: _CallSide,
+    side: AxisOccurrenceSide,
     context: _SnippetContext,
     occurrences: list[_AxisOccurrence],
     diagnostics: list[AnalysisDiagnostic],
@@ -147,6 +154,16 @@ def _parse_axis_term(
                 )
             )
             return None
+        pack_span = context.span_from_ast_node(starred_value)
+        if pack_span is not None:
+            occurrences.append(
+                _AxisOccurrence(
+                    name=starred_value.id,
+                    kind="pack",
+                    side=side,
+                    span=pack_span,
+                )
+            )
         return AxisPack(starred_value.id)
 
     return _parse_scalar_axis_term(
@@ -161,7 +178,7 @@ def _parse_axis_term(
 def _parse_axis_terms_expression(
     *,
     expr: ast.expr,
-    side: _CallSide,
+    side: AxisOccurrenceSide,
     context: _SnippetContext,
     occurrences: list[_AxisOccurrence],
     diagnostics: list[AnalysisDiagnostic],
@@ -214,7 +231,7 @@ def _parse_axis_terms_expression(
 def _parse_side_spec(
     *,
     expr: ast.expr,
-    side: _CallSide,
+    side: AxisOccurrenceSide,
     context: _SnippetContext,
     diagnostics: list[AnalysisDiagnostic],
 ) -> _SideParseResult | None:
@@ -250,8 +267,10 @@ def _parse_side_spec(
         side_terms.append(parsed_terms)
 
     axis_side = AxisSide.coerce(tuple(side_terms))
+    axis_names, pack_names = axis_side.symbol_names()
     return _SideParseResult(
         axis_side=axis_side,
-        axis_names=frozenset(occurrence.name for occurrence in occurrences),
+        axis_names=frozenset(axis_names),
+        pack_names=frozenset(pack_names),
         occurrences=tuple(occurrences),
     )
