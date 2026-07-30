@@ -221,7 +221,7 @@ def test_dynamic_timing_stops_before_output_observation(
     ]
 
 
-def test_profiler_dynamic_timing_stops_before_output_observation(
+def test_profiler_measure_call_synchronizes_around_timed_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -232,60 +232,157 @@ def test_profiler_dynamic_timing_stops_before_output_observation(
         _recording_clock(events=events, values=(1.0, 1.004)),
     )
 
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
+    def record_synchronize(self: BackendSpec) -> None:
+        _ = self
+        events.append("sync")
 
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
+    monkeypatch.setattr(BackendSpec, "synchronize", record_synchronize)
 
     def run(batch: tuple[Array, ...]) -> Output:
         events.append("call")
         return batch[0]
 
-    Profiler(backend=backend).measure_dynamic(
+    elapsed_ms = Profiler(backend=backend).measure_call(
         runner=run,
-        batches=[
-            (np.asarray([1.0], dtype=np.float32),),
-            (np.asarray([2.0], dtype=np.float32),),
-        ],
-        warmup_batches=1,
-        repeats=1,
+        batch=(np.asarray([1.0], dtype=np.float32),),
     )
 
     assert events == [
-        "call",
-        "touch",
+        "sync",
         "clock_start",
         "call",
+        "sync",
         "clock_stop",
-        "touch",
     ]
+    assert elapsed_ms == pytest.approx(4.0)
 
 
-def test_eager_timing_rejects_asynchronous_torch_output(
+def test_torch_backend_resolves_open_accelerator_device_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeDevice:
-        type = "cuda"
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.type = label.partition(":")[0]
 
         def __str__(self) -> str:
-            return "cuda:0"
+            return self.label
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, FakeDevice) and self.label == other.label
 
     class FakeTensor:
-        shape = (1,)
-        device = FakeDevice()
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+
+    synchronizations: list[str] = []
+
+    def synchronize(device: FakeDevice) -> None:
+        synchronizations.append(str(device))
 
     monkeypatch.setattr(
         backend_module,
         "torch",
-        SimpleNamespace(Tensor=FakeTensor),
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            accelerator=SimpleNamespace(synchronize=synchronize),
+            cpu=SimpleNamespace(synchronize=synchronize),
+            device=FakeDevice,
+            empty=lambda size, *, device: FakeTensor(device),
+        ),
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="eager benchmark timing requires synchronous CPU outputs",
-    ):
-        BackendSpec(name="torch").touch_output(cast(Output, FakeTensor()))
+    backend = BackendSpec(name="torch", requested_device="privateuseone:3")
+
+    assert backend.resolved_device == "privateuseone:3"
+    backend.synchronize()
+    assert synchronizations == ["privateuseone:3", "privateuseone:3"]
+
+
+def test_torch_backend_rejects_target_without_synchronization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps"
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            accelerator=SimpleNamespace(),
+            cpu=SimpleNamespace(),
+            device=lambda label: FakeDevice(),
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+        ),
+    )
+
+    with pytest.raises(TypeError, match="has no synchronization capability"):
+        BackendSpec(name="torch", requested_device="mps")
+
+
+def test_torch_backend_rejects_unavailable_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_target(size: int, *, device: str) -> None:
+        _ = size, device
+        raise RuntimeError("target unavailable")
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: label,
+            empty=reject_target,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="'xpu:7' is unavailable"):
+        BackendSpec(name="torch", requested_device="xpu:7")
+
+
+def test_numpy_backend_rejects_non_cpu_target() -> None:
+    with pytest.raises(ValueError, match="only supports the cpu device"):
+        BackendSpec(name="numpy", requested_device="mps")
+
+
+def test_backend_rejects_output_on_different_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.type = label
+
+        def __str__(self) -> str:
+            return self.label
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, FakeDevice) and self.label == other.label
+
+    class FakeTensor:
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            accelerator=SimpleNamespace(synchronize=lambda device: None),
+            cpu=SimpleNamespace(synchronize=lambda device: None),
+            device=FakeDevice,
+            empty=lambda size, *, device: FakeTensor(device),
+        ),
+    )
+    backend = BackendSpec(name="torch", requested_device="mps")
+
+    with pytest.raises(RuntimeError, match="expected mps, got cpu"):
+        backend.validate_output_target(cast(Output, FakeTensor(FakeDevice("cpu"))))
 
 
 def test_round_orders_rotate_balanced_positions() -> None:

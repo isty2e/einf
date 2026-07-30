@@ -577,6 +577,11 @@ def main() -> int:
         default="numpy",
         help="Tensor backend used for dynamic batch tensors.",
     )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Backend-native execution device, such as cpu, mps, or cuda:0.",
+    )
     parser.add_argument("--seed", type=int, default=20260215)
     parser.add_argument("--batches", type=int, default=64)
     parser.add_argument("--warmup-batches", type=int, default=8)
@@ -638,8 +643,7 @@ def main() -> int:
         raw_output=args.raw_output,
     )
     backend_name: BackendName = args.backend
-    backend = BackendSpec(name=backend_name)
-    backend.validate_available()
+    backend = BackendSpec(name=backend_name, requested_device=args.device)
     sizes = dynamic_sizes_for_scale(args.scale)
 
     config = DynamicTaskConfig(

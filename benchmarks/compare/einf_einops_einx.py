@@ -489,6 +489,11 @@ def main() -> int:
         default="numpy",
         help="Array backend used for data generation and execution.",
     )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Backend-native execution device, such as cpu, mps, or cuda:0.",
+    )
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--cold-repeats", type=int, default=12)
@@ -519,8 +524,7 @@ def main() -> int:
         raise ValueError("--warm-iterations must be >= 1")
 
     backend_name: BackendName = args.backend
-    backend = BackendSpec(name=backend_name)
-    backend.validate_available()
+    backend = BackendSpec(name=backend_name, requested_device=args.device)
     sizes = fixed_sizes_for_scale(args.scale)
     raw_output_path = resolve_raw_output_path(
         output=args.output,

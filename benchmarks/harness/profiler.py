@@ -9,7 +9,7 @@ from .types import Array, Runner
 
 
 class Profiler:
-    """Profiler for eager CPU benchmark call latency distributions."""
+    """Profiler for synchronized benchmark call latency distributions."""
 
     def __init__(self, *, backend: BackendSpec) -> None:
         self.backend = backend
@@ -32,33 +32,21 @@ class Profiler:
             max_ms=max(samples_ms),
         )
 
-    def measure_dynamic(
+    def measure_call(
         self,
         *,
         runner: Runner,
-        batches: list[tuple[Array, ...]],
-        warmup_batches: int,
-        repeats: int,
-    ) -> list[float]:
-        """Measure per-batch dynamic latency across repeated batch cycles."""
-        if warmup_batches > len(batches):
-            raise ValueError(
-                f"warmup_batches={warmup_batches} exceeds batch count={len(batches)}"
-            )
-        warmup_slice = batches[:warmup_batches]
-        measure_slice = batches[warmup_batches:]
-        if not measure_slice:
-            raise ValueError("no batches left for measurement after warmup")
-
-        for batch in warmup_slice:
-            self.backend.touch_output(runner(batch))
-
-        samples_ms: list[float] = []
-        for _ in range(repeats):
-            for batch in measure_slice:
-                started = time.perf_counter()
-                output = runner(batch)
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
-                self.backend.touch_output(output)
-                samples_ms.append(elapsed_ms)
-        return samples_ms
+        batch: tuple[Array, ...],
+    ) -> float:
+        """Measure one call through completion on the configured target."""
+        self.backend.synchronize()
+        started = time.perf_counter()
+        try:
+            output = runner(batch)
+        except Exception:
+            self.backend.synchronize()
+            raise
+        self.backend.synchronize()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.backend.validate_output_target(output)
+        return elapsed_ms

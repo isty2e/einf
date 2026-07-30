@@ -936,6 +936,11 @@ def main() -> int:
         default="einop_contract_split_dynamic",
         help="Gap case name to run.",
     )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Torch execution device, such as cpu, mps, or cuda:0.",
+    )
     parser.add_argument("--seed", type=int, default=20260215)
     parser.add_argument("--batches", type=int, default=64)
     parser.add_argument("--warmup-batches", type=int, default=8)
@@ -988,8 +993,7 @@ def main() -> int:
     if args.output is not None and args.output == args.raw_output:
         raise ValueError("output and raw-output must use different paths")
 
-    backend = BackendSpec(name="torch")
-    backend.validate_available()
+    backend = BackendSpec(name="torch", requested_device=args.device)
     profiler = Profiler(backend=backend)
     sizes = dynamic_sizes_for_scale(args.scale)
     round_order_seed = (
