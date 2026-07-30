@@ -14,14 +14,15 @@ from benchmarks.harness import (
     BenchmarkCase,
     BenchmarkRunner,
     CaseCalls,
-    CaseResult,
+    DynamicCaseResult,
     DynamicCaseSpec,
+    DynamicRun,
     DynamicTaskConfig,
     FixedCaseSpec,
     FixedTaskConfig,
-    LibraryRun,
     MarkdownPrinter,
     Output,
+    PairedComparison,
     Profiler,
     TimingSummary,
 )
@@ -443,6 +444,69 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         assert not np.shares_memory(arrays[0], arrays[2])
         assert not np.shares_memory(arrays[1], arrays[2])
 
+    assert len(result.observations) == 6
+    measured_orders = expected_orders[1:]
+    for measured_batch_index, expected_order in enumerate(measured_orders):
+        start = measured_batch_index * 3
+        batch_observations = result.observations[start : start + 3]
+        assert [item.library for item in batch_observations] == list(expected_order)
+        assert [item.order_position for item in batch_observations] == [0, 1, 2]
+        assert {item.measured_batch_index for item in batch_observations} == {
+            measured_batch_index
+        }
+        assert {item.repeat_index for item in batch_observations} == {0}
+        assert {item.round_index for item in batch_observations} == {0}
+
+
+def test_run_dynamic_case_preserves_latency_execution_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = BackendSpec(name="numpy")
+    runner = BenchmarkRunner(
+        backend=backend,
+        profiler=Profiler(backend=backend),
+        available={
+            "einf": (True, "available"),
+            "einops": (True, "available"),
+            "einx": (True, "available"),
+        },
+    )
+    clock_values: list[float] = []
+    for call_index in range(12):
+        started = float(call_index)
+        clock_values.extend((started, started + (call_index + 1) / 1000.0))
+    clock_iterator = iter(clock_values)
+    monkeypatch.setattr(
+        runner_module.time,
+        "perf_counter",
+        lambda: next(clock_iterator),
+    )
+
+    result = runner.run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=[]),
+            batch_factory=lambda generator: generator.backend_batch(
+                (np.asarray([1.0], dtype=np.float32),)
+            ),
+        ),
+        config=DynamicTaskConfig(
+            backend="numpy",
+            scale="medium",
+            seed=7,
+            batches=2,
+            warmup_batches=0,
+            repeats=2,
+            rounds=1,
+            round_order_seed=1234,
+            parity_checks=0,
+        ),
+        case_index=0,
+    )
+
+    assert [item.latency_ms for item in result.observations] == pytest.approx(
+        list(range(1, 13))
+    )
+
 
 def test_markdown_printer_renders_round_level_summaries() -> None:
     case = BenchmarkCase(
@@ -454,35 +518,47 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
         make_einops_runner=lambda: lambda inputs: inputs[0],
         make_einx_runner=lambda: lambda inputs: inputs[0],
     )
-    case_result = CaseResult(
+    case_result = DynamicCaseResult(
         case=case,
         runs={
-            "einf": LibraryRun(
-                available=True,
-                reason="available",
-                cold=None,
-                warm=None,
-                dynamic=_summary(median_ms=1.0),
-                dynamic_rounds=(_summary(median_ms=1.0), _summary(median_ms=1.1)),
+            "einf": DynamicRun(
+                summary=_summary(median_ms=1.0),
+                round_summaries=(
+                    _summary(median_ms=1.0),
+                    _summary(median_ms=1.1),
+                ),
             ),
-            "einops": LibraryRun(
-                available=True,
-                reason="available",
-                cold=None,
-                warm=None,
-                dynamic=_summary(median_ms=2.0),
-                dynamic_rounds=(_summary(median_ms=2.0), _summary(median_ms=2.1)),
+            "einops": DynamicRun(
+                summary=_summary(median_ms=2.0),
+                round_summaries=(
+                    _summary(median_ms=2.0),
+                    _summary(median_ms=2.1),
+                ),
             ),
-            "einx": LibraryRun(
-                available=True,
-                reason="available",
-                cold=None,
-                warm=None,
-                dynamic=_summary(median_ms=3.0),
-                dynamic_rounds=(_summary(median_ms=3.0), _summary(median_ms=3.1)),
+            "einx": DynamicRun(
+                summary=_summary(median_ms=3.0),
+                round_summaries=(
+                    _summary(median_ms=3.0),
+                    _summary(median_ms=3.1),
+                ),
             ),
         },
         round_orders=[("einf", "einops", "einx"), ("einops", "einx", "einf")],
+        observations=(),
+        comparisons=(
+            PairedComparison(
+                baseline="einf",
+                competitor="einops",
+                call_pair_count=12,
+                paired_batch_count=6,
+                latency_ratio=2.0,
+                confidence_level=0.95,
+                confidence_interval_low=1.8,
+                confidence_interval_high=2.2,
+                bootstrap_resamples=10_000,
+                bootstrap_seed=7,
+            ),
+        ),
     )
     report = BenchmarkTestResult(
         title="# Demo",
@@ -496,5 +572,9 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
 
     assert "Round base order (paired execution rotates within each round):" in markdown
     assert "Round median summaries (ms):" in markdown
+    assert (
+        "| einops / einf | 12 | 6 | 2.0000 | 95% | [1.8000, 2.2000] | +100.00% |"
+        in markdown
+    )
     assert "einf=1.0000" in markdown
     assert "einops=2.1000" in markdown

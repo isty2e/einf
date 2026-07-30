@@ -14,7 +14,17 @@ from .config import (
 from .generator import TensorGenerator
 from .profiler import Profiler
 from .render import MarkdownPrinter
-from .result import CaseResult, LibraryRun, TestResult, TimingSummary
+from .result import (
+    DynamicCaseResult,
+    DynamicObservation,
+    DynamicRun,
+    FixedCaseResult,
+    FixedRun,
+    PairedComparison,
+    TestResult,
+    TimingSummary,
+    UnavailableRun,
+)
 from .runner import BenchmarkRunner
 from .types import (
     Array,
@@ -36,18 +46,22 @@ __all__ = [
     "BenchmarkCase",
     "BenchmarkRunner",
     "CaseCalls",
-    "CaseResult",
+    "DynamicCaseResult",
     "DynamicCaseSpec",
+    "DynamicObservation",
+    "DynamicRun",
     "DynamicScaleName",
     "DynamicTaskConfig",
+    "FixedCaseResult",
     "FixedCaseSpec",
+    "FixedRun",
     "FixedTaskConfig",
     "LibraryName",
-    "LibraryRun",
     "MarkdownPrinter",
     "NumpyArray",
     "NumpyOutput",
     "Output",
+    "PairedComparison",
     "Profiler",
     "Reference",
     "Runner",
@@ -55,6 +69,7 @@ __all__ = [
     "TensorGenerator",
     "TestResult",
     "TimingSummary",
+    "UnavailableRun",
     "dynamic_sizes_for_scale",
     "fixed_sizes_for_scale",
     "torch",
