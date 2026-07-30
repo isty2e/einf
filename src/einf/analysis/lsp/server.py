@@ -181,6 +181,7 @@ def build_server() -> EinfLanguageServer:
     @server.feature(lsp.SHUTDOWN)
     async def shutdown(ls: EinfLanguageServer, *args: object) -> None:
         _ = args
+        await ls.einf_change_debouncer.close()
         await asyncio.gather(
             ls.einf_analysis_queue.close(),
             ls.einf_checker_coordinator.close(),

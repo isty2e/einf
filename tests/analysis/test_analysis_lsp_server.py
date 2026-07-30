@@ -148,6 +148,45 @@ def test_build_server_returns_language_server() -> None:
     assert server.einf_checker_coordinator.enabled is False
 
 
+def test_server_shutdown_cancels_pending_debounced_analysis(monkeypatch) -> None:
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            "einf.analysis.lsp.server._DEFAULT_CHANGE_DEBOUNCE_SECONDS",
+            60,
+        )
+        server = build_server()
+        change = PendingDocumentChange(
+            uri="file:///sample.py",
+            source="value = 1\n",
+            version=1,
+        )
+        analysis_started = asyncio.Event()
+        logged: list[lsp.LogMessageParams] = []
+
+        async def analyze(pending_change: PendingDocumentChange) -> None:
+            analysis_started.set()
+            await _analyze_document_request(
+                server,
+                request=DocumentAnalysisRequest(
+                    uri=pending_change.uri,
+                    source=pending_change.source,
+                    version=pending_change.version,
+                ),
+            )
+
+        monkeypatch.setattr(server, "window_log_message", logged.append)
+        server.einf_change_debouncer.schedule(change, analyze=analyze)
+
+        shutdown = server.protocol.fm.features[lsp.SHUTDOWN]
+        await shutdown()
+
+        assert analysis_started.is_set() is False
+        assert server.einf_change_debouncer.has_pending(uri=change.uri) is False
+        assert logged == []
+
+    asyncio.run(scenario())
+
+
 def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> None:
     async def scenario() -> None:
         stale_started = threading.Event()

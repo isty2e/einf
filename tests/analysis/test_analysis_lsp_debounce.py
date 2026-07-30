@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from einf.analysis.lsp.change_debounce import (
     LspChangeDebouncer,
     PendingDocumentChange,
@@ -187,3 +189,48 @@ def test_lsp_change_debouncer_reports_and_retrieves_analysis_failure() -> None:
     assert isinstance(error, RuntimeError)
     assert str(error) == "analysis failed"
     assert loop_errors == []
+
+
+def test_lsp_change_debouncer_close_cancels_and_awaits_running_analysis() -> None:
+    failures: list[tuple[PendingDocumentChange, Exception]] = []
+
+    async def scenario() -> tuple[bool, bool]:
+        analysis_started = asyncio.Event()
+        analysis_stopped = asyncio.Event()
+        debouncer = LspChangeDebouncer(
+            delay_seconds=0,
+            report_failure=lambda change, error: failures.append((change, error)),
+        )
+
+        async def analyze(change: PendingDocumentChange) -> None:
+            _ = change
+            analysis_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                analysis_stopped.set()
+
+        change = PendingDocumentChange(
+            uri="file:///sample.py",
+            source="pending",
+            version=5,
+        )
+        debouncer.schedule(change, analyze=analyze)
+        await asyncio.wait_for(analysis_started.wait(), timeout=1)
+
+        await debouncer.close()
+        await debouncer.close()
+
+        with pytest.raises(RuntimeError, match="change debouncer is closed"):
+            debouncer.schedule(change, analyze=analyze)
+
+        return (
+            analysis_stopped.is_set(),
+            debouncer.has_pending(uri=change.uri),
+        )
+
+    analysis_stopped, has_pending = asyncio.run(scenario())
+
+    assert analysis_stopped is True
+    assert has_pending is False
+    assert failures == []
