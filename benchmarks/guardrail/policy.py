@@ -5,11 +5,38 @@ This module compares raw JSON outputs emitted by
 """
 
 import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
+
+
+def _required_latency_metric(
+    case: Mapping[str, object],
+    *,
+    metric_name: MetricName,
+    context: str,
+) -> float:
+    """Return one required finite, positive latency metric."""
+    if metric_name not in case:
+        raise TypeError(f"{context}: missing required metric {metric_name}")
+
+    value = case[metric_name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{context}: {metric_name} must be numeric")
+
+    try:
+        normalized = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{context}: {metric_name} must be finite") from error
+    if not math.isfinite(normalized):
+        raise ValueError(f"{context}: {metric_name} must be finite")
+    if normalized <= 0.0:
+        raise ValueError(f"{context}: {metric_name} must be > 0")
+    return normalized
 
 
 class OverheadCaseDict(TypedDict):
@@ -162,6 +189,8 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
                 raise TypeError(
                     f"invalid overhead report at {path}: each case must be object"
                 )
+            case_name = str(case_raw.get("name", ""))
+            case_context = f"invalid overhead report at {path}: case {case_name!r}"
             stage_ms_raw = case_raw.get("stage_ms_per_call")
             if not isinstance(stage_ms_raw, dict):
                 raise TypeError(
@@ -183,11 +212,19 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
                 stage_ms[stage_name] = float(stage_value)
 
             case = OverheadCaseDict(
-                name=str(case_raw.get("name", "")),
+                name=case_name,
                 call_repr=str(case_raw.get("call_repr", "")),
                 loops=int(case_raw.get("loops", 0)),
-                unpatched_call_ms=float(case_raw.get("unpatched_call_ms", 0.0)),
-                instrumented_call_ms=float(case_raw.get("instrumented_call_ms", 0.0)),
+                unpatched_call_ms=_required_latency_metric(
+                    case_raw,
+                    metric_name="unpatched_call_ms",
+                    context=case_context,
+                ),
+                instrumented_call_ms=_required_latency_metric(
+                    case_raw,
+                    metric_name="instrumented_call_ms",
+                    context=case_context,
+                ),
                 stage_ms_per_call=stage_ms,
                 residual_ms_per_call=float(case_raw.get("residual_ms_per_call", 0.0)),
             )
@@ -201,7 +238,9 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         )
         scenarios.append(scenario)
 
-    return OverheadReportDict(meta=meta, scenarios=scenarios)
+    report = OverheadReportDict(meta=meta, scenarios=scenarios)
+    collect_case_metrics(report)
+    return report
 
 
 def collect_case_metrics(
@@ -214,14 +253,26 @@ def collect_case_metrics(
         mode = scenario["mode"]
         scale = scenario["scale"]
         for case in scenario["cases"]:
+            key = (scenario_name, mode, scale, case["name"])
+            context = f"invalid overhead case {key!r}"
             metric = CaseMetric(
                 scenario=scenario_name,
                 mode=mode,
                 scale=scale,
                 case_name=case["name"],
-                unpatched_call_ms=case["unpatched_call_ms"],
-                instrumented_call_ms=case["instrumented_call_ms"],
+                unpatched_call_ms=_required_latency_metric(
+                    case,
+                    metric_name="unpatched_call_ms",
+                    context=context,
+                ),
+                instrumented_call_ms=_required_latency_metric(
+                    case,
+                    metric_name="instrumented_call_ms",
+                    context=context,
+                ),
             )
+            if metric.key in metrics:
+                raise ValueError(f"duplicate overhead case key: {metric.key!r}")
             metrics[metric.key] = metric
     return metrics
 
