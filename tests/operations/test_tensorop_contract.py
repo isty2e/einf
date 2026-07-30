@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 from array_api_compat import numpy as array_api_numpy
 
+import einf.operations.tensor_op as tensor_op_module
 from einf import (
     ErrorCode,
     ReducerName,
@@ -145,6 +147,36 @@ def test_tensorop_base_constructor_reuses_cached_instance() -> None:
     second = reduce(ax[b, n, d], ax[b, d])
 
     assert first is second
+
+
+def test_tensorop_base_cache_constructs_contract_and_plan_only_on_miss() -> None:
+    b, n, d, other = axes(
+        "factory_cache_b",
+        "factory_cache_n",
+        "factory_cache_d",
+        "factory_cache_other",
+    )
+
+    with (
+        patch.object(
+            tensor_op_module,
+            "TensorOpContract",
+            wraps=tensor_op_module.TensorOpContract,
+        ) as contract_constructor,
+        patch.object(
+            tensor_op_module,
+            "AbstractPlan",
+            wraps=tensor_op_module.AbstractPlan,
+        ) as plan_constructor,
+    ):
+        first = reduce(ax[b, n, d], ax[b, d])
+        cached = reduce(ax[b, n, d], ax[b, d])
+        other_key = reduce(ax[b, n, other], ax[b, other])
+
+    assert cached is first
+    assert other_key is not first
+    assert contract_constructor.call_count == 2
+    assert plan_constructor.call_count == 2
 
 
 def test_tensorop_with_sizes_reuses_cached_configured_instance() -> None:

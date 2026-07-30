@@ -271,14 +271,20 @@ class TensorOp:
         rhs: AxisSide,
     ):
         """Return cached base TensorOp for one normalized constructor spec."""
-        contract = TensorOpContract(
+        cache_key = BaseOpCacheKey(
             kind=kind,
             lhs=lhs,
             rhs=rhs,
         )
         return _TENSOR_OP_FACTORY.get_base(
-            key=contract.base_cache_key(),
-            builder=lambda: cls(_contract=contract),
+            key=cache_key,
+            builder=lambda: cls(
+                _contract=TensorOpContract(
+                    kind=cache_key.kind,
+                    lhs=cache_key.lhs,
+                    rhs=cache_key.rhs,
+                )
+            ),
         )
 
     @property
