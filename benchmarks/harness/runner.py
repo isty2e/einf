@@ -319,9 +319,7 @@ class BenchmarkRunner:
                             batch=inputs,
                             order=self._rotate_order(
                                 round_order,
-                                offset=(
-                                    unit_index * config.iterations + repeat_index
-                                ),
+                                offset=(unit_index * config.iterations + repeat_index),
                             ),
                             round_index=round_index,
                             unit_index=unit_index,
@@ -514,9 +512,7 @@ class BenchmarkRunner:
                             batch=batch,
                             order=self._rotate_order(
                                 round_order,
-                                offset=(
-                                    repeat_index * measured_batches + unit_index
-                                ),
+                                offset=(repeat_index * measured_batches + unit_index),
                             ),
                             round_index=round_index,
                             unit_index=unit_index,

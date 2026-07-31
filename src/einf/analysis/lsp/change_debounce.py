@@ -49,9 +49,7 @@ class LspChangeDebouncer:
             self._run_after_delay(uri=change.uri, analyze=analyze)
         )
         self._tasks[change.uri] = task
-        task.add_done_callback(
-            partial(self._handle_task_completion, change=change)
-        )
+        task.add_done_callback(partial(self._handle_task_completion, change=change))
 
     def take_pending(self, *, uri: str) -> PendingDocumentChange | None:
         """Cancel delayed analysis and return the pending change, if any."""

@@ -108,10 +108,7 @@ class BackendPolicy:
     def validate_profile(self, *, profile: BackendProfile, op_name: str) -> None:
         """Validate one backend profile against operation-level requirements."""
         normalized_op_name = self.normalize_operation_name(op_name)
-        if (
-            normalized_op_name in _EINSUM_REQUIRED_OPS
-            and not profile.supports_einsum
-        ):
+        if normalized_op_name in _EINSUM_REQUIRED_OPS and not profile.supports_einsum:
             raise _missing_einsum_extension_error(normalized_op_name)
 
     def validate_einsum_capability(
@@ -208,9 +205,8 @@ class BackendResolver:
         namespace = namespaces[0]
         namespace_id = namespace_ids[0]
         backend_family = infer_backend_family(namespace_id)
-        supports_einsum = (
-            backend_family is not None
-            and self.policy.supports_einsum(backend_family)
+        supports_einsum = backend_family is not None and self.policy.supports_einsum(
+            backend_family
         )
         supports_view = self.policy.supports_strict_view(
             namespace_id=namespace_id,

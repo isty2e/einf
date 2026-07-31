@@ -180,10 +180,7 @@ def _canonicalize_term(term: ScalarAxisTermBase) -> CanonicalScalarExpr:
                 try:
                     right = _canonicalize_term(term.right)
                 except ValidationError as right_error:
-                    if (
-                        right_error.code
-                        != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value
-                    ):
+                    if right_error.code != ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value:
                         raise
                     raise error from None
                 if not right.monomials:

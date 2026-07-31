@@ -570,9 +570,7 @@ def _run_dynamic_case(
         raise RuntimeError(
             "expression benchmark round orders must be full strategy permutations"
         )
-    validation_runners = {
-        spec.name: spec.make_runner() for spec in available_specs
-    }
+    validation_runners = {spec.name: spec.make_runner() for spec in available_specs}
     checks = min(config.batches, config.parity_checks)
     for batch_index in range(checks):
         batch = make_batch(round_index=0, batch_index=batch_index)

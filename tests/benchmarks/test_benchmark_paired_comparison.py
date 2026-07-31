@@ -493,10 +493,13 @@ def test_resolve_raw_output_path_allows_case_distinction_on_sensitive_filesystem
     )
     output = tmp_path / "report.JSON"
 
-    assert resolve_raw_output_path(
-        output=output,
-        raw_output=None,
-    ) == tmp_path / "report.json"
+    assert (
+        resolve_raw_output_path(
+            output=output,
+            raw_output=None,
+        )
+        == tmp_path / "report.json"
+    )
 
 
 def test_resolve_raw_output_path_rejects_existing_hard_link_alias(

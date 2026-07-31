@@ -701,9 +701,16 @@ def test_expression_parity_renderers_preserve_inference_contract(
     assert payload["schema_version"] == 4
     environment = payload["environment"]
     assert isinstance(environment, dict)
-    assert {"python", "platform", "machine", "numpy", "torch", "einops", "einx", "einf"} <= set(
-        environment
-    )
+    assert {
+        "python",
+        "platform",
+        "machine",
+        "numpy",
+        "torch",
+        "einops",
+        "einx",
+        "einf",
+    } <= set(environment)
     assert environment["einf"] == source_metadata
     assert payload["execution_target"] == {
         "backend": "numpy",

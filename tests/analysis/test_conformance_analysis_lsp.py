@@ -28,12 +28,15 @@ def test_lsp_presentation_conformance_cases(tmp_path: Path, case) -> None:
         encoding=lsp.PositionEncodingKind.Utf16,
     )
 
-    assert len(
-        encode_semantic_tokens(
-            state.report.axis_tokens,
-            position_codec=position_codec,
+    assert (
+        len(
+            encode_semantic_tokens(
+                state.report.axis_tokens,
+                position_codec=position_codec,
+            )
         )
-    ) == case.expected_semantic_token_int_count
+        == case.expected_semantic_token_int_count
+    )
 
     if case.expected_inlay_labels:
         assert (
