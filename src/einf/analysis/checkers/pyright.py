@@ -52,7 +52,7 @@ class PyrightAdapter(CheckerAdapter):
 
         try:
             payload = json.loads(stdout)
-        except json.JSONDecodeError as error:
+        except (RecursionError, ValueError) as error:
             return CheckerResult(
                 diagnostics=(),
                 failures=(
@@ -90,36 +90,106 @@ class PyrightAdapter(CheckerAdapter):
             )
 
         diagnostics: list[CheckerDiagnostic] = []
-        for entry in diagnostics_field:
-            if not isinstance(entry, dict):
-                continue
-            file_path = entry.get("file")
-            severity = _severity(entry.get("severity"))
-            message = entry.get("message")
-            if not isinstance(file_path, str) or not isinstance(message, str):
-                continue
-            rule = entry.get("rule")
-            code = rule if isinstance(rule, str) else None
-            diagnostics.append(
-                CheckerDiagnostic(
-                    tool=self.name,
-                    path=resolve_report_path(file_path, request),
-                    code=code,
-                    message=message,
-                    severity=severity,
-                    span=_range_to_span(entry.get("range")),
-                )
+        failure: CheckerFailure | None = None
+        for index, entry in enumerate(diagnostics_field):
+            parsed_entry = _parse_diagnostic_entry(
+                entry=entry,
+                index=index,
+                tool=self.name,
+                request=request,
+            )
+            if isinstance(parsed_entry, CheckerDiagnostic):
+                diagnostics.append(parsed_entry)
+            elif failure is None:
+                failure = parsed_entry
+
+        return CheckerResult(
+            diagnostics=tuple(diagnostics),
+            failures=() if failure is None else (failure,),
+        )
+
+
+def _parse_diagnostic_entry(
+    *,
+    entry: object,
+    index: int,
+    tool: str,
+    request: CheckerRequest,
+) -> CheckerDiagnostic | CheckerFailure:
+    if not isinstance(entry, dict):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} must be a JSON object",
+        )
+
+    file_path = entry.get("file")
+    if not isinstance(file_path, str) or not file_path:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid file path",
+        )
+    path = resolve_report_path(file_path, request)
+    if path is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has an invalid file path",
+        )
+
+    message = entry.get("message")
+    if not isinstance(message, str):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid message",
+        )
+
+    severity = _severity(entry.get("severity"))
+    if severity is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid severity",
+        )
+
+    span = None
+    if "range" in entry:
+        span = _range_to_span(entry["range"])
+        if span is None:
+            return CheckerFailure(
+                tool=tool,
+                kind="output_parse_error",
+                message=f"{tool} diagnostic {index} has no valid range",
             )
 
-        return CheckerResult(diagnostics=tuple(diagnostics), failures=())
+    rule = entry.get("rule")
+    if rule is not None and not isinstance(rule, str):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has an invalid rule",
+        )
+
+    return CheckerDiagnostic(
+        tool=tool,
+        path=path,
+        code=rule,
+        message=message,
+        severity=severity,
+        span=span,
+    )
 
 
-def _severity(value: object) -> DiagnosticSeverity:
+def _severity(value: object) -> DiagnosticSeverity | None:
+    if value == "error":
+        return "error"
     if value == "warning":
         return "warning"
     if value == "information":
         return "info"
-    return "error"
+    return None
 
 
 def _range_to_span(value: object) -> TextSpan | None:

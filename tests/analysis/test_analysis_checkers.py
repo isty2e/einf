@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -93,6 +94,7 @@ PYREFLY_OUTPUT = """
       "path": "/tmp/sample.py",
       "code": -2,
       "name": "bad-assignment",
+      "severity": "error",
       "description": "pyrefly message"
     }
   ]
@@ -168,6 +170,33 @@ def test_pyright_adapter_parses_json_output() -> None:
     )
 
 
+def test_pyright_adapter_preserves_diagnostic_without_range() -> None:
+    adapter = PyrightAdapter(name="basedpyright", executable="basedpyright")
+    result = adapter.parse_output(
+        stdout=json.dumps(
+            {
+                "generalDiagnostics": [
+                    {
+                        "file": "/tmp/a.py",
+                        "severity": "error",
+                        "message": "Import cycle detected",
+                        "rule": "reportImportCycles",
+                    }
+                ]
+            }
+        ),
+        stderr="",
+        request=_request(Path("/tmp")),
+    )
+
+    assert result.failures == ()
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert diagnostic.code == "reportImportCycles"
+    assert diagnostic.message == "Import cycle detected"
+    assert diagnostic.span is None
+
+
 def test_pyrefly_adapter_parses_json_output() -> None:
     adapter = PyreflyAdapter()
     result = adapter.parse_output(
@@ -186,6 +215,229 @@ def test_pyrefly_adapter_parses_json_output() -> None:
         start=TextPosition(line=3, column=16),
         end=TextPosition(line=3, column=17),
     )
+
+
+def test_pyrefly_adapter_normalizes_severity() -> None:
+    expected_severities = {
+        "error": "error",
+        "warn": "warning",
+        "info": "info",
+    }
+
+    for severity, expected in expected_severities.items():
+        record = json.loads(PYREFLY_OUTPUT)["errors"][0]
+        record["severity"] = severity
+        result = PyreflyAdapter().parse_output(
+            stdout=json.dumps({"errors": [record]}),
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.failures == ()
+        assert len(result.diagnostics) == 1
+        assert result.diagnostics[0].severity == expected
+
+
+def test_pyrefly_adapter_rejects_invalid_severity() -> None:
+    for severity in (None, "warning", 1):
+        record = json.loads(PYREFLY_OUTPUT)["errors"][0]
+        if severity is None:
+            del record["severity"]
+        else:
+            record["severity"] = severity
+        result = PyreflyAdapter().parse_output(
+            stdout=json.dumps({"errors": [record]}),
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.diagnostics == ()
+        assert len(result.failures) == 1
+        assert result.failures[0].kind == "output_parse_error"
+
+
+def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records() -> (
+    None
+):
+    pyright_record = json.loads(PYRIGHT_OUTPUT)["generalDiagnostics"][0]
+    pyrefly_record = json.loads(PYREFLY_OUTPUT)["errors"][0]
+    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+        (
+            PyrightAdapter(name="pyright", executable="pyright"),
+            json.dumps(
+                {
+                    "generalDiagnostics": [
+                        pyright_record,
+                        {"file": "sample.py"},
+                        None,
+                    ]
+                }
+            ),
+        ),
+        (
+            PyreflyAdapter(),
+            json.dumps(
+                {
+                    "errors": [
+                        pyrefly_record,
+                        {"path": "sample.py"},
+                        None,
+                    ]
+                }
+            ),
+        ),
+    )
+
+    for adapter, stdout in cases:
+        result = adapter.parse_output(
+            stdout=stdout,
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert len(result.diagnostics) == 1
+        assert len(result.failures) == 1
+        assert result.failures[0].tool == adapter.name
+        assert result.failures[0].kind == "output_parse_error"
+
+
+def test_text_adapters_preserve_valid_diagnostics_and_reject_malformed_lines() -> None:
+    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+        (
+            TyAdapter(),
+            TY_OUTPUT + "unrecognized ty line\nanother unrecognized ty line\n",
+        ),
+        (
+            ZubanAdapter(),
+            ZUBAN_OUTPUT + "unrecognized zuban line\nanother unrecognized zuban line\n",
+        ),
+    )
+
+    for adapter, stdout in cases:
+        result = adapter.parse_output(
+            stdout=stdout,
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert len(result.diagnostics) == 1
+        assert len(result.failures) == 1
+        assert result.failures[0].tool == adapter.name
+        assert result.failures[0].kind == "output_parse_error"
+
+
+def test_checker_adapters_reject_invalid_report_paths() -> None:
+    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+        (
+            PyrightAdapter(name="pyright", executable="pyright"),
+            json.dumps(
+                {
+                    "generalDiagnostics": [
+                        {
+                            "file": "invalid\0.py",
+                            "severity": "error",
+                            "message": "invalid path",
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 1},
+                            },
+                        }
+                    ]
+                }
+            ),
+        ),
+        (
+            PyreflyAdapter(),
+            json.dumps(
+                {
+                    "errors": [
+                        {
+                            "path": "invalid\0.py",
+                            "description": "invalid path",
+                            "line": 1,
+                            "column": 1,
+                            "stop_line": 1,
+                            "stop_column": 2,
+                        }
+                    ]
+                }
+            ),
+        ),
+        (TyAdapter(), "invalid\0.py:1:1: error invalid path\n"),
+        (
+            ZubanAdapter(),
+            "invalid\0.py:1:1:1:2: error: invalid path\n",
+        ),
+    )
+
+    for adapter, stdout in cases:
+        result = adapter.parse_output(
+            stdout=stdout,
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.diagnostics == ()
+        assert len(result.failures) == 1
+        assert result.failures[0].tool == adapter.name
+        assert result.failures[0].kind == "output_parse_error"
+
+
+def test_checker_adapters_reject_invalid_diagnostic_coordinates() -> None:
+    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+        (
+            PyrightAdapter(name="pyright", executable="pyright"),
+            json.dumps(
+                {
+                    "generalDiagnostics": [
+                        {
+                            "file": "sample.py",
+                            "severity": "error",
+                            "message": "invalid coordinate",
+                            "range": {
+                                "start": {"line": -1, "character": 0},
+                                "end": {"line": 0, "character": 1},
+                            },
+                        }
+                    ]
+                }
+            ),
+        ),
+        (
+            PyreflyAdapter(),
+            json.dumps(
+                {
+                    "errors": [
+                        {
+                            "path": "sample.py",
+                            "description": "invalid coordinate",
+                            "line": 0,
+                            "column": 1,
+                            "stop_line": 1,
+                            "stop_column": 2,
+                        }
+                    ]
+                }
+            ),
+        ),
+        (TyAdapter(), "sample.py:0:1: error invalid coordinate\n"),
+        (
+            ZubanAdapter(),
+            "sample.py:1:1:0:1: error: invalid coordinate\n",
+        ),
+    )
+
+    for adapter, stdout in cases:
+        result = adapter.parse_output(
+            stdout=stdout,
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.diagnostics == ()
+        assert len(result.failures) == 1
+        assert result.failures[0].tool == adapter.name
+        assert result.failures[0].kind == "output_parse_error"
 
 
 def test_ty_adapter_parses_concise_output() -> None:
@@ -225,6 +477,21 @@ def test_zuban_adapter_parses_text_output() -> None:
     assert diagnostic.span == TextSpan(
         start=TextPosition(line=3, column=16),
         end=TextPosition(line=3, column=17),
+    )
+
+
+def test_zuban_adapter_preserves_valid_multiline_span() -> None:
+    result = ZubanAdapter().parse_output(
+        stdout="sample.py:1:5:2:1: error: multiline diagnostic\n",
+        stderr="",
+        request=_request(Path("/tmp")),
+    )
+
+    assert result.failures == ()
+    assert len(result.diagnostics) == 1
+    assert result.diagnostics[0].span == TextSpan(
+        start=TextPosition(line=1, column=4),
+        end=TextPosition(line=2, column=0),
     )
 
 

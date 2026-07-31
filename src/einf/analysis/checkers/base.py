@@ -73,12 +73,17 @@ class CheckerAdapter(ABC):
         return result
 
 
-def resolve_report_path(path_text: str, request: CheckerRequest) -> Path:
-    """Resolve one checker-reported file path against the project root."""
-    reported = Path(path_text)
-    if reported.is_absolute():
-        return reported.resolve(strict=False)
-    return (request.project_root / reported).resolve(strict=False)
+def resolve_report_path(path_text: str, request: CheckerRequest) -> Path | None:
+    """Resolve one checker-reported path, returning None for invalid input."""
+    if not path_text:
+        return None
+    try:
+        reported = Path(path_text)
+        if reported.is_absolute():
+            return reported.resolve(strict=False)
+        return (request.project_root / reported).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def line_span(
@@ -90,6 +95,8 @@ def line_span(
     columns_are_one_based: bool,
 ) -> TextSpan | None:
     """Build one canonical text span from checker coordinates."""
+    if type(line) is not int or type(column) is not int:
+        return None
     if line < 1 or column < 0:
         return None
 
@@ -98,24 +105,29 @@ def line_span(
         return None
 
     start = TextPosition(line=line, column=start_column)
-    if end_line is None or end_column is None:
+    if end_line is None and end_column is None:
         return TextSpan(
             start=start,
             end=TextPosition(line=line, column=start_column + 1),
         )
+    if type(end_line) is not int or type(end_column) is not int:
+        return None
 
     normalized_end_column = end_column - 1 if columns_are_one_based else end_column
-    if end_line < 1 or normalized_end_column < start_column:
-        return TextSpan(
-            start=start,
-            end=TextPosition(line=line, column=start_column + 1),
-        )
+    if end_line < line or normalized_end_column < 0:
+        return None
+    if end_line == line and normalized_end_column < start_column:
+        return None
+
+    canonical_end_column = normalized_end_column
+    if end_line == line:
+        canonical_end_column = max(start_column + 1, normalized_end_column)
 
     return TextSpan(
         start=start,
         end=TextPosition(
             line=end_line,
-            column=max(start_column + 1, normalized_end_column),
+            column=canonical_end_column,
         ),
     )
 
