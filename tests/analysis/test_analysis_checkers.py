@@ -94,6 +94,7 @@ PYREFLY_OUTPUT = """
       "path": "/tmp/sample.py",
       "code": -2,
       "name": "bad-assignment",
+      "severity": "error",
       "description": "pyrefly message"
     }
   ]
@@ -169,6 +170,33 @@ def test_pyright_adapter_parses_json_output() -> None:
     )
 
 
+def test_pyright_adapter_preserves_diagnostic_without_range() -> None:
+    adapter = PyrightAdapter(name="basedpyright", executable="basedpyright")
+    result = adapter.parse_output(
+        stdout=json.dumps(
+            {
+                "generalDiagnostics": [
+                    {
+                        "file": "/tmp/a.py",
+                        "severity": "error",
+                        "message": "Import cycle detected",
+                        "rule": "reportImportCycles",
+                    }
+                ]
+            }
+        ),
+        stderr="",
+        request=_request(Path("/tmp")),
+    )
+
+    assert result.failures == ()
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert diagnostic.code == "reportImportCycles"
+    assert diagnostic.message == "Import cycle detected"
+    assert diagnostic.span is None
+
+
 def test_pyrefly_adapter_parses_json_output() -> None:
     adapter = PyreflyAdapter()
     result = adapter.parse_output(
@@ -187,6 +215,45 @@ def test_pyrefly_adapter_parses_json_output() -> None:
         start=TextPosition(line=3, column=16),
         end=TextPosition(line=3, column=17),
     )
+
+
+def test_pyrefly_adapter_normalizes_severity() -> None:
+    expected_severities = {
+        "error": "error",
+        "warn": "warning",
+        "info": "info",
+    }
+
+    for severity, expected in expected_severities.items():
+        record = json.loads(PYREFLY_OUTPUT)["errors"][0]
+        record["severity"] = severity
+        result = PyreflyAdapter().parse_output(
+            stdout=json.dumps({"errors": [record]}),
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.failures == ()
+        assert len(result.diagnostics) == 1
+        assert result.diagnostics[0].severity == expected
+
+
+def test_pyrefly_adapter_rejects_invalid_severity() -> None:
+    for severity in (None, "warning", 1):
+        record = json.loads(PYREFLY_OUTPUT)["errors"][0]
+        if severity is None:
+            del record["severity"]
+        else:
+            record["severity"] = severity
+        result = PyreflyAdapter().parse_output(
+            stdout=json.dumps({"errors": [record]}),
+            stderr="",
+            request=_request(Path("/tmp")),
+        )
+
+        assert result.diagnostics == ()
+        assert len(result.failures) == 1
+        assert result.failures[0].kind == "output_parse_error"
 
 
 def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records() -> (

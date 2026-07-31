@@ -8,7 +8,7 @@ from einf.analysis.checkers.model import (
     CheckerRequest,
     CheckerResult,
 )
-from einf.analysis.model import TextSpan
+from einf.analysis.model import DiagnosticSeverity, TextSpan
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +149,14 @@ def _parse_diagnostic_entry(
             message=f"{tool} diagnostic {index} has no valid description",
         )
 
+    severity = _severity(entry.get("severity"))
+    if severity is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid severity",
+        )
+
     span = _entry_span(
         line=entry.get("line"),
         column=entry.get("column"),
@@ -175,9 +183,19 @@ def _parse_diagnostic_entry(
         path=path,
         code=name,
         message=description,
-        severity="error",
+        severity=severity,
         span=span,
     )
+
+
+def _severity(value: object) -> DiagnosticSeverity | None:
+    if value == "error":
+        return "error"
+    if value == "warn":
+        return "warning"
+    if value == "info":
+        return "info"
+    return None
 
 
 def _entry_span(

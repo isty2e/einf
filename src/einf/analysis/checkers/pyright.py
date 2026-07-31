@@ -154,13 +154,15 @@ def _parse_diagnostic_entry(
             message=f"{tool} diagnostic {index} has no valid severity",
         )
 
-    span = _range_to_span(entry.get("range"))
-    if span is None:
-        return CheckerFailure(
-            tool=tool,
-            kind="output_parse_error",
-            message=f"{tool} diagnostic {index} has no valid range",
-        )
+    span = None
+    if "range" in entry:
+        span = _range_to_span(entry["range"])
+        if span is None:
+            return CheckerFailure(
+                tool=tool,
+                kind="output_parse_error",
+                message=f"{tool} diagnostic {index} has no valid range",
+            )
 
     rule = entry.get("rule")
     if rule is not None and not isinstance(rule, str):
