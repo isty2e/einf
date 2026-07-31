@@ -419,7 +419,7 @@ def _raw_payload(
         "execution_target": execution_target_payload(backend),
         "measurement_contract": synchronized_measurement_contract_payload(),
         "configuration": {
-            "backend": config.backend,
+            "backend": backend.name,
             "scale": config.scale,
             "seed": config.seed,
             "rounds": config.rounds,
@@ -528,7 +528,6 @@ def main() -> int:
     )
 
     config = FixedTaskConfig(
-        backend=backend_name,
         scale=args.scale,
         seed=args.seed,
         rounds=args.rounds,
@@ -566,7 +565,7 @@ def main() -> int:
         title="# einf vs einops vs einx Benchmark",
         configuration=[
             f"Python: `{platform.python_version()}`",
-            f"backend: `{args.backend}`",
+            f"backend: `{backend.name}`",
             f"requested device: `{backend.requested_device}`",
             f"resolved device: `{backend.resolved_device}`",
             f"NumPy: `{version_or_missing('numpy')}`",

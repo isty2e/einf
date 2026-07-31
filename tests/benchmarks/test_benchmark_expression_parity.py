@@ -304,7 +304,6 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
         _run_dynamic_case(
             case=mutation_case,
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=3,
@@ -334,7 +333,6 @@ def test_parity_checks_use_disposable_runner_instances(
     _run_dynamic_case(
         case=_case(factory_events=factory_events),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -378,7 +376,6 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
     result = _run_dynamic_case(
         case=case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -459,7 +456,6 @@ def test_run_dynamic_case_preserves_latency_identity_across_rounds(
     result = _run_dynamic_case(
         case=_case(),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -514,7 +510,6 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
     _run_dynamic_case(
         case=bounded_case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -545,7 +540,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
         _run_dynamic_case(
             case=_case(),
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=3,
@@ -647,7 +641,6 @@ def test_expression_parity_renderers_preserve_inference_contract(
     case_result = _run_dynamic_case(
         case=case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,

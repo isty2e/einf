@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from .types import BackendName
-
 ScaleName = Literal["small", "medium", "large"]
 DynamicScaleName = Literal["medium", "large"]
 DimensionName = Literal["b", "n", "d", "h", "w", "r", "j"]
@@ -56,7 +54,6 @@ class BenchSizes:
 class TaskConfig:
     """Shared benchmark task configuration."""
 
-    backend: BackendName
     scale: str
     seed: int
 

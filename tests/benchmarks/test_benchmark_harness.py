@@ -134,7 +134,6 @@ def test_fixed_runner_constructs_and_validates_before_timing(
             inputs=(np.asarray([1.0], dtype=np.float32),),
         ),
         config=FixedTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             rounds=1,
@@ -177,7 +176,6 @@ def test_dynamic_runner_warms_before_timing(
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             batches=2,
@@ -275,6 +273,91 @@ def test_torch_backend_resolves_open_accelerator_device_once(
     assert backend.resolved_device == "privateuseone:3"
     backend.synchronize()
     assert synchronizations == ["privateuseone:3", "privateuseone:3"]
+
+
+def test_torch_backend_falls_back_to_no_argument_device_synchronizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps:0"
+
+    synchronizations: list[str] = []
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+            mps=SimpleNamespace(
+                synchronize=lambda: synchronizations.append("mps:0"),
+            ),
+        ),
+    )
+
+    backend = BackendSpec(name="torch", requested_device="mps")
+    backend.synchronize()
+
+    assert synchronizations == ["mps:0", "mps:0"]
+
+
+def test_torch_backend_falls_back_to_device_argument_synchronizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "cuda"
+
+        def __str__(self) -> str:
+            return "cuda:2"
+
+    synchronizations: list[str] = []
+    resolved_device = FakeDevice()
+
+    def synchronize(device: FakeDevice) -> None:
+        synchronizations.append(str(device))
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+            cuda=SimpleNamespace(synchronize=synchronize),
+        ),
+    )
+
+    backend = BackendSpec(name="torch", requested_device="cuda:2")
+    backend.synchronize()
+
+    assert synchronizations == ["cuda:2", "cuda:2"]
+
+
+def test_torch_cpu_backend_does_not_require_synchronization_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "cpu"
+
+        def __str__(self) -> str:
+            return "cpu"
+
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+        ),
+    )
+
+    BackendSpec(name="torch").synchronize()
 
 
 def test_torch_backend_rejects_target_without_synchronization(
@@ -433,7 +516,6 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
     result = runner.run_fixed_case(
         case_spec=FixedCaseSpec(case=case, inputs=(original,)),
         config=FixedTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             rounds=1,
@@ -529,7 +611,6 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -625,7 +706,6 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=2,
@@ -693,7 +773,6 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -743,7 +822,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
                 workload=_vector_workload(),
             ),
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=2,

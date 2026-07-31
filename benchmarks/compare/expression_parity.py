@@ -1004,7 +1004,6 @@ def main() -> int:
         args.seed if args.round_order_seed is None else args.round_order_seed
     )
     config = DynamicTaskConfig(
-        backend="torch",
         scale=args.scale,
         seed=args.seed,
         batches=args.batches,

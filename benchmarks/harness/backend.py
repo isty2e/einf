@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from inspect import signature
 
 import numpy as np
 
@@ -9,6 +10,30 @@ from .types import Array, BackendName, NumpyArray, Output, TorchDevice, torch
 
 def _synchronize_numpy() -> None:
     """Synchronize NumPy execution, which is complete on return."""
+
+
+def _bind_synchronizer(
+    synchronize: Callable[..., None],
+    device: TorchDevice,
+) -> Callable[[], None]:
+    """Bind a Torch synchronizer that may accept a device or no arguments."""
+    try:
+        synchronize_signature = signature(synchronize)
+    except (TypeError, ValueError):
+        return partial(synchronize, device)
+
+    try:
+        synchronize_signature.bind(device)
+    except TypeError:
+        try:
+            synchronize_signature.bind()
+        except TypeError as error:
+            raise TypeError(
+                f"torch synchronization callable has unsupported signature: "
+                f"{synchronize_signature}"
+            ) from error
+        return synchronize
+    return partial(synchronize, device)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,18 +74,33 @@ class BackendSpec:
 
         if resolved_device.type == "cpu":
             synchronize = getattr(getattr(torch, "cpu", None), "synchronize", None)
+            resolved_synchronize = (
+                _bind_synchronizer(synchronize, resolved_device)
+                if callable(synchronize)
+                else _synchronize_numpy
+            )
         else:
             synchronize = getattr(
                 getattr(torch, "accelerator", None),
                 "synchronize",
                 None,
             )
-        if not callable(synchronize):
-            raise TypeError(
-                f"torch benchmark device {resolved_device} has no synchronization capability"
+            if not callable(synchronize):
+                synchronize = getattr(
+                    getattr(torch, resolved_device.type, None),
+                    "synchronize",
+                    None,
+                )
+            if not callable(synchronize):
+                raise TypeError(
+                    f"torch benchmark device {resolved_device} has no "
+                    "synchronization capability"
+                )
+            resolved_synchronize = _bind_synchronizer(
+                synchronize,
+                resolved_device,
             )
 
-        resolved_synchronize = partial(synchronize, resolved_device)
         try:
             resolved_synchronize()
         except Exception as error:

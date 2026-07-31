@@ -482,7 +482,7 @@ def _raw_payload(
         "execution_target": execution_target_payload(backend),
         "measurement_contract": synchronized_measurement_contract_payload(),
         "configuration": {
-            "backend": config.backend,
+            "backend": backend.name,
             "scale": config.scale,
             "seed": config.seed,
             "round_order_seed": config.round_order_seed,
@@ -652,7 +652,6 @@ def main() -> int:
     sizes = dynamic_sizes_for_scale(args.scale)
 
     config = DynamicTaskConfig(
-        backend=backend_name,
         scale=args.scale,
         seed=args.seed,
         batches=args.batches,
@@ -699,7 +698,7 @@ def main() -> int:
             f"einops: `{version_or_missing('einops')}`",
             f"einx: `{version_or_missing('einx')}`",
             "einf: workspace source (`src/einf`)",
-            f"backend: `{args.backend}`",
+            f"backend: `{backend.name}`",
             f"requested device: `{backend.requested_device}`",
             f"resolved device: `{backend.resolved_device}`",
             (

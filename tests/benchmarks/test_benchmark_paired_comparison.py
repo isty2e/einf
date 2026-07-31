@@ -241,7 +241,6 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         ),
     )
     config = DynamicTaskConfig(
-        backend="numpy",
         scale="medium",
         seed=5,
         batches=4,
@@ -375,7 +374,6 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
         evidence=evidence,
     )
     config = FixedTaskConfig(
-        backend="numpy",
         scale="medium",
         seed=5,
         rounds=1,
