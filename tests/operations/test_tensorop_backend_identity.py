@@ -234,9 +234,7 @@ def test_runner_cache_distinguishes_namespace_bindings_with_same_declared_id() -
     assert output_b.marker == "b"
 
 
-def test_reduce_compile_cache_distinguishes_namespaces_with_same_declared_id() -> (
-    None
-):
+def test_reduce_compile_cache_distinguishes_namespaces_with_same_declared_id() -> None:
     (batch_axes,) = packs("reducer_cache_batch")
     (feature,) = axes("reducer_cache_feature")
     op = reduce(ax[batch_axes, feature], ax[batch_axes])
