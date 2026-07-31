@@ -231,6 +231,7 @@ async def _kill_and_wait(
         process,
         process_group_id=process_group_id,
     )
+    transport_close_succeeded = _close_process_transport(process)
     process_wait = asyncio.create_task(process.wait())
     done, pending = await asyncio.wait(
         {communication, process_wait},
@@ -246,7 +247,7 @@ async def _kill_and_wait(
                 process,
                 process_group_id=process_group_id,
             )
-        return termination_succeeded
+        return termination_succeeded and transport_close_succeeded
 
     _terminate_process_scope(process, process_group_id=process_group_id)
     if communication in pending:
@@ -256,6 +257,18 @@ async def _kill_and_wait(
         process_wait.add_done_callback(_consume_task_exception)
         process_wait.cancel()
     return False
+
+
+def _close_process_transport(process: asyncio.subprocess.Process) -> bool:
+    # asyncio.Process has no public close method; its transport owns all pipe FDs.
+    transport = getattr(process, "_transport", None)
+    if not isinstance(transport, asyncio.SubprocessTransport):
+        return False
+    try:
+        transport.close()
+    except OSError:
+        return False
+    return True
 
 
 def _terminate_process_scope(
