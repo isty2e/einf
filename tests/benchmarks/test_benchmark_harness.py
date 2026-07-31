@@ -305,6 +305,41 @@ def test_torch_backend_falls_back_to_no_argument_device_synchronizer(
     assert synchronizations == ["mps:0", "mps:0"]
 
 
+def test_torch_backend_imports_unexported_device_synchronizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps:0"
+
+    synchronizations: list[str] = []
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+        ),
+    )
+
+    def import_device_module(name: str) -> SimpleNamespace:
+        assert name == "torch.mps"
+        return SimpleNamespace(
+            synchronize=lambda: synchronizations.append("mps:0"),
+        )
+
+    monkeypatch.setattr(backend_module, "import_module", import_device_module)
+
+    backend = BackendSpec(name="torch", requested_device="mps")
+    backend.synchronize()
+
+    assert synchronizations == ["mps:0", "mps:0"]
+
+
 def test_torch_backend_falls_back_to_device_argument_synchronizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,6 +415,10 @@ def test_torch_backend_rejects_target_without_synchronization(
             empty=lambda size, *, device: SimpleNamespace(device=device),
         ),
     )
+    def reject_device_module(name: str) -> None:
+        raise ModuleNotFoundError(name=name)
+
+    monkeypatch.setattr(backend_module, "import_module", reject_device_module)
 
     with pytest.raises(TypeError, match="has no synchronization capability"):
         BackendSpec(name="torch", requested_device="mps")
