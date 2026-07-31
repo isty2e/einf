@@ -6,7 +6,7 @@ from .backend import BackendSpec
 from .case import BenchmarkCase, DynamicCaseSpec, FixedCaseSpec, RunnerFactory
 from .comparison import compare_library_timings
 from .config import DynamicTaskConfig, FixedTaskConfig
-from .generator import TensorGenerator
+from .generator import TensorGenerator, derive_coordinate_seed
 from .profiler import Profiler
 from .result import (
     AvailableRun,
@@ -21,7 +21,6 @@ from .result import (
 from .types import Array, LibraryName, NumpyArray, Runner
 
 CASE_SEED_STRIDE = 1009
-ROUND_BATCH_SEED_STRIDE = 7919
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,11 +368,11 @@ class BenchmarkRunner:
         stream_index: int,
     ) -> int:
         """Return the deterministic seed for one logical dynamic input unit."""
-        return (
-            config.seed
-            + case_index * CASE_SEED_STRIDE
-            + round_index * ROUND_BATCH_SEED_STRIDE
-            + stream_index
+        return derive_coordinate_seed(
+            seed=config.seed,
+            case_index=case_index,
+            round_index=round_index,
+            stream_index=stream_index,
         )
 
     def run_dynamic_case(

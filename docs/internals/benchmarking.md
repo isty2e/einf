@@ -401,12 +401,13 @@ reject smaller configurations rather than emit a degenerate interval.
 
 ### Raw receipts
 
-When `--output report.md` is provided, both comparison scripts also write
-`report.json` unless `--raw-output` selects another path. Schema v4 uses the
-same single `steady` measurement phase for fixed and dynamic reports. Each
-receipt includes:
+When `--output report.md` is provided, the fixed, dynamic, and
+expression-parity scripts also write `report.json` unless `--raw-output`
+selects another path. Fixed and dynamic receipts use schema v5 and the same
+single `steady` measurement phase. Each receipt includes:
 
-- environment and benchmark configuration,
+- environment and benchmark configuration; `environment.einf` identifies the
+  imported source as a Git checkout or installed distribution,
 - requested and resolved execution devices,
 - the synchronized-completion timed-region contract,
 - case identities and execution forms,
@@ -416,8 +417,14 @@ receipt includes:
 - paired effects, interval bounds, bootstrap seed, and resample count.
 
 Dynamic receipts also record case-specific workload dimensions, shapes, element
-counts, and exact scale ratios. Ratios use integer `numerator` and
-`denominator` fields rather than rounded decimals.
+counts, and exact scale ratios. Each `realized_input_units` entry records the
+round, unit, stream, derived seed, and input shapes used for that paired unit.
+Ratios use integer `numerator` and `denominator` fields rather than rounded
+decimals.
+
+Expression-parity receipts use schema v4. They share the source-provenance and
+path-alias checks used by the fixed and dynamic scripts, but keep their
+strategy-specific result shape.
 
 The raw receipt is written before the Markdown file. Keep it when a comparison
 may need re-analysis; Markdown alone intentionally does not contain enough

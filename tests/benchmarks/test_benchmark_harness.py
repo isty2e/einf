@@ -30,6 +30,7 @@ from benchmarks.harness import (
     Profiler,
     TimingSummary,
 )
+from benchmarks.harness.generator import derive_coordinate_seed
 from benchmarks.harness.result import TestResult as BenchmarkTestResult
 
 
@@ -450,6 +451,58 @@ def test_numpy_backend_rejects_non_cpu_target() -> None:
         BackendSpec(name="numpy", requested_device="mps")
 
 
+def test_numpy_backend_adopts_fresh_batch_without_copying() -> None:
+    array = np.asarray([1.0], dtype=np.float32)
+
+    batch = BackendSpec(name="numpy").to_backend_batch((array,))
+
+    assert batch[0] is array
+
+
+def test_torch_backend_materializes_fresh_batch_without_host_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps"
+
+    class FakeTensor:
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+
+        def to(self, *, device: FakeDevice) -> "FakeTensor":
+            self.device = device
+            return self
+
+    resolved_device = FakeDevice()
+    source_arrays: list[np.ndarray] = []
+
+    def from_numpy(array: np.ndarray) -> FakeTensor:
+        source_arrays.append(array)
+        return FakeTensor(resolved_device)
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            accelerator=SimpleNamespace(synchronize=lambda device: None),
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: FakeTensor(device),
+            from_numpy=from_numpy,
+        ),
+    )
+    backend = BackendSpec(name="torch", requested_device="mps")
+    array = np.asarray([1.0], dtype=np.float32)
+
+    backend.to_backend_batch((array,))
+
+    assert len(source_arrays) == 1
+    assert source_arrays[0] is array
+
+
 def test_backend_rejects_output_on_different_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -692,7 +745,15 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
 
     assert len(result.realized_units) == 2
     assert [unit.stream_index for unit in result.realized_units] == [1, 2]
-    assert [unit.seed for unit in result.realized_units] == [8, 9]
+    assert [unit.seed for unit in result.realized_units] == [
+        derive_coordinate_seed(
+            seed=7,
+            case_index=0,
+            round_index=0,
+            stream_index=stream_index,
+        )
+        for stream_index in (1, 2)
+    ]
     assert [unit.input_shapes for unit in result.realized_units] == [
         ((1,),),
         ((1,),),
@@ -792,9 +853,8 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
         live_batches_before_preparation.append(
             sum(reference() is not None for reference in prepared_references)
         )
-        prepared = tuple(array.copy() for array in batch)
-        prepared_references.extend(ref(array) for array in prepared)
-        return prepared
+        prepared_references.extend(ref(array) for array in batch)
+        return batch
 
     monkeypatch.setattr(
         BenchmarkRunner,

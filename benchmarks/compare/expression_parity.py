@@ -24,6 +24,7 @@ from benchmarks.harness import (
 )
 from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
+from benchmarks.harness.generator import derive_coordinate_seed
 from benchmarks.harness.receipt import (
     execution_target_payload,
     resolve_raw_output_path,
@@ -56,7 +57,6 @@ BatchFactory = Callable[[TensorGenerator], tuple[Array, ...]]
 RunnerFactory = Callable[[], Runner]
 
 CASE_SEED_STRIDE = 1009
-ROUND_BATCH_SEED_STRIDE = 7919
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,11 +537,11 @@ def _run_dynamic_case(
         return case.batch_factory(
             TensorGenerator.from_seed(
                 backend=backend,
-                seed=(
-                    config.seed
-                    + case_index * CASE_SEED_STRIDE
-                    + round_index * ROUND_BATCH_SEED_STRIDE
-                    + batch_index
+                seed=derive_coordinate_seed(
+                    seed=config.seed,
+                    case_index=case_index,
+                    round_index=round_index,
+                    stream_index=batch_index,
                 ),
             )
         )

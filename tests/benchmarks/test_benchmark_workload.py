@@ -16,6 +16,7 @@ from benchmarks.harness import (
     TensorGenerator,
     dynamic_sizes_for_scale,
 )
+from benchmarks.harness.generator import derive_coordinate_seed
 from benchmarks.harness.runner import CASE_SEED_STRIDE
 
 
@@ -247,6 +248,54 @@ def test_dynamic_workload_preserves_seeded_batch_stream() -> None:
         )
 
         assert fingerprints == expected_fingerprints[spec.case.name]
+
+
+def test_coordinate_seed_derivation_separates_large_batch_streams() -> None:
+    first = derive_coordinate_seed(
+        seed=20260215,
+        case_index=0,
+        round_index=0,
+        stream_index=7919,
+    )
+    second = derive_coordinate_seed(
+        seed=20260215,
+        case_index=0,
+        round_index=1,
+        stream_index=0,
+    )
+
+    assert first != second
+    assert first == derive_coordinate_seed(
+        seed=20260215,
+        case_index=0,
+        round_index=0,
+        stream_index=7919,
+    )
+
+
+@pytest.mark.parametrize(
+    ("component", "value"),
+    (
+        ("seed", -1),
+        ("case_index", -1),
+        ("round_index", -1),
+        ("stream_index", -1),
+    ),
+)
+def test_coordinate_seed_derivation_rejects_negative_components(
+    component: str,
+    value: int,
+) -> None:
+    components = {
+        "seed": 20260215,
+        "case_index": 0,
+        "round_index": 0,
+        "stream_index": 0,
+    }
+    components[component] = value
+
+    with pytest.raises(ValueError, match="must be non-negative"):
+        derive_coordinate_seed(**components)
 
 
 def test_dynamic_workload_rejects_invalid_dimension_contracts() -> None:

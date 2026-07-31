@@ -131,14 +131,13 @@ class BackendSpec:
         self,
         batch: tuple[NumpyArray, ...],
     ) -> tuple[Array, ...]:
-        """Convert NumPy batch arrays to backend tensor batch."""
+        """Take ownership of a fresh NumPy batch and materialize it on the backend."""
         if self.name == "numpy":
-            return tuple(array.copy() for array in batch)
+            return batch
         if torch is None or self._torch_device is None:
             raise RuntimeError("torch benchmark target is not resolved")
         return tuple(
-            torch.from_numpy(array.copy()).to(device=self._torch_device)
-            for array in batch
+            torch.from_numpy(array).to(device=self._torch_device) for array in batch
         )
 
     def validate_output_target(self, output: Output) -> None:
