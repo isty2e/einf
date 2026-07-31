@@ -6,6 +6,25 @@ from .backend import BackendSpec
 from .types import Array, NumpyArray
 
 
+def derive_coordinate_seed(
+    *,
+    seed: int,
+    case_index: int,
+    round_index: int,
+    stream_index: int,
+) -> int:
+    """Derive one stable RandomState seed from a dynamic input coordinate."""
+    components = (seed, case_index, round_index, stream_index)
+    if any(component < 0 for component in components):
+        raise ValueError("coordinate seed components must be non-negative")
+    return int(
+        np.random.SeedSequence(components).generate_state(
+            1,
+            dtype=np.uint32,
+        )[0]
+    )
+
+
 @dataclass(slots=True)
 class TensorGenerator:
     """RNG-controlled tensor generator for fixed/dynamic benchmark inputs."""
@@ -45,5 +64,5 @@ class TensorGenerator:
         return self.backend.to_backend_batch((self.randn_numpy(shape),))[0]
 
     def backend_batch(self, batch: tuple[NumpyArray, ...]) -> tuple[Array, ...]:
-        """Convert one NumPy batch to configured backend batch."""
+        """Transfer ownership of a fresh NumPy batch to the configured backend."""
         return self.backend.to_backend_batch(batch)

@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from importlib import import_module
 from inspect import signature
 
 import numpy as np
@@ -86,11 +87,15 @@ class BackendSpec:
                 None,
             )
             if not callable(synchronize):
-                synchronize = getattr(
-                    getattr(torch, resolved_device.type, None),
-                    "synchronize",
-                    None,
-                )
+                device_module = getattr(torch, resolved_device.type, None)
+                if device_module is None:
+                    module_name = f"torch.{resolved_device.type}"
+                    try:
+                        device_module = import_module(module_name)
+                    except ModuleNotFoundError as error:
+                        if error.name != module_name:
+                            raise
+                synchronize = getattr(device_module, "synchronize", None)
             if not callable(synchronize):
                 raise TypeError(
                     f"torch benchmark device {resolved_device} has no "
@@ -126,14 +131,13 @@ class BackendSpec:
         self,
         batch: tuple[NumpyArray, ...],
     ) -> tuple[Array, ...]:
-        """Convert NumPy batch arrays to backend tensor batch."""
+        """Take ownership of a fresh NumPy batch and materialize it on the backend."""
         if self.name == "numpy":
-            return tuple(array.copy() for array in batch)
+            return batch
         if torch is None or self._torch_device is None:
             raise RuntimeError("torch benchmark target is not resolved")
         return tuple(
-            torch.from_numpy(array.copy()).to(device=self._torch_device)
-            for array in batch
+            torch.from_numpy(array).to(device=self._torch_device) for array in batch
         )
 
     def validate_output_target(self, output: Output) -> None:
