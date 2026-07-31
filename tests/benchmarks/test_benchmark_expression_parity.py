@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import benchmarks.compare.expression_parity as expression_parity_module
+import benchmarks.harness.profiler as profiler_module
 from benchmarks.compare.expression_parity import (
     ExpressionCaseResult,
     ExpressionObservation,
@@ -263,7 +264,7 @@ def test_validate_output_uses_runner_specific_reference() -> None:
     _validate_output(
         backend=BackendSpec(name="numpy"),
         runner_spec=runner_spec,
-        batch=batch,
+        expected=(np.asarray(output),),
         output=output,
     )
 
@@ -303,7 +304,6 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
         _run_dynamic_case(
             case=mutation_case,
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=3,
@@ -325,7 +325,7 @@ def test_parity_checks_use_disposable_runner_instances(
     factory_events: list[str] = []
     clock_tick = iter(index / 1000.0 for index in range(12))
     monkeypatch.setattr(
-        expression_parity_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_tick),
     )
@@ -333,7 +333,6 @@ def test_parity_checks_use_disposable_runner_instances(
     _run_dynamic_case(
         case=_case(factory_events=factory_events),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -369,7 +368,7 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
         clock_values.extend((started, started + (call_index + 1) / 1000.0))
     clock_iterator = iter(clock_values)
     monkeypatch.setattr(
-        expression_parity_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_iterator),
     )
@@ -377,7 +376,6 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
     result = _run_dynamic_case(
         case=case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -410,9 +408,8 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
         arrays = [array for _, array in coordinate_events]
         assert np.array_equal(arrays[0], arrays[1])
         assert np.array_equal(arrays[0], arrays[2])
-        assert not np.shares_memory(arrays[0], arrays[1])
-        assert not np.shares_memory(arrays[0], arrays[2])
-        assert not np.shares_memory(arrays[1], arrays[2])
+        assert arrays[0] is arrays[1]
+        assert arrays[0] is arrays[2]
 
     assert [observation.latency_ms for observation in result.observations] == (
         pytest.approx(list(range(1, 13)))
@@ -451,7 +448,7 @@ def test_run_dynamic_case_preserves_latency_identity_across_rounds(
         clock_values.extend((started, started + (call_index + 1) / 1000.0))
     clock_iterator = iter(clock_values)
     monkeypatch.setattr(
-        expression_parity_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_iterator),
     )
@@ -459,7 +456,6 @@ def test_run_dynamic_case_preserves_latency_identity_across_rounds(
     result = _run_dynamic_case(
         case=_case(),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -506,7 +502,7 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
     )
     clock_tick = iter(index / 1000.0 for index in range(24))
     monkeypatch.setattr(
-        expression_parity_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_tick),
     )
@@ -514,7 +510,6 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
     _run_dynamic_case(
         case=bounded_case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -545,7 +540,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
         _run_dynamic_case(
             case=_case(),
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=3,
@@ -565,7 +559,7 @@ def test_expression_observation_rejects_invalid_identity() -> None:
     with pytest.raises(ValueError, match="strategy must be non-empty"):
         ExpressionObservation(
             round_index=0,
-            measured_batch_index=0,
+            unit_index=0,
             repeat_index=0,
             strategy="",
             order_position=0,
@@ -590,7 +584,7 @@ def test_expression_result_rejects_missing_available_run() -> None:
             observations=(
                 ExpressionObservation(
                     round_index=0,
-                    measured_batch_index=0,
+                    unit_index=0,
                     repeat_index=0,
                     strategy="target",
                     order_position=0,
@@ -640,14 +634,13 @@ def test_expression_parity_renderers_preserve_inference_contract(
         clock_values.extend((started, started + (call_index + 1) / 1000.0))
     clock_iterator = iter(clock_values)
     monkeypatch.setattr(
-        expression_parity_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_iterator),
     )
     case_result = _run_dynamic_case(
         case=case,
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
@@ -669,12 +662,26 @@ def test_expression_parity_renderers_preserve_inference_contract(
         notes=["lower bound is not output-equivalent"],
     )
 
-    payload = _to_json(report)
+    payload = _to_json(report, backend=BackendSpec(name="numpy"))
     json.dumps(payload)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 3
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    assert {"python", "platform", "machine", "numpy", "torch", "einops", "einx", "einf"} <= set(
+        environment
+    )
+    assert payload["execution_target"] == {
+        "backend": "numpy",
+        "requested_device": "cpu",
+        "resolved_device": "cpu",
+    }
     measurement_contract = payload["measurement_contract"]
     assert isinstance(measurement_contract, dict)
-    assert measurement_contract["schedule"] == "interleaved_per_logical_batch"
+    assert measurement_contract["schedule"] == "paired_coordinate_rotating_order"
+    assert (
+        measurement_contract["synchronization"]
+        == "before_timer_start_and_before_timer_stop"
+    )
     case_results = payload["case_results"]
     assert isinstance(case_results, list)
     case_payload = case_results[0]
@@ -682,6 +689,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
     assert case_payload["case"]["runner_specs"][0]["is_target"] is True
     assert case_payload["case"]["runner_specs"][0]["semantics"] == "output_equivalent"
     assert case_payload["observations"][0]["strategy"] == "target"
+    assert case_payload["observations"][0]["unit_index"] == 0
     assert case_payload["comparisons"][0]["target"] == "target"
 
     markdown = _render_markdown(report)

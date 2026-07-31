@@ -19,29 +19,38 @@ Assumption:
 
 ## Compare Methodology
 
-The fixed and dynamic compare scripts use the same high-level fairness model:
+Fixed and dynamic comparisons use the same measurement contract. Their only
+substantive difference is how they construct the input stream: fixed cases reuse
+one prepared batch, while dynamic cases draw deterministic batches whose shapes
+can vary by coordinate.
 
-1. all competitors see the same logical workload,
-2. each competitor receives independently materialized tensors,
-3. per-batch execution order rotates to spread first-executor bias,
-4. eager CPU timing excludes harness-side output observation and materialization.
+At each measured coordinate, the harness:
 
-More concretely:
+1. selects one already-prepared backend batch,
+2. passes the same tuple and tensor objects to every available library,
+3. synchronizes the target before starting the host clock,
+4. calls one library,
+5. waits for that call's target work to complete before stopping the clock.
 
-- fixed cold timing covers operation construction plus the first library call,
-- fixed warm benchmarks use paired per-call execution on the same logical input,
-- each fixed warm observation is the arithmetic mean of the configured timed
-  calls in one repeat,
-- dynamic benchmarks use paired same-batch execution on the same logical batch stream inside each round,
-- tuple traversal, shape access, indexing, `.item()`, and parity validation happen outside timed regions,
-- dynamic rounds still use different batch streams from one round to the next, so round summaries matter for heavy cases.
+Runner construction, parity validation, warmup, input generation, device
+transfer, output validation, device-to-host transfer, summary calculation, and
+serialization are outside the timed interval. The result is per-call completion
+latency after inputs and runners are ready, not input-pipeline latency or
+asynchronous launch latency.
 
-The shared compare harness supports synchronous CPU outputs. It rejects
-asynchronous device outputs instead of reporting incomplete eager-launch
-latency. Supporting an asynchronous backend requires explicit synchronization
-both before the timer starts, to drain queued work, and after the library call,
-before the timer stops. Reports must label that interval as synchronized
-latency.
+Fixed cases prepare one batch and reuse it across measured coordinates. Dynamic
+cases materialize one target batch per coordinate before the first library runs.
+
+Library order rotates at each paired coordinate to spread first-executor and
+position effects. Fixed calls use repeats as paired units and iterations as
+technical replications. Dynamic calls use measured batches as paired units and
+repeats as technical replications. Dynamic rounds draw different deterministic
+batch streams, so heavy cases should still be read with their round summaries.
+
+NumPy comparisons run on CPU. Torch comparisons accept backend-native device
+names through `--device`, such as `cpu`, `mps`, or `cuda:0`. The harness resolves
+that target once and fails before measurement if it cannot allocate,
+synchronize, or keep outputs on the requested device.
 
 Diagnostic scripts under `benchmarks/audit/` and `benchmarks/profile/` may
 define broader task-specific timed regions; their own methodology is
@@ -168,29 +177,30 @@ guardrail.
   cd "$BASE_WORKTREE"
   python -m benchmarks.compare.einf_einops_einx \
     --backend torch \
+    --device cpu \
     --scale large \
     --rounds 6 \
-    --cold-repeats 3 \
     --warmup 4 \
-    --warm-repeats 5 \
-    --warm-iterations 60 \
+    --repeats 5 \
+    --iterations 60 \
     --output "$REPO_ROOT/$BENCH_DIR/baseline-fixed-large-torch.md"
 )
 
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
+  --device cpu \
   --scale large \
   --rounds 6 \
-  --cold-repeats 3 \
   --warmup 4 \
-  --warm-repeats 5 \
-  --warm-iterations 60 \
+  --repeats 5 \
+  --iterations 60 \
   --output "$BENCH_DIR/candidate-fixed-large-torch.md"
 
 (
   cd "$BASE_WORKTREE"
   python -m benchmarks.compare.einf_einops_einx_dynamic \
     --backend torch \
+    --device cpu \
     --scale large \
     --batches 64 \
     --warmup-batches 8 \
@@ -202,6 +212,7 @@ python -m benchmarks.compare.einf_einops_einx \
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
+  --device cpu \
   --scale large \
   --batches 64 \
   --warmup-batches 8 \
@@ -296,29 +307,32 @@ threshold to make a migration pass.
 
 ## Fixed-Shape Compare
 
-Use `benchmarks/compare/einf_einops_einx.py` for cold and warm fixed-shape comparisons.
+Use `benchmarks/compare/einf_einops_einx.py` for fixed-shape steady-state
+comparisons.
 
 Example:
 
 ```bash
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
+  --device cpu \
   --scale large \
   --rounds 6 \
-  --cold-repeats 3 \
   --warmup 4 \
-  --warm-repeats 3 \
-  --warm-iterations 60 \
-  --output artifacts/bench/2026-02-15-einf-vs-einops-einx-large-torch.md
+  --repeats 3 \
+  --iterations 60 \
+  --output artifacts/bench/current/fixed-large-torch.md
 ```
 
 What the script reports:
 
-- cold construction + first-call timing,
-- warm steady-state observations, each an arithmetic mean over
-  `--warm-iterations` timed calls,
-- round-level warm summaries,
-- per-case library order for each round.
+- individual steady-state call observations,
+- paired latency ratios and round-stratified intervals,
+- round-level summaries,
+- per-case library order for each round,
+- requested and resolved execution devices,
+- a versioned raw JSON receipt with the measured source revision alongside the
+  Markdown report.
 
 ## Dynamic-Shape Compare
 
@@ -329,13 +343,14 @@ Example:
 ```bash
 python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch \
+  --device cpu \
   --scale large \
   --batches 64 \
   --warmup-batches 8 \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output artifacts/bench/2026-02-15-einf-vs-einops-einx-dynamic-large-target-r3-torch.md
+  --output artifacts/bench/current/dynamic-large-torch.md
 ```
 
 What matters here:
@@ -346,60 +361,63 @@ What matters here:
 - dynamic heavy cases can still have meaningful round-to-round spread,
 - marginal call-observation summaries should be read together with round
   summaries and paired comparisons,
-- independently materialized inputs avoid the older shared-input locality
-  artifact, but paired scheduling does not eliminate genuine workload-stream
-  variance.
+- one target batch is materialized per paired coordinate and shared by all
+  libraries,
+- host and target inputs are released before the next coordinate,
+- repeats regenerate the same logical unit from its recorded seed, and each raw
+  receipt includes the realized input shapes.
 
-### Dynamic evidence contract
+### Paired evidence contract
 
-The dynamic benchmark preserves the workload definition and two levels of
-timing evidence:
+Fixed and dynamic comparison runs use the same observation and comparison
+contract. Each timed call retains:
 
-1. **Workload metadata** records sampled and fixed dimensions, inclusive
-   integer sampling ranges, base input and output shapes, aggregate element
-   counts across those tensors, and exact ratios against the medium profile.
-2. **Call observations** retain
-   `(case, round, measured batch, repeat, library, order position, latency)`.
-   Marginal count/median/IQR tables summarize these calls descriptively.
-3. **Paired batch units** identify one measured batch inside one round. Repeated
-   calls for the same unit are technical replications, not independent samples,
-   and are averaged before comparison.
+`(phase, case, round, unit, repeat, library, order position, latency)`.
+
+The meaning of `unit` follows the measurement schedule:
+
+- a fixed unit is one repeat block; its timed iterations are technical
+  replications,
+- a dynamic unit is one measured batch; its repeats are technical
+  replications.
+
+Replications are averaged within each `(round, unit)` before comparison.
 
 For each competitor, the reported point effect is:
 
 ```text
-mean competitor latency across paired batch units
--------------------------------------------------
-mean einf latency across paired batch units
+mean competitor latency across paired units
+---------------------------------------------
+mean einf latency across paired units
 ```
 
 The 95% interval is a deterministic percentile bootstrap. It resamples paired
-batch units jointly across libraries within each observed round, preserving the
-round strata and library pairing. The interval is conditional on the observed
-run and rounds. It is not a p-value, does not turn marginal IQR overlap into a
-significance test, and does not establish cross-machine or long-run temporal
-generalization.
+units jointly across libraries within each observed round. The interval is
+conditional on the observed workload and run. It is not a p-value or evidence
+of cross-machine or long-run generalization.
 
-At least two measured batches per round are required; otherwise the script
-rejects the comparison rather than emitting a degenerate interval.
+Each measured phase requires at least two paired units per round. The scripts
+reject smaller configurations rather than emit a degenerate interval.
 
-### Dynamic raw receipt
+### Raw receipts
 
-When `--output report.md` is provided, the dynamic script also writes
-`report.json` unless `--raw-output` selects another path. Schema v2 of the
-versioned JSON receipt includes:
+When `--output report.md` is provided, both comparison scripts also write
+`report.json` unless `--raw-output` selects another path. Schema v4 uses the
+same single `steady` measurement phase for fixed and dynamic reports. Each
+receipt includes:
 
 - environment and benchmark configuration,
+- requested and resolved execution devices,
+- the synchronized-completion timed-region contract,
 - case identities and execution forms,
-- case-specific workload dimensions, shapes, element counts, and exact scale
-  ratios,
 - per-library marginal and round summaries,
 - round execution orders,
 - every call observation with its pairing and order identity,
 - paired effects, interval bounds, bootstrap seed, and resample count.
 
-Workload ratios use integer `numerator` and `denominator` fields so downstream
-analysis does not have to recover exact values from rounded decimals.
+Dynamic receipts also record case-specific workload dimensions, shapes, element
+counts, and exact scale ratios. Ratios use integer `numerator` and
+`denominator` fields rather than rounded decimals.
 
 The raw receipt is written before the Markdown file. Keep it when a comparison
 may need re-analysis; Markdown alone intentionally does not contain enough
@@ -423,6 +441,7 @@ Example:
 
 ```bash
 python -m benchmarks.compare.expression_parity \
+  --device cpu \
   --scale large \
   --case einop_contract_split_dynamic \
   --batches 64 \
@@ -430,8 +449,8 @@ python -m benchmarks.compare.expression_parity \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output artifacts/bench/2026-04-10-gap-expression-parity.md \
-  --raw-output artifacts/bench/raw/2026-04-10-gap-expression-parity.json
+  --output artifacts/bench/current/expression-parity-large.md \
+  --raw-output artifacts/bench/current/raw/expression-parity-large.json
 ```
 
 Current built-in strategies include:
@@ -443,18 +462,20 @@ Current built-in strategies include:
 - `torch_matmul_split`
 - `torch_matmul_slice`
 
-For each measured batch and repeat, every available strategy receives an
-independent clone of the same input. The logical batch is regenerated from the
-same seed for each repeat instead of retaining every large tensor in memory.
-This keeps peak memory near one batch while preserving the paired input. The
-strategies run back-to-back, with their order rotated from one deterministic
-shuffle across all measured coordinates. Warmup uses a separate continuous
-rotation. Batch generation, cloning, and output observation are outside the
-timed interval.
+For each measured batch and repeat, every available strategy receives the same
+prepared tuple and tensor objects. The logical batch is regenerated from the
+same seed for each repeat, materialized on the target once, and released before
+the next coordinate. The strategies run back-to-back, with their order rotated
+from one deterministic shuffle across all measured coordinates. Warmup uses a
+separate continuous rotation.
 
-Parity checks run after timing on disposable strategy instances. A mismatch
-aborts report generation, while `--parity-checks` cannot warm instance-local or
-process-global caches before measurement.
+Parity checks run before warmup and timing on disposable strategy instances. A
+mismatch aborts report generation without warming the runner instances used for
+measurement.
+
+Expression timing uses the same synchronized-completion boundary as the fixed
+and dynamic comparisons. Generation, device transfer, and output validation are
+outside the timed interval.
 
 The report estimates each competitor's mean batch latency relative to the
 `einf` target. Repeats are averaged within each round and measured batch before
@@ -465,6 +486,8 @@ Keep the JSON receipt when the result may need re-analysis. It records the
 schedule and estimand, per-round summaries, every call's round, batch, repeat,
 strategy, order, and latency identity, and the paired estimates. The Markdown
 report is meant for interpretation; it does not replace the raw evidence.
+Expression receipt schema v3 also records structured environment metadata, the
+requested and resolved device, and the shared synchronized-completion contract.
 
 Read the two comparison sections differently:
 

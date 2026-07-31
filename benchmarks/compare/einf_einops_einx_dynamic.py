@@ -26,11 +26,22 @@ from benchmarks.harness import (
     MarkdownPrinter,
     Profiler,
     TestResult,
-    TimingSummary,
     UnavailableRun,
     dynamic_sizes_for_scale,
 )
-from benchmarks.shared import as_single_array, available_libraries, version_or_missing
+from benchmarks.harness.receipt import (
+    execution_target_payload,
+    paired_evidence_payload,
+    resolve_raw_output_path,
+    synchronized_measurement_contract_payload,
+    timing_summary_payload,
+)
+from benchmarks.shared import (
+    as_single_array,
+    available_libraries,
+    einf_source_metadata,
+    version_or_missing,
+)
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -405,20 +416,6 @@ def _build_case_specs(*, sizes: BenchSizes) -> list[DynamicCaseSpec]:
     ]
 
 
-def _summary_payload(summary: TimingSummary) -> dict[str, int | float]:
-    return {
-        "count": summary.count,
-        "p25_ms": summary.p25_ms,
-        "median_ms": summary.median_ms,
-        "p75_ms": summary.p75_ms,
-        "iqr_ms": summary.iqr_ms,
-        "p95_ms": summary.p95_ms,
-        "mean_ms": summary.mean_ms,
-        "min_ms": summary.min_ms,
-        "max_ms": summary.max_ms,
-    }
-
-
 def _fraction_payload(ratio: Fraction) -> dict[str, int]:
     return {
         "numerator": ratio.numerator,
@@ -472,9 +469,10 @@ def _raw_payload(
     sizes: BenchSizes,
     case_results: list[DynamicCaseResult],
     workload_comparisons: Mapping[str, DynamicWorkloadComparison],
+    backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 5,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -484,10 +482,12 @@ def _raw_payload(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": version_or_missing("einf"),
+            "einf": einf_source_metadata(),
         },
+        "execution_target": execution_target_payload(backend),
+        "measurement_contract": synchronized_measurement_contract_payload(),
         "configuration": {
-            "backend": config.backend,
+            "backend": backend.name,
             "scale": config.scale,
             "seed": config.seed,
             "round_order_seed": config.round_order_seed,
@@ -521,6 +521,16 @@ def _raw_payload(
                     case_result.workload,
                     workload_comparisons[case_result.case.name],
                 ),
+                "realized_input_units": [
+                    {
+                        "round_index": unit.round_index,
+                        "unit_index": unit.unit_index,
+                        "stream_index": unit.stream_index,
+                        "seed": unit.seed,
+                        "input_shapes": [list(shape) for shape in unit.input_shapes],
+                    }
+                    for unit in case_result.realized_units
+                ],
                 "runs": {
                     library: (
                         {
@@ -530,9 +540,9 @@ def _raw_payload(
                         if isinstance(run, UnavailableRun)
                         else {
                             "status": "available",
-                            "summary": _summary_payload(run.summary),
+                            "summary": timing_summary_payload(run.summary),
                             "round_summaries": [
-                                _summary_payload(round_summary)
+                                timing_summary_payload(round_summary)
                                 for round_summary in run.round_summaries
                             ],
                         }
@@ -542,33 +552,11 @@ def _raw_payload(
                 "round_orders": [
                     list(round_order) for round_order in case_result.round_orders
                 ],
-                "observations": [
+                "measurements": [
                     {
-                        "round_index": observation.round_index,
-                        "measured_batch_index": observation.measured_batch_index,
-                        "repeat_index": observation.repeat_index,
-                        "library": observation.library,
-                        "order_position": observation.order_position,
-                        "latency_ms": observation.latency_ms,
+                        "phase": "steady",
+                        **paired_evidence_payload(case_result.evidence),
                     }
-                    for observation in case_result.observations
-                ],
-                "comparisons": [
-                    {
-                        "baseline": comparison.baseline,
-                        "competitor": comparison.competitor,
-                        "call_pair_count": comparison.call_pair_count,
-                        "paired_batch_count": comparison.paired_batch_count,
-                        "latency_ratio": comparison.latency_ratio,
-                        "confidence_level": comparison.confidence_level,
-                        "confidence_interval": {
-                            "low": comparison.confidence_interval_low,
-                            "high": comparison.confidence_interval_high,
-                        },
-                        "bootstrap_resamples": comparison.bootstrap_resamples,
-                        "bootstrap_seed": comparison.bootstrap_seed,
-                    }
-                    for comparison in case_result.comparisons
                 ],
             }
             for case_result in case_results
@@ -593,25 +581,6 @@ def _compare_workloads_to_medium(
     }
 
 
-def _resolve_raw_output_path(
-    *,
-    output: Path | None,
-    raw_output: Path | None,
-) -> Path | None:
-    if raw_output is not None:
-        if output is not None and raw_output == output:
-            raise ValueError("--output and --raw-output must use different paths")
-        return raw_output
-    if output is None:
-        return None
-    derived_path = output.with_suffix(".json")
-    if derived_path == output:
-        raise ValueError(
-            "--output must have a non-JSON suffix when --raw-output is omitted"
-        )
-    return derived_path
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Dynamic-shape benchmark for einf vs einops vs einx.",
@@ -627,6 +596,11 @@ def main() -> int:
         choices=("numpy", "torch"),
         default="numpy",
         help="Tensor backend used for dynamic batch tensors.",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Backend-native execution device, such as cpu, mps, or cuda:0.",
     )
     parser.add_argument("--seed", type=int, default=20260215)
     parser.add_argument("--batches", type=int, default=64)
@@ -684,17 +658,15 @@ def main() -> int:
     round_order_seed = (
         args.seed if args.round_order_seed is None else args.round_order_seed
     )
-    raw_output_path = _resolve_raw_output_path(
+    raw_output_path = resolve_raw_output_path(
         output=args.output,
         raw_output=args.raw_output,
     )
     backend_name: BackendName = args.backend
-    backend = BackendSpec(name=backend_name)
-    backend.validate_available()
+    backend = BackendSpec(name=backend_name, requested_device=args.device)
     sizes = dynamic_sizes_for_scale(args.scale)
 
     config = DynamicTaskConfig(
-        backend=backend_name,
         scale=args.scale,
         seed=args.seed,
         batches=args.batches,
@@ -741,7 +713,9 @@ def main() -> int:
             f"einops: `{version_or_missing('einops')}`",
             f"einx: `{version_or_missing('einx')}`",
             "einf: workspace source (`src/einf`)",
-            f"backend: `{args.backend}`",
+            f"backend: `{backend.name}`",
+            f"requested device: `{backend.requested_device}`",
+            f"resolved device: `{backend.resolved_device}`",
             (
                 f"sizes(base): `b={sizes.b}, n={sizes.n}, d={sizes.d}, "
                 f"h={sizes.h}, w={sizes.w}, r={sizes.r}, j={sizes.j}`"
@@ -767,11 +741,10 @@ def main() -> int:
             ),
         ],
         methodology=[
-            "Timing uses eager CPU wall-clock latency for each library call; output observation is excluded.",
+            "The timer starts after target synchronization and stops when the call's submitted work has completed on that target.",
             "Each case uses deterministic dynamic inputs generated by seeded `RandomState`.",
-            "In each round, every measured batch is executed in paired cross-library order on the same logical batch stream.",
+            "Each paired coordinate prepares one target batch outside the timer and passes the same tuple and tensor objects to every library.",
             "Raw latency is sampled per post-warmup batch call without repeat-level averaging.",
-            "Each library receives independently materialized backend batches to avoid cross-library input locality artifacts.",
             "Within each round, per-batch library order rotates from the reported base order to spread position bias.",
             "Marginal summaries pool call observations; their IQRs describe distributions and are not significance tests.",
             "Paired comparisons average repeats within each round/batch unit, then report the competitor/einf ratio of mean latencies.",
@@ -781,8 +754,8 @@ def main() -> int:
         case_results=case_results,
         notes=[
             "Each runner is constructed once per case and reused across batches.",
-            "Dynamic parity checks run before timing using the first round batches.",
-            "Dynamic compare uses the same logical batches within each round while keeping physical input storage independent per library.",
+            "Dynamic parity checks use disposable runners before warmup and timing.",
+            "Prepared target batches are released before the next coordinate is materialized.",
         ],
     )
 
@@ -801,6 +774,7 @@ def main() -> int:
                     sizes=sizes,
                     case_results=case_results,
                     workload_comparisons=workload_comparisons,
+                    backend=backend,
                 ),
                 indent=2,
             )

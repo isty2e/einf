@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 from .result import (
+    AvailableRun,
     DynamicCaseResult,
-    DynamicRun,
     FixedCaseResult,
-    FixedRun,
+    PairedEvidence,
     TestResult,
     TimingSummary,
     UnavailableRun,
@@ -19,15 +19,6 @@ from .workload import (
 )
 
 _LIBRARY_NAMES: tuple[LibraryName, ...] = ("einf", "einops", "einx")
-
-
-def _format_summary(summary: TimingSummary | None) -> str:
-    if summary is None:
-        return "n/a | n/a | n/a | n/a | n/a | n/a"
-    return (
-        f"{summary.count} | {summary.p25_ms:.4f} | {summary.median_ms:.4f} | "
-        f"{summary.p75_ms:.4f} | {summary.iqr_ms:.4f} | {summary.p95_ms:.4f}"
-    )
 
 
 def _format_shape(shape: tuple[int, ...]) -> str:
@@ -113,6 +104,40 @@ def _format_round_medians(
     return lines
 
 
+def _render_paired_comparisons(
+    *,
+    evidence: PairedEvidence,
+    heading: str,
+    unit_label: str,
+) -> list[str]:
+    if not evidence.comparisons:
+        return []
+
+    lines = [
+        "",
+        heading,
+        "",
+        (
+            "| Comparison | Call pairs | "
+            f"{unit_label} | Ratio | Bootstrap level | Bootstrap interval | Difference |"
+        ),
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for comparison in evidence.comparisons:
+        percent_difference = (comparison.latency_ratio - 1.0) * 100.0
+        lines.append(
+            f"| {comparison.competitor} / {comparison.baseline} | "
+            f"{comparison.call_pair_count} | "
+            f"{comparison.paired_unit_count} | "
+            f"{comparison.latency_ratio:.4f} | "
+            f"{comparison.confidence_level:.0%} | "
+            f"[{comparison.confidence_interval_low:.4f}, "
+            f"{comparison.confidence_interval_high:.4f}] | "
+            f"{percent_difference:+.2f}% |"
+        )
+    return lines
+
+
 @dataclass(frozen=True, slots=True)
 class MarkdownPrinter:
     """Render benchmark test results to markdown."""
@@ -139,42 +164,54 @@ class MarkdownPrinter:
             lines.append("")
         lines.extend(
             [
-                "| Library | Cold n | Cold p25 (ms) | Cold median (ms) | Cold p75 (ms) | Cold IQR (ms) | Cold p95 (ms) | Warm n | Warm p25 (ms) | Warm median (ms) | Warm p75 (ms) | Warm IQR (ms) | Warm p95 (ms) |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| Library | Call observations | Median (ms) | Mean (ms) | P25 (ms) | P75 (ms) | P95 (ms) | Min (ms) | Max (ms) |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for lib_name in _LIBRARY_NAMES:
             run = case_result.runs[lib_name]
             if isinstance(run, UnavailableRun):
                 lines.append(
-                    f"| {lib_name} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a ({run.reason}) |"
+                    f"| {lib_name} | n/a ({run.reason}) | - | - | - | - | - | - | - |"
                 )
                 continue
+            summary = run.summary
             lines.append(
-                f"| {lib_name} | {_format_summary(run.cold)} | {_format_summary(run.warm)} |"
+                f"| {lib_name} | {summary.count} | {summary.median_ms:.4f} | "
+                f"{summary.mean_ms:.4f} | {summary.p25_ms:.4f} | "
+                f"{summary.p75_ms:.4f} | {summary.p95_ms:.4f} | "
+                f"{summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
 
-        def resolve_warm_round(
+        lines.extend(
+            _render_paired_comparisons(
+                evidence=case_result.evidence,
+                heading="Paired steady latency ratios (competitor / einf):",
+                unit_label="Paired timing units",
+            )
+        )
+
+        def resolve_round(
             lib_name: LibraryName, round_index: int
         ) -> TimingSummary | None:
             run = case_result.runs[lib_name]
-            if not isinstance(run, FixedRun):
+            if not isinstance(run, AvailableRun):
                 return None
-            return run.warm_rounds[round_index]
+            return run.round_summaries[round_index]
 
-        warm_round_lines = _format_round_medians(
+        round_lines = _format_round_medians(
             round_summaries=next(
                 (
-                    run.warm_rounds
+                    run.round_summaries
                     for run in case_result.runs.values()
-                    if isinstance(run, FixedRun)
+                    if isinstance(run, AvailableRun)
                 ),
                 None,
             ),
             library_names=_LIBRARY_NAMES,
-            resolver=resolve_warm_round,
+            resolver=resolve_round,
         )
-        lines.extend(warm_round_lines)
+        lines.extend(round_lines)
         lines.append("")
         return "\n".join(lines)
 
@@ -221,28 +258,13 @@ class MarkdownPrinter:
                 f"{summary.p95_ms:.4f} | {summary.min_ms:.4f} | {summary.max_ms:.4f} |"
             )
 
-        if case_result.comparisons:
-            lines.extend(
-                [
-                    "",
-                    "Paired latency ratios (competitor / einf):",
-                    "",
-                    "| Comparison | Call pairs | Paired batch units | Ratio | Bootstrap level | Bootstrap interval | Difference |",
-                    "|---|---:|---:|---:|---:|---:|---:|",
-                ]
+        lines.extend(
+            _render_paired_comparisons(
+                evidence=case_result.evidence,
+                heading="Paired latency ratios (competitor / einf):",
+                unit_label="Paired workload units",
             )
-            for comparison in case_result.comparisons:
-                percent_difference = (comparison.latency_ratio - 1.0) * 100.0
-                lines.append(
-                    f"| {comparison.competitor} / {comparison.baseline} | "
-                    f"{comparison.call_pair_count} | "
-                    f"{comparison.paired_batch_count} | "
-                    f"{comparison.latency_ratio:.4f} | "
-                    f"{comparison.confidence_level:.0%} | "
-                    f"[{comparison.confidence_interval_low:.4f}, "
-                    f"{comparison.confidence_interval_high:.4f}] | "
-                    f"{percent_difference:+.2f}% |"
-                )
+        )
 
         lines.extend(
             ["", "Round base order (paired execution rotates within each round):", ""]
@@ -260,7 +282,7 @@ class MarkdownPrinter:
             lib_name: LibraryName, round_index: int
         ) -> TimingSummary | None:
             run = case_result.runs[lib_name]
-            if not isinstance(run, DynamicRun):
+            if not isinstance(run, AvailableRun):
                 return None
             return run.round_summaries[round_index]
 
@@ -269,7 +291,7 @@ class MarkdownPrinter:
                 (
                     run.round_summaries
                     for run in case_result.runs.values()
-                    if isinstance(run, DynamicRun)
+                    if isinstance(run, AvailableRun)
                 ),
                 None,
             ),

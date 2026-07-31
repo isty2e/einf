@@ -9,6 +9,9 @@ Torch backend. Fresh venv (`torch 2.11.0`, `numpy 2.4.4`,
 > to reconstruct paired effects or uncertainty intervals. Numeric tables are
 > preserved as captured; marginal IQR overlap or separation is not a
 > significance test.
+> The retired harness used CPU-only eager timing and separate competitor
+> inputs. Do not compare these numbers directly with current synchronized
+> receipts.
 
 Archived reports:
 

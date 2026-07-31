@@ -11,7 +11,11 @@ except ImportError:  # pragma: no cover
 
 if TYPE_CHECKING:
     from torch import Tensor as TorchTensor
+    from torch import device as TorchDevice
 else:
+
+    class TorchDevice:
+        """Runtime placeholder type when torch is unavailable."""
 
     class TorchTensor:
         """Runtime placeholder type when torch is unavailable."""

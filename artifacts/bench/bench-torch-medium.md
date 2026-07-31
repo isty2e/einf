@@ -4,6 +4,9 @@
 > not observation-level pairing or inferential intervals. Numeric tables are
 > preserved as captured; marginal IQR overlap or separation is not a
 > significance test.
+> The retired harness used CPU-only eager timing and separate competitor
+> inputs. Do not compare these numbers directly with current synchronized
+> receipts.
 
 ## Configuration
 

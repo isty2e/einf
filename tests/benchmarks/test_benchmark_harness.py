@@ -1,15 +1,16 @@
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
+from weakref import ReferenceType, ref
 
 import numpy as np
 import pytest
 
 import benchmarks.harness.backend as backend_module
 import benchmarks.harness.profiler as profiler_module
-import benchmarks.harness.runner as runner_module
 from benchmarks.harness import (
     Array,
+    AvailableRun,
     BackendSpec,
     BenchmarkCase,
     BenchmarkRunner,
@@ -17,7 +18,6 @@ from benchmarks.harness import (
     CaseCalls,
     DynamicCaseResult,
     DynamicCaseSpec,
-    DynamicRun,
     DynamicShapeWorkload,
     DynamicTaskConfig,
     FixedCaseSpec,
@@ -26,6 +26,7 @@ from benchmarks.harness import (
     MarkdownPrinter,
     Output,
     PairedComparison,
+    PairedEvidence,
     Profiler,
     TimingSummary,
 )
@@ -112,76 +113,61 @@ def _timing_case(*, events: list[str]) -> BenchmarkCase:
     )
 
 
-def test_fixed_timing_stops_before_output_observation(
+def test_fixed_runner_constructs_and_validates_before_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     backend = BackendSpec(name="numpy")
     runner = _single_library_runner(backend=backend)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         _recording_clock(
             events=events,
-            values=(1.0, 1.001, 2.0, 2.002),
+            values=(1.0, 1.002),
         ),
     )
 
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
-
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
-
-    runner.run_fixed_case(
+    result = runner.run_fixed_case(
         case_spec=FixedCaseSpec(
             case=_timing_case(events=events),
             inputs=(np.asarray([1.0], dtype=np.float32),),
         ),
         config=FixedTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             rounds=1,
-            cold_repeats=1,
             warmup=0,
-            warm_repeats=1,
-            warm_iterations=1,
+            repeats=1,
+            iterations=1,
         ),
         order_seed=1,
     )
 
     assert events == [
-        "clock_start",
         "factory",
         "call",
-        "clock_stop",
-        "touch",
         "factory",
         "clock_start",
         "call",
         "clock_stop",
-        "touch",
+    ]
+    assert [item.latency_ms for item in result.evidence.observations] == [
+        pytest.approx(2.0)
     ]
 
 
-def test_dynamic_timing_stops_before_output_observation(
+def test_dynamic_runner_warms_before_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     backend = BackendSpec(name="numpy")
     runner = _single_library_runner(backend=backend)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         _recording_clock(events=events, values=(1.0, 1.003)),
     )
-
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
-
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
 
     runner.run_dynamic_case(
         case_spec=DynamicCaseSpec(
@@ -190,7 +176,6 @@ def test_dynamic_timing_stops_before_output_observation(
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             batches=2,
@@ -206,15 +191,13 @@ def test_dynamic_timing_stops_before_output_observation(
     assert events == [
         "factory",
         "call",
-        "touch",
         "clock_start",
         "call",
         "clock_stop",
-        "touch",
     ]
 
 
-def test_profiler_dynamic_timing_stops_before_output_observation(
+def test_profiler_measure_call_synchronizes_around_timed_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -225,60 +208,242 @@ def test_profiler_dynamic_timing_stops_before_output_observation(
         _recording_clock(events=events, values=(1.0, 1.004)),
     )
 
-    def record_touch(self: BackendSpec, output: Output) -> None:
-        _ = self, output
-        events.append("touch")
+    def record_synchronize(self: BackendSpec) -> None:
+        _ = self
+        events.append("sync")
 
-    monkeypatch.setattr(BackendSpec, "touch_output", record_touch)
+    monkeypatch.setattr(BackendSpec, "synchronize", record_synchronize)
 
     def run(batch: tuple[Array, ...]) -> Output:
         events.append("call")
         return batch[0]
 
-    Profiler(backend=backend).measure_dynamic(
+    elapsed_ms = Profiler(backend=backend).measure_call(
         runner=run,
-        batches=[
-            (np.asarray([1.0], dtype=np.float32),),
-            (np.asarray([2.0], dtype=np.float32),),
-        ],
-        warmup_batches=1,
-        repeats=1,
+        batch=(np.asarray([1.0], dtype=np.float32),),
     )
 
     assert events == [
-        "call",
-        "touch",
+        "sync",
         "clock_start",
         "call",
+        "sync",
         "clock_stop",
-        "touch",
     ]
+    assert elapsed_ms == pytest.approx(4.0)
 
 
-def test_eager_timing_rejects_asynchronous_torch_output(
+def test_torch_backend_resolves_open_accelerator_device_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.type = label.partition(":")[0]
+
+        def __str__(self) -> str:
+            return self.label
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, FakeDevice) and self.label == other.label
+
+    class FakeTensor:
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+
+    synchronizations: list[str] = []
+
+    def synchronize(device: FakeDevice) -> None:
+        synchronizations.append(str(device))
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            accelerator=SimpleNamespace(synchronize=synchronize),
+            cpu=SimpleNamespace(synchronize=synchronize),
+            device=FakeDevice,
+            empty=lambda size, *, device: FakeTensor(device),
+        ),
+    )
+
+    backend = BackendSpec(name="torch", requested_device="privateuseone:3")
+
+    assert backend.resolved_device == "privateuseone:3"
+    backend.synchronize()
+    assert synchronizations == ["privateuseone:3", "privateuseone:3"]
+
+
+def test_torch_backend_falls_back_to_no_argument_device_synchronizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps:0"
+
+    synchronizations: list[str] = []
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+            mps=SimpleNamespace(
+                synchronize=lambda: synchronizations.append("mps:0"),
+            ),
+        ),
+    )
+
+    backend = BackendSpec(name="torch", requested_device="mps")
+    backend.synchronize()
+
+    assert synchronizations == ["mps:0", "mps:0"]
+
+
+def test_torch_backend_falls_back_to_device_argument_synchronizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeDevice:
         type = "cuda"
 
         def __str__(self) -> str:
-            return "cuda:0"
+            return "cuda:2"
 
-    class FakeTensor:
-        shape = (1,)
-        device = FakeDevice()
+    synchronizations: list[str] = []
+    resolved_device = FakeDevice()
+
+    def synchronize(device: FakeDevice) -> None:
+        synchronizations.append(str(device))
 
     monkeypatch.setattr(
         backend_module,
         "torch",
-        SimpleNamespace(Tensor=FakeTensor),
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+            cuda=SimpleNamespace(synchronize=synchronize),
+        ),
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="eager benchmark timing requires synchronous CPU outputs",
-    ):
-        BackendSpec(name="torch").touch_output(cast(Output, FakeTensor()))
+    backend = BackendSpec(name="torch", requested_device="cuda:2")
+    backend.synchronize()
+
+    assert synchronizations == ["cuda:2", "cuda:2"]
+
+
+def test_torch_cpu_backend_does_not_require_synchronization_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "cpu"
+
+        def __str__(self) -> str:
+            return "cpu"
+
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+        ),
+    )
+
+    BackendSpec(name="torch").synchronize()
+
+
+def test_torch_backend_rejects_target_without_synchronization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "mps"
+
+        def __str__(self) -> str:
+            return "mps"
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            accelerator=SimpleNamespace(),
+            cpu=SimpleNamespace(),
+            device=lambda label: FakeDevice(),
+            empty=lambda size, *, device: SimpleNamespace(device=device),
+        ),
+    )
+
+    with pytest.raises(TypeError, match="has no synchronization capability"):
+        BackendSpec(name="torch", requested_device="mps")
+
+
+def test_torch_backend_rejects_unavailable_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_target(size: int, *, device: str) -> None:
+        _ = size, device
+        raise RuntimeError("target unavailable")
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=object,
+            device=lambda label: label,
+            empty=reject_target,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="'xpu:7' is unavailable"):
+        BackendSpec(name="torch", requested_device="xpu:7")
+
+
+def test_numpy_backend_rejects_non_cpu_target() -> None:
+    with pytest.raises(ValueError, match="only supports the cpu device"):
+        BackendSpec(name="numpy", requested_device="mps")
+
+
+def test_backend_rejects_output_on_different_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.type = label
+
+        def __str__(self) -> str:
+            return self.label
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, FakeDevice) and self.label == other.label
+
+    class FakeTensor:
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            accelerator=SimpleNamespace(synchronize=lambda device: None),
+            cpu=SimpleNamespace(synchronize=lambda device: None),
+            device=FakeDevice,
+            empty=lambda size, *, device: FakeTensor(device),
+        ),
+    )
+    backend = BackendSpec(name="torch", requested_device="mps")
+
+    with pytest.raises(RuntimeError, match="expected mps, got cpu"):
+        backend.validate_output_target(cast(Output, FakeTensor(FakeDevice("cpu"))))
 
 
 def test_round_orders_rotate_balanced_positions() -> None:
@@ -351,28 +516,55 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
     result = runner.run_fixed_case(
         case_spec=FixedCaseSpec(case=case, inputs=(original,)),
         config=FixedTaskConfig(
-            backend="numpy",
             scale="small",
             seed=1,
             rounds=1,
-            cold_repeats=1,
             warmup=0,
-            warm_repeats=1,
-            warm_iterations=1,
+            repeats=2,
+            iterations=2,
         ),
         order_seed=1234,
     )
 
     order = result.round_orders[0]
-    assert call_order == [order[0], order[1], order[2], order[0], order[1], order[2]]
+    expected_orders = [
+        order,
+        order,
+        runner._rotate_order(order, offset=1),
+        runner._rotate_order(order, offset=2),
+        order,
+    ]
+    assert call_order == [
+        name for expected_order in expected_orders for name in expected_order
+    ]
 
     for lib_name in ("einf", "einops", "einx"):
-        cold_array, warm_array = captured[lib_name]
-        assert not np.shares_memory(cold_array, original)
-        assert not np.shares_memory(warm_array, original)
-        assert not np.shares_memory(cold_array, warm_array)
-        assert np.array_equal(cold_array, original)
-        assert np.array_equal(warm_array, original)
+        arrays = captured[lib_name]
+        assert len(arrays) == 5
+        assert all(array is original for array in arrays)
+
+    assert len(result.evidence.observations) == 12
+    assert len(result.evidence.comparisons) == 2
+
+    measured_orders = expected_orders[1:]
+    for timing_index, expected_order in enumerate(measured_orders):
+        start = timing_index * 3
+        observations = result.evidence.observations[start : start + 3]
+        assert tuple(item.library for item in observations) == expected_order
+        assert {item.unit_index for item in observations} == {timing_index // 2}
+        assert {item.repeat_index for item in observations} == {timing_index % 2}
+        assert tuple(item.order_position for item in observations) == (0, 1, 2)
+
+    report = BenchmarkTestResult(
+        title="# Fixed",
+        configuration=["backend: `numpy`"],
+        methodology=["paired"],
+        case_results=[result],
+        notes=[],
+    )
+    markdown = MarkdownPrinter().render_fixed(report)
+    assert "Paired steady latency ratios (competitor / einf):" in markdown
+    assert "Paired timing units" in markdown
 
 
 def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
@@ -419,12 +611,11 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=3,
             warmup_batches=1,
-            repeats=1,
+            repeats=2,
             rounds=1,
             round_order_seed=1234,
             parity_checks=0,
@@ -437,8 +628,10 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         order,
         order,
         runner._rotate_order(order, offset=1),
+        runner._rotate_order(order, offset=2),
+        order,
     ]
-    assert len(events) == 9
+    assert len(events) == 15
 
     for batch_index, expected_order in enumerate(expected_orders):
         batch_events = events[batch_index * 3 : (batch_index + 1) * 3]
@@ -447,21 +640,38 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         assert len(values) == 1
 
         arrays = [array for _, _, array in batch_events]
-        assert not np.shares_memory(arrays[0], arrays[1])
-        assert not np.shares_memory(arrays[0], arrays[2])
-        assert not np.shares_memory(arrays[1], arrays[2])
+        assert arrays[0] is arrays[1]
+        assert arrays[0] is arrays[2]
 
-    assert len(result.observations) == 6
+    first_repeat_events = events[3:9]
+    second_repeat_events = events[9:15]
+    for unit_index in range(2):
+        first_array = first_repeat_events[unit_index * 3][2]
+        second_array = second_repeat_events[unit_index * 3][2]
+        assert first_array is not second_array
+        np.testing.assert_array_equal(first_array, second_array)
+
+    assert len(result.realized_units) == 2
+    assert [unit.stream_index for unit in result.realized_units] == [1, 2]
+    assert [unit.seed for unit in result.realized_units] == [8, 9]
+    assert [unit.input_shapes for unit in result.realized_units] == [
+        ((1,),),
+        ((1,),),
+    ]
+
+    assert len(result.evidence.observations) == 12
     measured_orders = expected_orders[1:]
-    for measured_batch_index, expected_order in enumerate(measured_orders):
-        start = measured_batch_index * 3
-        batch_observations = result.observations[start : start + 3]
+    for coordinate_index, expected_order in enumerate(measured_orders):
+        start = coordinate_index * 3
+        batch_observations = result.evidence.observations[start : start + 3]
         assert [item.library for item in batch_observations] == list(expected_order)
         assert [item.order_position for item in batch_observations] == [0, 1, 2]
-        assert {item.measured_batch_index for item in batch_observations} == {
-            measured_batch_index
+        assert {item.unit_index for item in batch_observations} == {
+            coordinate_index % 2
         }
-        assert {item.repeat_index for item in batch_observations} == {0}
+        assert {item.repeat_index for item in batch_observations} == {
+            coordinate_index // 2
+        }
         assert {item.round_index for item in batch_observations} == {0}
 
 
@@ -484,7 +694,7 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
         clock_values.extend((started, started + (call_index + 1) / 1000.0))
     clock_iterator = iter(clock_values)
     monkeypatch.setattr(
-        runner_module.time,
+        profiler_module.time,
         "perf_counter",
         lambda: next(clock_iterator),
     )
@@ -496,7 +706,6 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
             workload=_vector_workload(),
         ),
         config=DynamicTaskConfig(
-            backend="numpy",
             scale="medium",
             seed=7,
             batches=2,
@@ -509,9 +718,75 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
         case_index=0,
     )
 
-    assert [item.latency_ms for item in result.observations] == pytest.approx(
+    assert [item.latency_ms for item in result.evidence.observations] == pytest.approx(
         list(range(1, 13))
     )
+
+
+def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_references: list[ReferenceType[np.ndarray]] = []
+    prepared_references: list[ReferenceType[np.ndarray]] = []
+    live_host_batches_before_generation: list[int] = []
+    live_batches_before_preparation: list[int] = []
+    make_dynamic_numpy_batch = BenchmarkRunner._make_dynamic_numpy_batch
+
+    def generate_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        live_host_batches_before_generation.append(
+            sum(reference() is not None for reference in host_references)
+        )
+        batch = make_dynamic_numpy_batch(self, case_spec=case_spec, seed=seed)
+        host_references.extend(ref(array) for array in batch)
+        return batch
+
+    def prepare_batch(
+        self: BackendSpec,
+        batch: tuple[np.ndarray, ...],
+    ) -> tuple[Array, ...]:
+        _ = self
+        live_batches_before_preparation.append(
+            sum(reference() is not None for reference in prepared_references)
+        )
+        prepared = tuple(array.copy() for array in batch)
+        prepared_references.extend(ref(array) for array in prepared)
+        return prepared
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        generate_batch,
+    )
+    monkeypatch.setattr(BackendSpec, "to_backend_batch", prepare_batch)
+    backend = BackendSpec(name="numpy")
+    runner = _single_library_runner(backend=backend)
+
+    runner.run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=[]),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=DynamicTaskConfig(
+            scale="medium",
+            seed=7,
+            batches=3,
+            warmup_batches=1,
+            repeats=2,
+            rounds=1,
+            round_order_seed=1234,
+            parity_checks=2,
+        ),
+        case_index=0,
+    )
+
+    assert live_host_batches_before_generation == [0, 0, 0, 0, 0, 0, 0]
+    assert live_batches_before_preparation == [0, 0, 0, 0, 0, 0, 0]
 
 
 def test_run_dynamic_case_rejects_partial_round_orders(
@@ -547,7 +822,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
                 workload=_vector_workload(),
             ),
             config=DynamicTaskConfig(
-                backend="numpy",
                 scale="medium",
                 seed=7,
                 batches=2,
@@ -580,22 +854,23 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
     case_result = DynamicCaseResult(
         case=case,
         workload=workload,
+        realized_units=(),
         runs={
-            "einf": DynamicRun(
+            "einf": AvailableRun(
                 summary=_summary(median_ms=1.0),
                 round_summaries=(
                     _summary(median_ms=1.0),
                     _summary(median_ms=1.1),
                 ),
             ),
-            "einops": DynamicRun(
+            "einops": AvailableRun(
                 summary=_summary(median_ms=2.0),
                 round_summaries=(
                     _summary(median_ms=2.0),
                     _summary(median_ms=2.1),
                 ),
             ),
-            "einx": DynamicRun(
+            "einx": AvailableRun(
                 summary=_summary(median_ms=3.0),
                 round_summaries=(
                     _summary(median_ms=3.0),
@@ -604,19 +879,21 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
             ),
         },
         round_orders=[("einf", "einops", "einx"), ("einops", "einx", "einf")],
-        observations=(),
-        comparisons=(
-            PairedComparison(
-                baseline="einf",
-                competitor="einops",
-                call_pair_count=12,
-                paired_batch_count=6,
-                latency_ratio=2.0,
-                confidence_level=0.95,
-                confidence_interval_low=1.8,
-                confidence_interval_high=2.2,
-                bootstrap_resamples=10_000,
-                bootstrap_seed=7,
+        evidence=PairedEvidence(
+            observations=(),
+            comparisons=(
+                PairedComparison(
+                    baseline="einf",
+                    competitor="einops",
+                    call_pair_count=12,
+                    paired_unit_count=6,
+                    latency_ratio=2.0,
+                    confidence_level=0.95,
+                    confidence_interval_low=1.8,
+                    confidence_interval_high=2.2,
+                    bootstrap_resamples=10_000,
+                    bootstrap_seed=7,
+                ),
             ),
         ),
     )
