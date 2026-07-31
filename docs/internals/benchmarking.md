@@ -493,7 +493,7 @@ Keep the JSON receipt when the result may need re-analysis. It records the
 schedule and estimand, per-round summaries, every call's round, batch, repeat,
 strategy, order, and latency identity, and the paired estimates. The Markdown
 report is meant for interpretation; it does not replace the raw evidence.
-Expression receipt schema v3 also records structured environment metadata, the
+Expression receipt schema v4 also records structured environment metadata, the
 requested and resolved device, and the shared synchronized-completion contract.
 
 Read the two comparison sections differently:
