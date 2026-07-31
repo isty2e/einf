@@ -22,7 +22,7 @@ Assumption:
 Fixed and dynamic comparisons use the same measurement contract. Their only
 substantive difference is how they construct the input stream: fixed cases reuse
 one prepared batch, while dynamic cases draw deterministic batches whose shapes
-vary by round.
+can vary by coordinate.
 
 At each measured coordinate, the harness:
 
@@ -331,7 +331,8 @@ What the script reports:
 - round-level summaries,
 - per-case library order for each round,
 - requested and resolved execution devices,
-- a versioned raw JSON receipt alongside the Markdown report.
+- a versioned raw JSON receipt with the measured source revision alongside the
+  Markdown report.
 
 ## Dynamic-Shape Compare
 
@@ -362,8 +363,9 @@ What matters here:
   summaries and paired comparisons,
 - one target batch is materialized per paired coordinate and shared by all
   libraries,
-- the prepared target batch is released before the next coordinate, while the
-  deterministic host-side stream remains available for repeat materialization.
+- host and target inputs are released before the next coordinate,
+- repeats regenerate the same logical unit from its recorded seed, and each raw
+  receipt includes the realized input shapes.
 
 ### Paired evidence contract
 
