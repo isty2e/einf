@@ -36,7 +36,12 @@ from benchmarks.harness.receipt import (
     synchronized_measurement_contract_payload,
     timing_summary_payload,
 )
-from benchmarks.shared import as_single_array, available_libraries, version_or_missing
+from benchmarks.shared import (
+    as_single_array,
+    available_libraries,
+    einf_source_metadata,
+    version_or_missing,
+)
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -467,7 +472,7 @@ def _raw_payload(
     backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -477,7 +482,7 @@ def _raw_payload(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": version_or_missing("einf"),
+            "einf": einf_source_metadata(),
         },
         "execution_target": execution_target_payload(backend),
         "measurement_contract": synchronized_measurement_contract_payload(),
@@ -516,6 +521,16 @@ def _raw_payload(
                     case_result.workload,
                     workload_comparisons[case_result.case.name],
                 ),
+                "realized_input_units": [
+                    {
+                        "round_index": unit.round_index,
+                        "unit_index": unit.unit_index,
+                        "stream_index": unit.stream_index,
+                        "seed": unit.seed,
+                        "input_shapes": [list(shape) for shape in unit.input_shapes],
+                    }
+                    for unit in case_result.realized_units
+                ],
                 "runs": {
                     library: (
                         {

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import benchmarks.harness.receipt as receipt_module
 from benchmarks.compare.einf_einops_einx import (
     _raw_payload as _fixed_raw_payload,
 )
@@ -32,6 +33,7 @@ from benchmarks.harness import (
 )
 from benchmarks.harness.comparison import compare_library_timings
 from benchmarks.harness.receipt import resolve_raw_output_path
+from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import LibraryName
 
 
@@ -219,7 +221,15 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
     result = DynamicCaseResult(
         case=_case(),
         workload=workload,
-        realized_units=(),
+        realized_units=(
+            DynamicInputUnit(
+                round_index=1,
+                unit_index=2,
+                stream_index=3,
+                seed=11,
+                input_shapes=((1, 3),),
+            ),
+        ),
         runs={
             "einf": AvailableRun(
                 summary=_summary(mean_ms=1.0),
@@ -259,7 +269,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -280,6 +290,15 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
     json.dumps(payload)
     case_payload = cases[0]
     assert case_payload["case"]["name"] == "dynamic_case"
+    assert case_payload["realized_input_units"] == [
+        {
+            "round_index": 1,
+            "unit_index": 2,
+            "stream_index": 3,
+            "seed": 11,
+            "input_shapes": [[1, 3]],
+        }
+    ]
     assert case_payload["workload"] == {
         "dimensions": [
             {
@@ -389,7 +408,7 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
         backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -443,4 +462,53 @@ def test_resolve_raw_output_path_rejects_implicit_json_collision() -> None:
         resolve_raw_output_path(
             output=Path("report.json"),
             raw_output=None,
+        )
+
+
+def test_resolve_raw_output_path_rejects_case_alias_on_insensitive_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        receipt_module,
+        "_filesystem_is_case_insensitive",
+        lambda path: True,
+    )
+
+    with pytest.raises(ValueError, match="non-JSON suffix"):
+        resolve_raw_output_path(
+            output=tmp_path / "report.JSON",
+            raw_output=None,
+        )
+
+
+def test_resolve_raw_output_path_allows_case_distinction_on_sensitive_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        receipt_module,
+        "_filesystem_is_case_insensitive",
+        lambda path: False,
+    )
+    output = tmp_path / "report.JSON"
+
+    assert resolve_raw_output_path(
+        output=output,
+        raw_output=None,
+    ) == tmp_path / "report.json"
+
+
+def test_resolve_raw_output_path_rejects_existing_hard_link_alias(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "report.md"
+    output.write_text("", encoding="utf-8")
+    raw_output = tmp_path / "raw.json"
+    raw_output.hardlink_to(output)
+
+    with pytest.raises(ValueError, match="must use different paths"):
+        resolve_raw_output_path(
+            output=output,
+            raw_output=raw_output,
         )

@@ -32,7 +32,12 @@ from benchmarks.harness.receipt import (
     synchronized_measurement_contract_payload,
     timing_summary_payload,
 )
-from benchmarks.shared import as_single_array, available_libraries, version_or_missing
+from benchmarks.shared import (
+    as_single_array,
+    available_libraries,
+    einf_source_metadata,
+    version_or_missing,
+)
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -404,7 +409,7 @@ def _raw_payload(
     backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "benchmark": "einf-vs-einops-einx-fixed",
         "environment": {
             "python": platform.python_version(),
@@ -414,7 +419,7 @@ def _raw_payload(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": version_or_missing("einf"),
+            "einf": einf_source_metadata(),
         },
         "execution_target": execution_target_payload(backend),
         "measurement_contract": synchronized_measurement_contract_payload(),
