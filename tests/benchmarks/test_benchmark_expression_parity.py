@@ -623,6 +623,29 @@ def test_main_rejects_invalid_evidence_configuration(
         main()
 
 
+def test_main_rejects_aliased_receipt_and_report_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "report.md"
+    output.write_text("existing report", encoding="utf-8")
+    raw_output = tmp_path / "receipt.json"
+    raw_output.hardlink_to(output)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "expression_parity.py",
+            "--output",
+            str(output),
+            "--raw-output",
+            str(raw_output),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="must use different paths"):
+        main()
+
+
 def test_expression_parity_renderers_preserve_inference_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -662,14 +685,26 @@ def test_expression_parity_renderers_preserve_inference_contract(
         notes=["lower bound is not output-equivalent"],
     )
 
+    source_metadata: dict[str, str | bool | None] = {
+        "kind": "git_checkout",
+        "distribution_version": "0.2.0",
+        "git_revision": "abc123",
+        "git_dirty": False,
+    }
+    monkeypatch.setattr(
+        expression_parity_module,
+        "einf_source_metadata",
+        lambda: source_metadata,
+    )
     payload = _to_json(report, backend=BackendSpec(name="numpy"))
     json.dumps(payload)
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     environment = payload["environment"]
     assert isinstance(environment, dict)
     assert {"python", "platform", "machine", "numpy", "torch", "einops", "einx", "einf"} <= set(
         environment
     )
+    assert environment["einf"] == source_metadata
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",

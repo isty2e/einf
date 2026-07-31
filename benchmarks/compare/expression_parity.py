@@ -26,10 +26,11 @@ from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.receipt import (
     execution_target_payload,
+    resolve_raw_output_path,
     synchronized_measurement_contract_payload,
 )
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
-from benchmarks.shared import as_single_array, version_or_missing
+from benchmarks.shared import as_single_array, einf_source_metadata, version_or_missing
 from einf import ax, axes, einop
 
 try:
@@ -690,7 +691,7 @@ def _to_json(
     backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "title": report.title,
         "environment": {
             "python": platform.python_version(),
@@ -700,7 +701,7 @@ def _to_json(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": version_or_missing("einf"),
+            "einf": einf_source_metadata(),
         },
         "configuration": list(report.configuration),
         "methodology": list(report.methodology),
@@ -972,7 +973,7 @@ def main() -> int:
         "--raw-output",
         type=Path,
         default=None,
-        help="Optional raw JSON output path.",
+        help="Optional raw JSON path; defaults to --output with a .json suffix.",
     )
     args = parser.parse_args()
 
@@ -994,8 +995,10 @@ def main() -> int:
         raise ValueError(f"rounds must be >= 1, got {args.rounds}")
     if args.parity_checks < 0:
         raise ValueError(f"parity-checks must be >= 0, got {args.parity_checks}")
-    if args.output is not None and args.output == args.raw_output:
-        raise ValueError("output and raw-output must use different paths")
+    raw_output_path = resolve_raw_output_path(
+        output=args.output,
+        raw_output=args.raw_output,
+    )
 
     backend = BackendSpec(name="torch", requested_device=args.device)
     profiler = Profiler(backend=backend)
@@ -1047,6 +1050,11 @@ def main() -> int:
             f"repeats: `{args.repeats}`",
             f"rounds: `{args.rounds}`",
             f"measured batches per repeat: `{measured_batches_per_repeat}`",
+            *(
+                [f"raw JSON artifact: `{raw_output_path}`"]
+                if raw_output_path is not None
+                else []
+            ),
             "table units: `ms`",
         ],
         methodology=[
@@ -1103,9 +1111,9 @@ def main() -> int:
 
     markdown = _render_markdown(report)
     print(markdown)
-    if args.raw_output is not None:
-        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-        args.raw_output.write_text(
+    if raw_output_path is not None:
+        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_output_path.write_text(
             json.dumps(_to_json(report, backend=backend), indent=2),
             encoding="utf-8",
         )
