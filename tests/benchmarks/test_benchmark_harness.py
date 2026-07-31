@@ -416,6 +416,7 @@ def test_torch_backend_rejects_target_without_synchronization(
             empty=lambda size, *, device: SimpleNamespace(device=device),
         ),
     )
+
     def reject_device_module(name: str) -> None:
         raise ModuleNotFoundError(name=name)
 

@@ -44,10 +44,9 @@ def _paths_alias(first: Path, second: Path) -> bool:
             return True
     except OSError:
         pass
-    return (
-        str(resolved_first).casefold() == str(resolved_second).casefold()
-        and _filesystem_is_case_insensitive(resolved_first.parent)
-    )
+    return str(resolved_first).casefold() == str(
+        resolved_second
+    ).casefold() and _filesystem_is_case_insensitive(resolved_first.parent)
 
 
 def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
