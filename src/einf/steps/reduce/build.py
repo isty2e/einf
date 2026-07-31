@@ -6,10 +6,10 @@ from einf.axis import AxisTerms, ScalarAxisTerms
 from einf.backend import (
     ArrayNamespace,
     BackendArrayOps,
+    BackendExecutionIdentity,
     BackendProfile,
     get_backend_array_ops,
 )
-from einf.backend.namespace import derive_namespace_id
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
@@ -37,7 +37,7 @@ class _ReduceCompileKey:
     lhs_terms: ScalarAxisTerms
     reduce_axes: AxisTerms
     pack_ranks: tuple[tuple[str, int], ...]
-    namespace_id: str
+    backend_identity: BackendExecutionIdentity | None
     reducer_kind: str
     reducer_token: str | int
 
@@ -174,7 +174,7 @@ def build_reduce_compiled_program(
         reduce_axes=normalized_reduce_axes,
         pack_ranks=pack_ranks,
         reducer=reducer,
-        xp=xp,
+        backend_identity=backend_profile.execution_identity,
     )
     cached_plan = _get_cached_reduce_compiled_program(cache_key)
     if cached_plan is None:
@@ -262,7 +262,7 @@ def _build_reduce_compile_key(
     reduce_axes: AxisTerms,
     pack_ranks: tuple[tuple[str, int], ...],
     reducer: CanonicalReducer,
-    xp: ArrayNamespace,
+    backend_identity: BackendExecutionIdentity,
 ) -> _ReduceCompileKey:
     """Build one structural cache key for unary reduce phase compilation."""
     reducer_kind, reducer_token = _reducer_cache_token(reducer)
@@ -270,7 +270,9 @@ def _build_reduce_compile_key(
         lhs_terms=lhs_terms,
         reduce_axes=reduce_axes,
         pack_ranks=pack_ranks,
-        namespace_id=derive_namespace_id(xp),
+        backend_identity=(
+            backend_identity if isinstance(reducer, ReducerName) else None
+        ),
         reducer_kind=reducer_kind,
         reducer_token=reducer_token,
     )
