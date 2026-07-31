@@ -219,6 +219,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
     result = DynamicCaseResult(
         case=_case(),
         workload=workload,
+        realized_units=(),
         runs={
             "einf": AvailableRun(
                 summary=_summary(mean_ms=1.0),

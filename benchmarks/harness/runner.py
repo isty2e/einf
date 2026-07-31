@@ -11,6 +11,7 @@ from .profiler import Profiler
 from .result import (
     AvailableRun,
     DynamicCaseResult,
+    DynamicInputUnit,
     FixedCaseResult,
     LibraryTimingObservation,
     PairedEvidence,
@@ -347,18 +348,33 @@ class BenchmarkRunner:
             ),
         )
 
-    def _make_dynamic_numpy_batches(
+    def _make_dynamic_numpy_batch(
         self,
         *,
         case_spec: DynamicCaseSpec,
-        count: int,
         seed: int,
-    ) -> list[tuple[NumpyArray, ...]]:
+    ) -> tuple[NumpyArray, ...]:
         generator = TensorGenerator.from_seed(
             backend=BackendSpec(name="numpy"),
             seed=seed,
         )
-        return [case_spec.make_numpy_batch(generator) for _ in range(count)]
+        return case_spec.make_numpy_batch(generator)
+
+    @staticmethod
+    def _dynamic_batch_seed(
+        *,
+        config: DynamicTaskConfig,
+        case_index: int,
+        round_index: int,
+        stream_index: int,
+    ) -> int:
+        """Return the deterministic seed for one logical dynamic input unit."""
+        return (
+            config.seed
+            + case_index * CASE_SEED_STRIDE
+            + round_index * ROUND_BATCH_SEED_STRIDE
+            + stream_index
+        )
 
     def run_dynamic_case(
         self,
@@ -385,25 +401,13 @@ class BenchmarkRunner:
             return DynamicCaseResult(
                 case=case,
                 workload=case_spec.workload_metadata,
+                realized_units=(),
                 runs=runs,
                 round_orders=[],
                 evidence=PairedEvidence(observations=(), comparisons=()),
             )
 
         runner_factories = self._libraries_for_case(case)
-        round_numpy_batches = [
-            self._make_dynamic_numpy_batches(
-                case_spec=case_spec,
-                count=config.batches,
-                seed=(
-                    config.seed
-                    + case_index * CASE_SEED_STRIDE
-                    + round_index * ROUND_BATCH_SEED_STRIDE
-                ),
-            )
-            for round_index in range(config.rounds)
-        ]
-
         round_orders = self._round_orders(
             library_names=available_libs,
             rounds=config.rounds,
@@ -414,29 +418,38 @@ class BenchmarkRunner:
             libraries=available_libs,
         )
 
-        reference_batches = round_numpy_batches[0]
-        checks = min(len(reference_batches), config.parity_checks)
+        checks = min(config.batches, config.parity_checks)
         if checks:
             validation_runners: dict[LibraryName, Runner] = {
                 library_name: runner_factories[library_name]()
                 for library_name in available_libs
             }
-            for index in range(checks):
-                numpy_batch = reference_batches[index]
+            for stream_index in range(checks):
+                numpy_batch = self._make_dynamic_numpy_batch(
+                    case_spec=case_spec,
+                    seed=self._dynamic_batch_seed(
+                        config=config,
+                        case_index=case_index,
+                        round_index=0,
+                        stream_index=stream_index,
+                    ),
+                )
+                expected = tuple(
+                    array.copy()
+                    for array in self.backend.to_numpy_output(
+                        case.reference(numpy_batch)
+                    )
+                )
                 batch = self.backend.to_backend_batch(numpy_batch)
+                del numpy_batch
                 self._validate_runners(
                     case=case,
                     runners=validation_runners,
                     batch=batch,
-                    expected=tuple(
-                        array.copy()
-                        for array in self.backend.to_numpy_output(
-                            case.reference(numpy_batch)
-                        )
-                    ),
+                    expected=expected,
                     order=round_orders[0],
                 )
-                del batch
+                del batch, expected
             del validation_runners
 
         runners: dict[LibraryName, Runner] = {
@@ -445,37 +458,69 @@ class BenchmarkRunner:
         }
 
         observations: list[LibraryTimingObservation] = []
-        for round_index, numpy_batches in enumerate(round_numpy_batches):
-            warmup_slice = numpy_batches[: config.warmup_batches]
-            measure_slice = numpy_batches[config.warmup_batches :]
-
-            for batch_index, numpy_batch in enumerate(warmup_slice):
+        realized_units: list[DynamicInputUnit] = []
+        measured_batches = config.batches - config.warmup_batches
+        for round_index, round_order in enumerate(round_orders):
+            for stream_index in range(config.warmup_batches):
+                numpy_batch = self._make_dynamic_numpy_batch(
+                    case_spec=case_spec,
+                    seed=self._dynamic_batch_seed(
+                        config=config,
+                        case_index=case_index,
+                        round_index=round_index,
+                        stream_index=stream_index,
+                    ),
+                )
                 batch = self.backend.to_backend_batch(numpy_batch)
+                del numpy_batch
                 self._warmup_coordinate(
                     runners=runners,
                     batch=batch,
                     order=self._rotate_order(
-                        round_orders[round_index],
-                        offset=batch_index,
+                        round_order,
+                        offset=stream_index,
                     ),
                 )
                 del batch
 
             for repeat_index in range(config.repeats):
-                for batch_index, numpy_batch in enumerate(measure_slice):
+                for unit_index in range(measured_batches):
+                    stream_index = config.warmup_batches + unit_index
+                    batch_seed = self._dynamic_batch_seed(
+                        config=config,
+                        case_index=case_index,
+                        round_index=round_index,
+                        stream_index=stream_index,
+                    )
+                    numpy_batch = self._make_dynamic_numpy_batch(
+                        case_spec=case_spec,
+                        seed=batch_seed,
+                    )
+                    input_shapes = tuple(array.shape for array in numpy_batch)
+                    if repeat_index == 0:
+                        realized_units.append(
+                            DynamicInputUnit(
+                                round_index=round_index,
+                                unit_index=unit_index,
+                                stream_index=stream_index,
+                                seed=batch_seed,
+                                input_shapes=input_shapes,
+                            )
+                        )
                     batch = self.backend.to_backend_batch(numpy_batch)
+                    del numpy_batch
                     observations.extend(
                         self._measure_coordinate(
                             runners=runners,
                             batch=batch,
                             order=self._rotate_order(
-                                round_orders[round_index],
+                                round_order,
                                 offset=(
-                                    repeat_index * len(measure_slice) + batch_index
+                                    repeat_index * measured_batches + unit_index
                                 ),
                             ),
                             round_index=round_index,
-                            unit_index=batch_index,
+                            unit_index=unit_index,
                             repeat_index=repeat_index,
                         ),
                     )
@@ -491,6 +536,7 @@ class BenchmarkRunner:
         return DynamicCaseResult(
             case=case,
             workload=case_spec.workload_metadata,
+            realized_units=tuple(realized_units),
             runs=runs,
             round_orders=round_orders,
             evidence=self._paired_evidence(

@@ -88,7 +88,7 @@ class BackendSpec:
     ) -> tuple[Array, ...]:
         """Convert NumPy batch arrays to backend tensor batch."""
         if self.name == "numpy":
-            return batch
+            return tuple(array.copy() for array in batch)
         if torch is None or self._torch_device is None:
             raise RuntimeError("torch benchmark target is not resolved")
         return tuple(

@@ -131,11 +131,37 @@ class FixedCaseResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DynamicInputUnit:
+    """Realized input descriptor for one measured dynamic workload unit."""
+
+    round_index: int
+    unit_index: int
+    stream_index: int
+    seed: int
+    input_shapes: tuple[tuple[int, ...], ...]
+
+    def __post_init__(self) -> None:
+        """Reject malformed dynamic workload descriptors."""
+        for field_name, value in (
+            ("round_index", self.round_index),
+            ("unit_index", self.unit_index),
+            ("stream_index", self.stream_index),
+        ):
+            if value < 0:
+                raise ValueError(f"{field_name} must be non-negative, got {value}")
+        if not self.input_shapes:
+            raise ValueError("dynamic input unit requires at least one input shape")
+        if any(dimension < 1 for shape in self.input_shapes for dimension in shape):
+            raise ValueError("dynamic input dimensions must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class DynamicCaseResult:
     """One dynamic-shape benchmark case with raw and derived evidence."""
 
     case: BenchmarkCase
     workload: DynamicWorkloadMetadata
+    realized_units: tuple[DynamicInputUnit, ...]
     runs: dict[LibraryName, RunResult]
     round_orders: list[tuple[LibraryName, ...]]
     evidence: PairedEvidence

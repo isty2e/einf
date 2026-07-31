@@ -534,7 +534,7 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
             seed=7,
             batches=3,
             warmup_batches=1,
-            repeats=1,
+            repeats=2,
             rounds=1,
             round_order_seed=1234,
             parity_checks=0,
@@ -547,8 +547,10 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         order,
         order,
         runner._rotate_order(order, offset=1),
+        runner._rotate_order(order, offset=2),
+        order,
     ]
-    assert len(events) == 9
+    assert len(events) == 15
 
     for batch_index, expected_order in enumerate(expected_orders):
         batch_events = events[batch_index * 3 : (batch_index + 1) * 3]
@@ -560,17 +562,35 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         assert arrays[0] is arrays[1]
         assert arrays[0] is arrays[2]
 
-    assert len(result.evidence.observations) == 6
+    first_repeat_events = events[3:9]
+    second_repeat_events = events[9:15]
+    for unit_index in range(2):
+        first_array = first_repeat_events[unit_index * 3][2]
+        second_array = second_repeat_events[unit_index * 3][2]
+        assert first_array is not second_array
+        np.testing.assert_array_equal(first_array, second_array)
+
+    assert len(result.realized_units) == 2
+    assert [unit.stream_index for unit in result.realized_units] == [1, 2]
+    assert [unit.seed for unit in result.realized_units] == [8, 9]
+    assert [unit.input_shapes for unit in result.realized_units] == [
+        ((1,),),
+        ((1,),),
+    ]
+
+    assert len(result.evidence.observations) == 12
     measured_orders = expected_orders[1:]
-    for measured_batch_index, expected_order in enumerate(measured_orders):
-        start = measured_batch_index * 3
+    for coordinate_index, expected_order in enumerate(measured_orders):
+        start = coordinate_index * 3
         batch_observations = result.evidence.observations[start : start + 3]
         assert [item.library for item in batch_observations] == list(expected_order)
         assert [item.order_position for item in batch_observations] == [0, 1, 2]
         assert {item.unit_index for item in batch_observations} == {
-            measured_batch_index
+            coordinate_index % 2
         }
-        assert {item.repeat_index for item in batch_observations} == {0}
+        assert {item.repeat_index for item in batch_observations} == {
+            coordinate_index // 2
+        }
         assert {item.round_index for item in batch_observations} == {0}
 
 
@@ -626,8 +646,24 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
 def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    host_references: list[ReferenceType[np.ndarray]] = []
     prepared_references: list[ReferenceType[np.ndarray]] = []
+    live_host_batches_before_generation: list[int] = []
     live_batches_before_preparation: list[int] = []
+    make_dynamic_numpy_batch = BenchmarkRunner._make_dynamic_numpy_batch
+
+    def generate_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        live_host_batches_before_generation.append(
+            sum(reference() is not None for reference in host_references)
+        )
+        batch = make_dynamic_numpy_batch(self, case_spec=case_spec, seed=seed)
+        host_references.extend(ref(array) for array in batch)
+        return batch
 
     def prepare_batch(
         self: BackendSpec,
@@ -641,6 +677,11 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
         prepared_references.extend(ref(array) for array in prepared)
         return prepared
 
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        generate_batch,
+    )
     monkeypatch.setattr(BackendSpec, "to_backend_batch", prepare_batch)
     backend = BackendSpec(name="numpy")
     runner = _single_library_runner(backend=backend)
@@ -665,6 +706,7 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
         case_index=0,
     )
 
+    assert live_host_batches_before_generation == [0, 0, 0, 0, 0]
     assert live_batches_before_preparation == [0, 0, 0, 0, 0]
 
 
@@ -734,6 +776,7 @@ def test_markdown_printer_renders_round_level_summaries() -> None:
     case_result = DynamicCaseResult(
         case=case,
         workload=workload,
+        realized_units=(),
         runs={
             "einf": AvailableRun(
                 summary=_summary(median_ms=1.0),
