@@ -47,7 +47,7 @@ class TyAdapter(CheckerAdapter):
         request: CheckerRequest,
     ) -> CheckerResult:
         diagnostics: list[CheckerDiagnostic] = []
-        unrecognized_line: str | None = None
+        failure: CheckerFailure | None = None
         for output in (stdout, stderr):
             for raw_line in output.splitlines():
                 line = raw_line.strip()
@@ -55,39 +55,75 @@ class TyAdapter(CheckerAdapter):
                     continue
                 match = _TY_LINE.match(line)
                 if match is None:
-                    if unrecognized_line is None:
-                        unrecognized_line = line
+                    if failure is None:
+                        failure = CheckerFailure(
+                            tool=self.name,
+                            kind="output_parse_error",
+                            message=(
+                                f"ty output contained an unrecognized line: {line}"
+                            ),
+                        )
                     continue
-                severity = match.group("severity")
-                diagnostics.append(
-                    CheckerDiagnostic(
-                        tool=self.name,
-                        path=resolve_report_path(match.group("path"), request),
-                        code=match.group("code"),
-                        message=match.group("message"),
-                        severity=_severity_from_text(severity),
-                        span=line_span(
-                            line=int(match.group("line")),
-                            column=int(match.group("column")),
-                            columns_are_one_based=True,
-                        ),
-                    )
-                )
-
-        failures = (
-            ()
-            if unrecognized_line is None
-            else (
-                CheckerFailure(
+                parsed_line = _parse_diagnostic_line(
+                    match=match,
                     tool=self.name,
-                    kind="output_parse_error",
-                    message=(
-                        f"ty output contained an unrecognized line: {unrecognized_line}"
-                    ),
-                ),
-            )
+                    request=request,
+                )
+                if isinstance(parsed_line, CheckerDiagnostic):
+                    diagnostics.append(parsed_line)
+                elif failure is None:
+                    failure = parsed_line
+
+        return CheckerResult(
+            diagnostics=tuple(diagnostics),
+            failures=() if failure is None else (failure,),
         )
-        return CheckerResult(diagnostics=tuple(diagnostics), failures=failures)
+
+
+def _parse_diagnostic_line(
+    *,
+    match: re.Match[str],
+    tool: str,
+    request: CheckerRequest,
+) -> CheckerDiagnostic | CheckerFailure:
+    try:
+        line = int(match.group("line"))
+        column = int(match.group("column"))
+    except ValueError:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic has invalid coordinates",
+        )
+
+    span = line_span(
+        line=line,
+        column=column,
+        columns_are_one_based=True,
+    )
+    if span is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic has invalid coordinates",
+        )
+
+    path = resolve_report_path(match.group("path"), request)
+    if path is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic has an invalid file path",
+        )
+
+    return CheckerDiagnostic(
+        tool=tool,
+        path=path,
+        code=match.group("code"),
+        message=match.group("message"),
+        severity=_severity_from_text(match.group("severity")),
+        span=span,
+    )
 
 
 def _severity_from_text(value: str) -> DiagnosticSeverity:

@@ -55,7 +55,7 @@ class PyreflyAdapter(CheckerAdapter):
 
         try:
             payload = json.loads(stdout)
-        except json.JSONDecodeError as error:
+        except (RecursionError, ValueError) as error:
             return CheckerResult(
                 diagnostics=(),
                 failures=(
@@ -93,35 +93,91 @@ class PyreflyAdapter(CheckerAdapter):
             )
 
         diagnostics: list[CheckerDiagnostic] = []
-        for entry in errors:
-            if not isinstance(entry, dict):
-                continue
-            path_text = entry.get("path")
-            description = entry.get("description")
-            if not isinstance(path_text, str) or not isinstance(description, str):
-                continue
-            line = entry.get("line")
-            column = entry.get("column")
-            stop_line = entry.get("stop_line")
-            stop_column = entry.get("stop_column")
-            name = entry.get("name")
-            diagnostics.append(
-                CheckerDiagnostic(
-                    tool=self.name,
-                    path=resolve_report_path(path_text, request),
-                    code=name if isinstance(name, str) else None,
-                    message=description,
-                    severity="error",
-                    span=_entry_span(
-                        line=line,
-                        column=column,
-                        stop_line=stop_line,
-                        stop_column=stop_column,
-                    ),
-                )
+        failure: CheckerFailure | None = None
+        for index, entry in enumerate(errors):
+            parsed_entry = _parse_diagnostic_entry(
+                entry=entry,
+                index=index,
+                tool=self.name,
+                request=request,
             )
+            if isinstance(parsed_entry, CheckerDiagnostic):
+                diagnostics.append(parsed_entry)
+            elif failure is None:
+                failure = parsed_entry
 
-        return CheckerResult(diagnostics=tuple(diagnostics), failures=())
+        return CheckerResult(
+            diagnostics=tuple(diagnostics),
+            failures=() if failure is None else (failure,),
+        )
+
+
+def _parse_diagnostic_entry(
+    *,
+    entry: object,
+    index: int,
+    tool: str,
+    request: CheckerRequest,
+) -> CheckerDiagnostic | CheckerFailure:
+    if not isinstance(entry, dict):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} must be a JSON object",
+        )
+
+    path_text = entry.get("path")
+    if not isinstance(path_text, str) or not path_text:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid file path",
+        )
+    path = resolve_report_path(path_text, request)
+    if path is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has an invalid file path",
+        )
+
+    description = entry.get("description")
+    if not isinstance(description, str):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid description",
+        )
+
+    span = _entry_span(
+        line=entry.get("line"),
+        column=entry.get("column"),
+        stop_line=entry.get("stop_line"),
+        stop_column=entry.get("stop_column"),
+    )
+    if span is None:
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has no valid range",
+        )
+
+    name = entry.get("name")
+    if name is not None and not isinstance(name, str):
+        return CheckerFailure(
+            tool=tool,
+            kind="output_parse_error",
+            message=f"{tool} diagnostic {index} has an invalid name",
+        )
+
+    return CheckerDiagnostic(
+        tool=tool,
+        path=path,
+        code=name,
+        message=description,
+        severity="error",
+        span=span,
+    )
 
 
 def _entry_span(
