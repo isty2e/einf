@@ -780,13 +780,13 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
+            parity_checks=2,
         ),
         case_index=0,
     )
 
-    assert live_host_batches_before_generation == [0, 0, 0, 0, 0]
-    assert live_batches_before_preparation == [0, 0, 0, 0, 0]
+    assert live_host_batches_before_generation == [0, 0, 0, 0, 0, 0, 0]
+    assert live_batches_before_preparation == [0, 0, 0, 0, 0, 0, 0]
 
 
 def test_run_dynamic_case_rejects_partial_round_orders(
