@@ -2,10 +2,11 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from einf import ExecutionError, ax, axes
+from einf import ExecutionError, ax, axes, packs
 from einf.backend import BACKEND_RESOLVER, ArrayNamespaceLike, BackendProfile
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.operations import rearrange, repeat, view
+from einf.operations import rearrange, reduce, repeat, view
+from einf.steps.reduce import build as reduce_build_module
 
 
 class _SwitchingNamespace:
@@ -49,6 +50,34 @@ class _SwitchingNamespace:
             marker=self.marker,
         )
 
+    def asarray(self, value: object) -> "_SwitchingNamespaceTensor":
+        _ = value
+        return _SwitchingNamespaceTensor(shape=(), namespace=self, marker=self.marker)
+
+    def _reduce(
+        self,
+        tensor: "_SwitchingNamespaceTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> "_SwitchingNamespaceTensor":
+        return _SwitchingNamespaceTensor(
+            shape=tuple(
+                dimension
+                for index, dimension in enumerate(tensor.shape)
+                if index not in axis
+            ),
+            namespace=self,
+            marker=self.marker,
+        )
+
+    sum = _reduce
+    prod = _reduce
+    mean = _reduce
+    max = _reduce
+    min = _reduce
+    all = _reduce
+    any = _reduce
+
 
 @dataclass(frozen=True, slots=True)
 class _SwitchingNamespaceTensor:
@@ -66,6 +95,14 @@ class _SwitchingNamespaceTensor:
     def __getitem__(self, key: object) -> "_SwitchingNamespaceTensor":
         _ = key
         return self
+
+
+def _namespace_sum(
+    tensor: _SwitchingNamespaceTensor,
+    *,
+    axis: tuple[int, ...],
+) -> _SwitchingNamespaceTensor:
+    return tensor.namespace.sum(tensor, axis=axis)
 
 
 class _AlternatingOutputNamespace:
@@ -195,6 +232,52 @@ def test_runner_cache_distinguishes_namespace_bindings_with_same_declared_id() -
     assert isinstance(output_b, _SwitchingNamespaceTensor)
     assert output_a.marker == "a"
     assert output_b.marker == "b"
+
+
+def test_reduce_compile_cache_distinguishes_namespaces_with_same_declared_id() -> (
+    None
+):
+    (batch_axes,) = packs("reducer_cache_batch")
+    (feature,) = axes("reducer_cache_feature")
+    op = reduce(ax[batch_axes, feature], ax[batch_axes])
+    namespace_a = _SwitchingNamespace("custom.reducer_shared", "a")
+    namespace_b = _SwitchingNamespace("custom.reducer_shared", "b")
+    tensor_a = _SwitchingNamespaceTensor((2, 3, 4), namespace_a)
+    tensor_b = _SwitchingNamespaceTensor((2, 3, 4), namespace_b)
+    reduce_build_module._REDUCE_RUNTIME_CACHE_ENTRIES.clear()
+    reduce_build_module._REDUCE_RUNTIME_CACHE_ORDER.clear()
+
+    output_a = op(tensor_a)
+    output_b = op(tensor_b)
+
+    assert isinstance(output_a, _SwitchingNamespaceTensor)
+    assert isinstance(output_b, _SwitchingNamespaceTensor)
+    assert output_a.shape == (2, 3)
+    assert output_b.shape == (2, 3)
+    assert output_a.marker == "a"
+    assert output_b.marker == "b"
+    assert len(reduce_build_module._REDUCE_RUNTIME_CACHE_ENTRIES) == 2
+
+
+def test_reduce_compile_cache_shares_backend_independent_callable_reducer() -> None:
+    (batch_axes,) = packs("callable_cache_batch")
+    (feature,) = axes("callable_cache_feature")
+    op = reduce(ax[batch_axes, feature], ax[batch_axes]).reduce_by(_namespace_sum)
+    namespace_a = _SwitchingNamespace("custom.callable_shared", "a")
+    namespace_b = _SwitchingNamespace("custom.callable_shared", "b")
+    tensor_a = _SwitchingNamespaceTensor((2, 3, 4), namespace_a)
+    tensor_b = _SwitchingNamespaceTensor((2, 3, 4), namespace_b)
+    reduce_build_module._REDUCE_RUNTIME_CACHE_ENTRIES.clear()
+    reduce_build_module._REDUCE_RUNTIME_CACHE_ORDER.clear()
+
+    output_a = op(tensor_a)
+    output_b = op(tensor_b)
+
+    assert isinstance(output_a, _SwitchingNamespaceTensor)
+    assert isinstance(output_b, _SwitchingNamespaceTensor)
+    assert output_a.marker == "a"
+    assert output_b.marker == "b"
+    assert len(reduce_build_module._REDUCE_RUNTIME_CACHE_ENTRIES) == 1
 
 
 def test_shape_free_runner_cache_does_not_bypass_view_capability_validation() -> None:
