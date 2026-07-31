@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -72,8 +73,18 @@ class _FailingOutputAdapter(_CommandAdapter):
         raise RuntimeError("adapter parse failed")
 
 
+class _RecordingSubprocessTransport(asyncio.SubprocessTransport):
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _CommunicateErrorProcess:
     def __init__(self) -> None:
+        self._transport = _RecordingSubprocessTransport()
+        self.pid = 100_001
         self.returncode: int | None = None
         self.killed = False
         self.waited = False
@@ -92,6 +103,8 @@ class _CommunicateErrorProcess:
 
 class _SlowCleanupProcess:
     def __init__(self) -> None:
+        self._transport = _RecordingSubprocessTransport()
+        self.pid = 100_002
         self.returncode: int | None = None
         self.communicate_started = asyncio.Event()
         self.cleanup_started = asyncio.Event()
@@ -134,6 +147,31 @@ def _write_blocking_checker(path: Path) -> None:
     )
 
 
+def _write_checker_with_descendant(
+    path: Path,
+    *,
+    detach_child: bool = False,
+    parent_sleep_seconds: float,
+) -> None:
+    child_session_option = "    start_new_session=True,\n" if detach_child else ""
+    path.write_text(
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(5)'],\n"
+        f"{child_session_option}"
+        ")\n"
+        "pid_path = Path(sys.argv[1])\n"
+        "pending_path = pid_path.with_suffix('.tmp')\n"
+        "pending_path.write_text(str(child.pid), encoding='utf-8')\n"
+        "pending_path.replace(pid_path)\n"
+        f"time.sleep({parent_sleep_seconds!r})\n",
+        encoding="utf-8",
+    )
+
+
 async def _wait_for_pid(path: Path) -> int:
     for _ in range(1_000):
         if path.exists():
@@ -145,6 +183,16 @@ async def _wait_for_pid(path: Path) -> int:
 def _assert_process_reaped(pid: int) -> None:
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+async def _assert_process_exited(pid: int) -> None:
+    for _ in range(1_000):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"process {pid} was not reaped")
 
 
 @pytest.mark.parametrize(
@@ -169,6 +217,17 @@ def test_checker_execution_policy_rejects_unbounded_values(
             timeout_seconds=timeout_seconds,
             max_concurrency=max_concurrency,
         )
+
+
+@pytest.mark.parametrize(
+    "cleanup_timeout_seconds",
+    [0.0, float("nan"), float("inf"), True, "1"],
+)
+def test_checker_execution_policy_rejects_invalid_cleanup_timeout(
+    cleanup_timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValueError):
+        CheckerExecutionPolicy(cleanup_timeout_seconds=cleanup_timeout_seconds)
 
 
 def test_checker_executor_normalizes_spawn_failure(tmp_path: Path) -> None:
@@ -255,6 +314,12 @@ def test_checker_executor_reaps_process_after_communication_failure(
             return process
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        if os.name == "posix":
+            monkeypatch.setattr(
+                os,
+                "killpg",
+                lambda process_group_id, signal_number: process.kill(),
+            )
         executor = CheckerExecutor(CheckerExecutionPolicy())
         adapter = _CommandAdapter(
             executable=sys.executable,
@@ -269,6 +334,51 @@ def test_checker_executor_reaps_process_after_communication_failure(
         assert result.failures[0].message == "pipe failed"
         assert process.killed is True
         assert process.waited is True
+        assert process._transport.closed is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_checker_executor_reports_process_group_cleanup_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        process = _CommunicateErrorProcess()
+
+        async def create_process(
+            *command: str,
+            **options: object,
+        ) -> _CommunicateErrorProcess:
+            _ = command, options
+            return process
+
+        def reject_group_kill(
+            process_group_id: int,
+            signal_number: int,
+        ) -> None:
+            _ = process_group_id, signal_number
+            raise PermissionError("group kill denied")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(os, "killpg", reject_group_kill)
+        executor = CheckerExecutor(CheckerExecutionPolicy())
+        adapter = _CommandAdapter(
+            executable=sys.executable,
+            command=(sys.executable, "-c", ""),
+        )
+
+        result = await executor.run(adapter, _request(tmp_path))
+
+        assert len(result.failures) == 1
+        assert result.failures[0].kind == "execution_error"
+        assert result.failures[0].message == (
+            "pipe failed; process cleanup did not complete within 1 seconds"
+        )
+        assert process.killed is True
+        assert process.waited is True
+        assert process._transport.closed is True
 
     asyncio.run(scenario())
 
@@ -288,6 +398,12 @@ def test_repeated_cancellation_cannot_complete_before_process_reap(
             return process
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        if os.name == "posix":
+            monkeypatch.setattr(
+                os,
+                "killpg",
+                lambda process_group_id, signal_number: process.kill(),
+            )
         executor = CheckerExecutor(CheckerExecutionPolicy())
         adapter = _CommandAdapter(
             executable=sys.executable,
@@ -307,6 +423,97 @@ def test_repeated_cancellation_cannot_complete_before_process_reap(
         with pytest.raises(asyncio.CancelledError):
             await task
         assert completion_waited_for_reap
+
+    asyncio.run(scenario())
+
+
+def test_checker_executor_bounds_stalled_pipe_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        process = _SlowCleanupProcess()
+
+        async def create_process(
+            *command: str,
+            **options: object,
+        ) -> _SlowCleanupProcess:
+            _ = command, options
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        if os.name == "posix":
+            monkeypatch.setattr(
+                os,
+                "killpg",
+                lambda process_group_id, signal_number: process.kill(),
+            )
+        executor = CheckerExecutor(
+            CheckerExecutionPolicy(
+                timeout_seconds=0.01,
+                cleanup_timeout_seconds=0.01,
+            )
+        )
+        adapter = _CommandAdapter(
+            executable=sys.executable,
+            command=(sys.executable, "-c", ""),
+        )
+        started = asyncio.get_running_loop().time()
+
+        result = await executor.run(adapter, _request(tmp_path))
+
+        elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 0.5
+        assert len(result.failures) == 1
+        assert result.failures[0].kind == "timeout"
+        assert (
+            "process cleanup did not complete within 0.01 seconds"
+            in result.failures[0].message
+        )
+        assert process.reaped.is_set()
+        assert process._transport.closed is True
+
+    asyncio.run(scenario())
+
+
+def test_checker_executor_logs_incomplete_cleanup_during_cancellation(
+    caplog,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        process = _SlowCleanupProcess()
+
+        async def create_process(
+            *command: str,
+            **options: object,
+        ) -> _SlowCleanupProcess:
+            _ = command, options
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        if os.name == "posix":
+            monkeypatch.setattr(
+                os,
+                "killpg",
+                lambda process_group_id, signal_number: process.kill(),
+            )
+        executor = CheckerExecutor(CheckerExecutionPolicy(cleanup_timeout_seconds=0.01))
+        adapter = _CommandAdapter(
+            executable=sys.executable,
+            command=(sys.executable, "-c", ""),
+        )
+        task = asyncio.create_task(executor.run(adapter, _request(tmp_path)))
+        await process.communicate_started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "stub process cleanup did not complete within 0.01 seconds" in (
+            caplog.text
+        )
+        assert process._transport.closed is True
 
     asyncio.run(scenario())
 
@@ -335,6 +542,143 @@ def test_checker_executor_kills_and_reaps_timed_out_process(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+@pytest.mark.parametrize(
+    "parent_sleep_seconds",
+    [0.0, 5.0],
+    ids=["parent-exited", "parent-running"],
+)
+def test_checker_executor_timeout_terminates_descendants_inheriting_pipes(
+    tmp_path: Path,
+    parent_sleep_seconds: float,
+) -> None:
+    async def scenario() -> None:
+        checker_script = tmp_path / "checker_with_descendant.py"
+        child_pid_path = tmp_path / "checker_child.pid"
+        _write_checker_with_descendant(
+            checker_script,
+            parent_sleep_seconds=parent_sleep_seconds,
+        )
+        executor = CheckerExecutor(
+            CheckerExecutionPolicy(
+                timeout_seconds=0.2,
+                cleanup_timeout_seconds=0.5,
+            )
+        )
+        adapter = _CommandAdapter(
+            executable=sys.executable,
+            command=(
+                sys.executable,
+                str(checker_script),
+                str(child_pid_path),
+            ),
+        )
+
+        result = await asyncio.wait_for(
+            executor.run(adapter, _request(tmp_path)),
+            timeout=2.0,
+        )
+        child_pid = await _wait_for_pid(child_pid_path)
+
+        assert len(result.failures) == 1
+        assert result.failures[0].kind == "timeout"
+        await _assert_process_exited(child_pid)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not Path("/dev/fd").is_dir(),
+    reason="POSIX process sessions and file descriptor inspection are required",
+)
+def test_checker_executor_closes_pipes_held_by_detached_descendants(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        original_create_subprocess_exec = asyncio.create_subprocess_exec
+        spawned_processes: list[asyncio.subprocess.Process] = []
+        detached_child_pids: list[int] = []
+
+        async def capture_process(
+            *command: str,
+            cwd: Path,
+            stdout: int,
+            stderr: int,
+            start_new_session: bool,
+        ) -> asyncio.subprocess.Process:
+            process = await original_create_subprocess_exec(
+                *command,
+                cwd=cwd,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=start_new_session,
+            )
+            spawned_processes.append(process)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_process)
+        checker_script = tmp_path / "checker_with_detached_descendant.py"
+        _write_checker_with_descendant(
+            checker_script,
+            detach_child=True,
+            parent_sleep_seconds=5.0,
+        )
+        executor = CheckerExecutor(
+            CheckerExecutionPolicy(
+                timeout_seconds=0.2,
+                cleanup_timeout_seconds=0.1,
+            )
+        )
+        initial_fd_count = len(os.listdir("/dev/fd"))
+        fd_counts: list[int] = []
+
+        try:
+            for index in range(3):
+                child_pid_path = tmp_path / f"checker_child_{index}.pid"
+                adapter = _CommandAdapter(
+                    executable=sys.executable,
+                    command=(
+                        sys.executable,
+                        str(checker_script),
+                        str(child_pid_path),
+                    ),
+                )
+
+                result = await executor.run(adapter, _request(tmp_path))
+                child_pid = await _wait_for_pid(child_pid_path)
+                detached_child_pids.append(child_pid)
+                process = spawned_processes[index]
+                transport = getattr(process, "_transport", None)
+
+                assert len(result.failures) == 1
+                assert result.failures[0].kind == "timeout"
+                os.kill(child_pid, 0)
+                assert isinstance(transport, asyncio.SubprocessTransport)
+                stdout_transport = transport.get_pipe_transport(1)
+                stderr_transport = transport.get_pipe_transport(2)
+                assert stdout_transport is not None
+                assert stderr_transport is not None
+                assert stdout_transport.is_closing()
+                assert stderr_transport.is_closing()
+
+                os.kill(child_pid, signal.SIGKILL)
+                await _assert_process_exited(child_pid)
+                await asyncio.sleep(0)
+                fd_counts.append(len(os.listdir("/dev/fd")))
+        finally:
+            for child_pid in detached_child_pids:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        assert len(set(fd_counts)) == 1
+        assert fd_counts[-1] <= initial_fd_count + 1
+
+    asyncio.run(scenario())
+
+
 def test_checker_executor_cancellation_kills_and_reaps_process(
     tmp_path: Path,
 ) -> None:
@@ -357,6 +701,43 @@ def test_checker_executor_cancellation_kills_and_reaps_process(
             await task
 
         _assert_process_reaped(pid)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+def test_checker_executor_cancellation_terminates_descendants_inheriting_pipes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        checker_script = tmp_path / "checker_with_descendant.py"
+        child_pid_path = tmp_path / "checker_child.pid"
+        _write_checker_with_descendant(
+            checker_script,
+            parent_sleep_seconds=5.0,
+        )
+        executor = CheckerExecutor(
+            CheckerExecutionPolicy(
+                timeout_seconds=30.0,
+                cleanup_timeout_seconds=0.5,
+            )
+        )
+        adapter = _CommandAdapter(
+            executable=sys.executable,
+            command=(
+                sys.executable,
+                str(checker_script),
+                str(child_pid_path),
+            ),
+        )
+        task = asyncio.create_task(executor.run(adapter, _request(tmp_path)))
+        child_pid = await _wait_for_pid(child_pid_path)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+        await _assert_process_exited(child_pid)
 
     asyncio.run(scenario())
 

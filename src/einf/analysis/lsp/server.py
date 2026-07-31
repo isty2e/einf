@@ -259,6 +259,12 @@ def _coerce_initialize_options(
     if isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
         options["checkerTimeoutSeconds"] = timeout_value
 
+    cleanup_timeout_value = initialize_options.get("checkerCleanupTimeoutSeconds")
+    if isinstance(cleanup_timeout_value, (int, float)) and not isinstance(
+        cleanup_timeout_value, bool
+    ):
+        options["checkerCleanupTimeoutSeconds"] = cleanup_timeout_value
+
     concurrency_value = initialize_options.get("checkerMaxConcurrency")
     if type(concurrency_value) is int:
         options["checkerMaxConcurrency"] = concurrency_value

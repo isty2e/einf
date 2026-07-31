@@ -1,10 +1,15 @@
 import asyncio
+import logging
 import math
+import os
 import shutil
+import signal
 from dataclasses import dataclass
 
 from einf.analysis.checkers.base import CheckerAdapter
 from einf.analysis.checkers.model import CheckerFailure, CheckerRequest, CheckerResult
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +18,7 @@ class CheckerExecutionPolicy:
 
     timeout_seconds: float = 30.0
     max_concurrency: int = 1
+    cleanup_timeout_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if (
@@ -22,6 +28,13 @@ class CheckerExecutionPolicy:
             or self.timeout_seconds <= 0
         ):
             raise ValueError("checker timeout must be a finite positive number")
+        if (
+            isinstance(self.cleanup_timeout_seconds, bool)
+            or not isinstance(self.cleanup_timeout_seconds, (int, float))
+            or not math.isfinite(self.cleanup_timeout_seconds)
+            or self.cleanup_timeout_seconds <= 0
+        ):
+            raise ValueError("checker cleanup timeout must be a finite positive number")
         if type(self.max_concurrency) is not int or self.max_concurrency < 1:
             raise ValueError("checker max_concurrency must be positive")
 
@@ -83,12 +96,23 @@ class CheckerExecutor:
 
         command = adapter.build_command(request)
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=request.project_root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            if os.name == "posix":
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=request.project_root,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                process_group_id = process.pid
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=request.project_root,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                process_group_id = None
         except OSError as error:
             return _failure_result(
                 CheckerFailure(
@@ -105,27 +129,59 @@ class CheckerExecutor:
                 timeout=self._policy.timeout_seconds,
             )
         except asyncio.TimeoutError:
-            await _kill_and_reap(process, communication)
+            cleanup_completed = await _kill_and_reap(
+                process,
+                communication,
+                process_group_id=process_group_id,
+                timeout_seconds=self._policy.cleanup_timeout_seconds,
+            )
+            message = (
+                f"{adapter.name} exceeded {self._policy.timeout_seconds:g} seconds"
+            )
+            if not cleanup_completed:
+                message += (
+                    "; process cleanup did not complete within "
+                    f"{self._policy.cleanup_timeout_seconds:g} seconds"
+                )
             return _failure_result(
                 CheckerFailure(
                     tool=adapter.name,
                     kind="timeout",
-                    message=(
-                        f"{adapter.name} exceeded "
-                        f"{self._policy.timeout_seconds:g} seconds"
-                    ),
+                    message=message,
                 )
             )
         except asyncio.CancelledError:
-            await _kill_and_reap(process, communication)
+            cleanup_completed = await _kill_and_reap(
+                process,
+                communication,
+                process_group_id=process_group_id,
+                timeout_seconds=self._policy.cleanup_timeout_seconds,
+            )
+            if not cleanup_completed:
+                _LOGGER.warning(
+                    "%s process cleanup did not complete within %g seconds",
+                    adapter.name,
+                    self._policy.cleanup_timeout_seconds,
+                )
             raise
         except OSError as error:
-            await _kill_and_reap(process, communication)
+            cleanup_completed = await _kill_and_reap(
+                process,
+                communication,
+                process_group_id=process_group_id,
+                timeout_seconds=self._policy.cleanup_timeout_seconds,
+            )
+            message = str(error)
+            if not cleanup_completed:
+                message += (
+                    "; process cleanup did not complete within "
+                    f"{self._policy.cleanup_timeout_seconds:g} seconds"
+                )
             return _failure_result(
                 CheckerFailure(
                     tool=adapter.name,
                     kind="execution_error",
-                    message=str(error),
+                    message=message,
                 )
             )
 
@@ -140,30 +196,110 @@ class CheckerExecutor:
 async def _kill_and_reap(
     process: asyncio.subprocess.Process,
     communication: asyncio.Task[tuple[bytes | None, bytes | None]],
-) -> None:
-    cleanup = asyncio.create_task(_kill_and_wait(process, communication))
+    *,
+    process_group_id: int | None,
+    timeout_seconds: float,
+) -> bool:
+    cleanup = asyncio.create_task(
+        _kill_and_wait(
+            process,
+            communication,
+            process_group_id=process_group_id,
+            timeout_seconds=timeout_seconds,
+        )
+    )
     cancellation: asyncio.CancelledError | None = None
     while not cleanup.done():
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError as error:
             cancellation = error
-    await cleanup
+    cleanup_completed = await cleanup
     if cancellation is not None:
         raise cancellation
+    return cleanup_completed
 
 
 async def _kill_and_wait(
     process: asyncio.subprocess.Process,
     communication: asyncio.Task[tuple[bytes | None, bytes | None]],
-) -> None:
-    if process.returncode is None:
+    *,
+    process_group_id: int | None,
+    timeout_seconds: float,
+) -> bool:
+    termination_succeeded = _terminate_process_scope(
+        process,
+        process_group_id=process_group_id,
+    )
+    transport_close_succeeded = _close_process_transport(process)
+    process_wait = asyncio.create_task(process.wait())
+    done, pending = await asyncio.wait(
+        {communication, process_wait},
+        timeout=timeout_seconds,
+    )
+    if communication in done:
+        _consume_task_exception(communication)
+    if process_wait in done:
+        _consume_task_exception(process_wait)
+    if not pending:
+        if not termination_succeeded:
+            termination_succeeded = _terminate_process_scope(
+                process,
+                process_group_id=process_group_id,
+            )
+        return termination_succeeded and transport_close_succeeded
+
+    _terminate_process_scope(process, process_group_id=process_group_id)
+    if communication in pending:
+        communication.add_done_callback(_consume_task_exception)
+        communication.cancel()
+    if process_wait in pending:
+        process_wait.add_done_callback(_consume_task_exception)
+        process_wait.cancel()
+    return False
+
+
+def _close_process_transport(process: asyncio.subprocess.Process) -> bool:
+    # asyncio.Process has no public close method; its transport owns all pipe FDs.
+    transport = getattr(process, "_transport", None)
+    if not isinstance(transport, asyncio.SubprocessTransport):
+        return False
+    try:
+        transport.close()
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_process_scope(
+    process: asyncio.subprocess.Process,
+    *,
+    process_group_id: int | None,
+) -> bool:
+    scope_terminated = process_group_id is None
+    if process_group_id is not None:
         try:
-            process.kill()
+            os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:
-            pass
-    await asyncio.gather(communication, return_exceptions=True)
-    await process.wait()
+            scope_terminated = True
+        except OSError:
+            scope_terminated = False
+        else:
+            return True
+    if process.returncode is not None:
+        return scope_terminated
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return scope_terminated
+    except OSError:
+        return False
+    return scope_terminated
+
+
+def _consume_task_exception(task: asyncio.Task[object]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 def _decode_output(output: bytes | None) -> str:

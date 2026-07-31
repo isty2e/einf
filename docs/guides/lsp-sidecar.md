@@ -38,6 +38,7 @@ truth. The default (and recommended) mode keeps `checkers` empty.
   "parser": "ast",
   "checkers": [],
   "checkerTimeoutSeconds": 30,
+  "checkerCleanupTimeoutSeconds": 1,
   "checkerMaxConcurrency": 1
 }
 ```
@@ -91,6 +92,7 @@ external checkers on save by passing `checkers` in `initialize` options.
   "parser": "ast",
   "checkers": ["basedpyright", "pyrefly"],
   "checkerTimeoutSeconds": 30,
+  "checkerCleanupTimeoutSeconds": 1,
   "checkerMaxConcurrency": 1
 }
 ```
@@ -101,10 +103,13 @@ semantic tokens, but stale checker diagnostics are not retained as if
 they were current.
 
 Checker execution uses a separate bounded async subprocess coordinator.
-`checkerTimeoutSeconds` limits each checker process, while
-`checkerMaxConcurrency` limits checker processes across documents and tools.
-Saving or closing a newer document generation cancels and reaps obsolete
-checker processes before their results can be published.
+`checkerTimeoutSeconds` limits each checker run. After a timeout or
+cancellation, `checkerCleanupTimeoutSeconds` limits how long the sidecar waits
+for process and pipe cleanup. `checkerMaxConcurrency` limits checker processes
+across documents and tools. On POSIX systems, the sidecar starts each checker
+in its own process group and terminates that group on timeout or cancellation.
+Saving or closing a newer document generation cancels obsolete checker work
+before its results can be published.
 
 Checker execution can be much slower than `einf` semantic analysis. Treat it
 as a compatibility fallback for editors that cannot run a separate Python

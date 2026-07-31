@@ -57,6 +57,10 @@ class LspConfig:
             initialize_options.get("checkerTimeoutSeconds"),
             default=defaults.timeout_seconds,
         )
+        cleanup_timeout_seconds = _positive_float(
+            initialize_options.get("checkerCleanupTimeoutSeconds"),
+            default=defaults.cleanup_timeout_seconds,
+        )
         max_concurrency = _positive_int(
             initialize_options.get("checkerMaxConcurrency"),
             default=defaults.max_concurrency,
@@ -66,6 +70,7 @@ class LspConfig:
             checkers=tuple(ordered_checkers),
             checker_execution_policy=CheckerExecutionPolicy(
                 timeout_seconds=timeout_seconds,
+                cleanup_timeout_seconds=cleanup_timeout_seconds,
                 max_concurrency=max_concurrency,
             ),
         )

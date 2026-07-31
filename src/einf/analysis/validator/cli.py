@@ -18,6 +18,7 @@ from einf.analysis.validator.run import (
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the validator CLI argument parser."""
+    checker_policy_defaults = CheckerExecutionPolicy()
     parser = argparse.ArgumentParser(
         prog="einf-validate",
         description="Validate einf DSL usage in Python source files.",
@@ -44,13 +45,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checker-timeout-seconds",
         type=_positive_float,
-        default=30.0,
+        default=checker_policy_defaults.timeout_seconds,
         help="Maximum runtime for each external checker process.",
+    )
+    parser.add_argument(
+        "--checker-cleanup-timeout-seconds",
+        type=_positive_float,
+        default=checker_policy_defaults.cleanup_timeout_seconds,
+        help="Maximum cleanup time after checker timeout or cancellation.",
     )
     parser.add_argument(
         "--checker-max-concurrency",
         type=_positive_int,
-        default=1,
+        default=checker_policy_defaults.max_concurrency,
         help="Maximum number of external checker processes run concurrently.",
     )
     return parser
@@ -67,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         checker_adapters=checker_adapters,
         checker_execution_policy=CheckerExecutionPolicy(
             timeout_seconds=arguments.checker_timeout_seconds,
+            cleanup_timeout_seconds=arguments.checker_cleanup_timeout_seconds,
             max_concurrency=arguments.checker_max_concurrency,
         ),
     )
