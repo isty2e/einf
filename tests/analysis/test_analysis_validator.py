@@ -245,12 +245,15 @@ def test_validator_cli_parses_checker_execution_policy() -> None:
             "basedpyright",
             "--checker-timeout-seconds",
             "2.5",
+            "--checker-cleanup-timeout-seconds",
+            "0.5",
             "--checker-max-concurrency",
             "3",
         ]
     )
 
     assert arguments.checker_timeout_seconds == 2.5
+    assert arguments.checker_cleanup_timeout_seconds == 0.5
     assert arguments.checker_max_concurrency == 3
 
 

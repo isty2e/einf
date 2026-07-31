@@ -41,18 +41,21 @@ def test_lsp_config_normalizes_checker_execution_policy() -> None:
     config = LspConfig.from_initialize_options(
         {
             "checkerTimeoutSeconds": 2.5,
+            "checkerCleanupTimeoutSeconds": 0.5,
             "checkerMaxConcurrency": 3,
         }
     )
 
     assert config.checker_execution_policy == CheckerExecutionPolicy(
         timeout_seconds=2.5,
+        cleanup_timeout_seconds=0.5,
         max_concurrency=3,
     )
 
     invalid = LspConfig.from_initialize_options(
         {
             "checkerTimeoutSeconds": float("inf"),
+            "checkerCleanupTimeoutSeconds": 0,
             "checkerMaxConcurrency": 0,
         }
     )
@@ -62,6 +65,7 @@ def test_lsp_config_normalizes_checker_execution_policy() -> None:
     booleans = LspConfig.from_initialize_options(
         {
             "checkerTimeoutSeconds": True,
+            "checkerCleanupTimeoutSeconds": True,
             "checkerMaxConcurrency": True,
         }
     )

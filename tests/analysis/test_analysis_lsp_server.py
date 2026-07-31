@@ -27,6 +27,7 @@ from einf.analysis.lsp.server import (
     EinfLanguageServer,
     _analyze_document_request,
     _check_document_state,
+    _coerce_initialize_options,
     build_server,
 )
 from einf.analysis.lsp.service import LspDocumentState, LspService
@@ -147,6 +148,17 @@ def test_build_server_returns_language_server() -> None:
     assert server.einf_config.checkers == ()
     assert server.einf_service.parser == "ast"
     assert server.einf_checker_coordinator.enabled is False
+
+
+def test_server_coerces_checker_cleanup_timeout_initialize_option() -> None:
+    options = _coerce_initialize_options(
+        {
+            "checkerCleanupTimeoutSeconds": 0.5,
+        }
+    )
+
+    assert options is not None
+    assert options["checkerCleanupTimeoutSeconds"] == 0.5
 
 
 def test_server_shutdown_cancels_pending_debounced_analysis(monkeypatch) -> None:
