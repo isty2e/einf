@@ -1,13 +1,12 @@
 import json
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 import benchmarks.guardrail.check_overhead as check_overhead_module
 import benchmarks.guardrail.check_overhead_trials as check_overhead_trials_module
-import benchmarks.guardrail.path_identity as path_identity_module
 from benchmarks.guardrail.policy import (
     MetricName,
     OverheadReportDict,
@@ -224,6 +223,65 @@ def test_single_guardrail_allows_distinct_reports(
     assert check_overhead_module.main() == 0
 
 
+@pytest.mark.parametrize("identity_error_type", (OSError, FileNotFoundError))
+def test_single_guardrail_fails_closed_when_identity_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    identity_error_type: type[OSError],
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+    alias = tmp_path / "report-hardlink.json"
+    try:
+        alias.hardlink_to(report)
+    except OSError as error:
+        pytest.skip(f"hard links unavailable: {error}")
+
+    def raise_identity_error(_first: Path, _second: Path) -> bool:
+        raise identity_error_type("simulated filesystem identity failure")
+
+    monkeypatch.setattr(Path, "samefile", raise_identity_error)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(report),
+            "--candidate",
+            str(alias),
+        ],
+    )
+
+    with pytest.raises(
+        identity_error_type,
+        match="simulated filesystem identity failure",
+    ):
+        check_overhead_module.main()
+
+
+def test_single_guardrail_reports_missing_normalized_path_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.json"
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(missing),
+            "--candidate",
+            str(nested / ".." / "missing.json"),
+        ],
+    )
+
+    with pytest.raises(FileNotFoundError):
+        check_overhead_module.main()
+
+
 @pytest.mark.parametrize("parent_name", ("数据", "123"))
 def test_single_guardrail_allows_case_distinct_reports_on_sensitive_filesystem(
     monkeypatch: pytest.MonkeyPatch,
@@ -251,14 +309,6 @@ def test_single_guardrail_allows_case_distinct_reports_on_sensitive_filesystem(
     )
 
     assert check_overhead_module.main() == 0
-
-
-def test_path_spelling_comparison_does_not_use_windows_path_equality() -> None:
-    first = PureWindowsPath("C:/reports/report.JSON")
-    second = PureWindowsPath("C:/reports/report.json")
-    assert first == second
-
-    assert not path_identity_module._paths_have_identical_spellings(first, second)
 
 
 def test_trial_guardrail_rejects_alias_across_pair_roles_before_loading(
