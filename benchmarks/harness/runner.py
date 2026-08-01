@@ -496,11 +496,6 @@ class BenchmarkRunner:
                     )
                     del batch
 
-        del runners
-        validation_runners: dict[LibraryName, Runner] = {
-            library_name: runner_factories[library_name]()
-            for library_name in available_libs
-        }
         for unit in realized_units:
             numpy_batch = self._make_dynamic_numpy_batch(
                 case_spec=case_spec,
@@ -519,7 +514,7 @@ class BenchmarkRunner:
             del numpy_batch
             self._validate_runners(
                 case=case,
-                runners=validation_runners,
+                runners=runners,
                 batch=batch,
                 expected=expected,
                 order=self._rotate_order(
@@ -528,7 +523,7 @@ class BenchmarkRunner:
                 ),
             )
             del batch, expected
-        del validation_runners
+        del runners
 
         for library_name in available_libs:
             runs[library_name] = self._available_run(

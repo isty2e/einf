@@ -391,7 +391,7 @@ def test_run_dynamic_case_validates_every_measured_coordinate() -> None:
             case_index=0,
         )
 
-    assert factory_count == 2
+    assert factory_count == 1
 
 
 @pytest.mark.parametrize(
@@ -448,14 +448,13 @@ def test_run_dynamic_case_validates_each_distinct_coordinate_once() -> None:
         case_index=0,
     )
 
-    validation_calls = [
-        name for name, generation, _ in runner_events if generation == 2
-    ]
-    assert {name: validation_calls.count(name) for name in set(validation_calls)} == {
-        "target": 4,
-        "equivalent": 4,
-        "lower_bound": 4,
+    calls = [name for name, _, _ in runner_events]
+    assert {name: calls.count(name) for name in set(calls)} == {
+        "target": 18,
+        "equivalent": 18,
+        "lower_bound": 18,
     }
+    assert {generation for _, generation, _ in runner_events} == {1}
     assert [(unit.round_index, unit.unit_index) for unit in result.realized_units] == [
         (0, 0),
         (0, 1),
@@ -464,7 +463,7 @@ def test_run_dynamic_case_validates_each_distinct_coordinate_once() -> None:
     ]
 
 
-def test_validation_invokes_runner_factories_separately(
+def test_validation_reuses_measurement_runners(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     factory_events: list[str] = []
@@ -492,9 +491,6 @@ def test_validation_invokes_runner_factories_separately(
     )
 
     assert factory_events == [
-        "target",
-        "equivalent",
-        "lower_bound",
         "target",
         "equivalent",
         "lower_bound",

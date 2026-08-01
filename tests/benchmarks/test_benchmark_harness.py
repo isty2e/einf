@@ -212,7 +212,6 @@ def test_dynamic_runner_warms_before_timing(
         "clock_start",
         "call",
         "clock_stop",
-        "factory",
         "call",
     ]
 
@@ -257,7 +256,7 @@ def test_dynamic_runner_validates_every_measured_coordinate() -> None:
             case_index=0,
         )
 
-    assert factory_count == 2
+    assert factory_count == 1
 
 
 @pytest.mark.parametrize(
@@ -324,11 +323,7 @@ def test_dynamic_runner_validates_each_distinct_coordinate_once() -> None:
         case_index=0,
     )
 
-    factory_indices = [
-        index for index, event in enumerate(events) if event == "factory"
-    ]
-    assert factory_indices == [0, len(events) - 5]
-    assert events[factory_indices[1] :] == ["factory", "call", "call", "call", "call"]
+    assert events == ["factory", *("call" for _ in range(18))]
     assert [(unit.round_index, unit.unit_index) for unit in result.realized_units] == [
         (0, 0),
         (0, 1),

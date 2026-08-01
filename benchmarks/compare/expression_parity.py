@@ -667,9 +667,7 @@ def _run_dynamic_case(
                     )
                 del batch
 
-    del runners
     spec_by_name = {spec.name: spec for spec in available_specs}
-    validation_runners = {spec.name: spec.make_runner() for spec in available_specs}
     for unit in realized_units:
         batch = make_batch(
             round_index=unit.round_index,
@@ -695,7 +693,7 @@ def _run_dynamic_case(
                 array.copy()
                 for array in backend.to_numpy_output(spec.reference(numpy_batch))
             )
-            output = validation_runners[name](batch)
+            output = runners[name](batch)
             backend.synchronize()
             _validate_output(
                 backend=backend,
@@ -705,7 +703,7 @@ def _run_dynamic_case(
             )
             del expected, output
         del batch, numpy_batch
-    del validation_runners
+    del runners
 
     observation_tuple = tuple(observations)
     available_names = tuple(spec.name for spec in available_specs)
