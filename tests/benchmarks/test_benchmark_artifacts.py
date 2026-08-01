@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,49 @@ def test_publish_receipt_replaces_existing_artifact(tmp_path: Path) -> None:
     }
     assert receipt.read_text(encoding="utf-8").endswith("\n")
     assert list(receipt.parent.glob(".einf-receipt-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+def test_publish_receipt_preserves_existing_file_mode(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"run": "old"}\n', encoding="utf-8")
+    receipt.chmod(0o640)
+
+    publish_receipt(receipt, {"run": "new"})
+
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+def test_new_receipt_uses_normal_creation_mode(tmp_path: Path) -> None:
+    reference = tmp_path / "reference.json"
+    reference.write_text("{}\n", encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+
+    publish_receipt(receipt, {"run": "new"})
+
+    assert stat.S_IMODE(receipt.stat().st_mode) == stat.S_IMODE(
+        reference.stat().st_mode
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+def test_temporary_receipt_is_private_during_serialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_dump = artifact_module.json.dump
+    observed_modes: list[int] = []
+
+    def observe_mode(payload: object, stream: TextIO, *, indent: int) -> None:
+        observed_modes.append(stat.S_IMODE(os.fstat(stream.fileno()).st_mode))
+        original_dump(payload, stream, indent=indent)
+
+    monkeypatch.setattr(artifact_module.json, "dump", observe_mode)
+
+    publish_receipt(tmp_path / "receipt.json", {"run": "new"})
+
+    assert observed_modes == [0o600]
 
 
 def test_publish_receipt_preserves_target_when_serialization_fails(
@@ -96,6 +140,27 @@ def test_publish_receipt_preserves_target_when_commit_fails(
 
     assert receipt.read_text(encoding="utf-8") == original
     assert list(tmp_path.glob(".einf-receipt-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+def test_failed_publication_preserves_existing_file_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"run": "old"}\n', encoding="utf-8")
+    receipt.chmod(0o640)
+
+    def fail_commit(source: Path, destination: Path) -> None:
+        _ = source, destination
+        raise OSError("commit failed")
+
+    monkeypatch.setattr(artifact_module.os, "replace", fail_commit)
+
+    with pytest.raises(OSError, match="commit failed"):
+        publish_receipt(receipt, {"run": "new"})
+
+    assert stat.S_IMODE(receipt.stat().st_mode) == 0o640
 
 
 def test_concurrent_publishers_leave_one_complete_receipt(tmp_path: Path) -> None:

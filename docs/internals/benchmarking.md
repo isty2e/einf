@@ -449,6 +449,11 @@ strategy-specific result shape.
 Receipt publication serializes the complete document before atomically
 replacing the destination. Concurrent writers are last-writer-wins, but a
 reader sees one complete receipt rather than a partially overwritten file.
+New receipts use `0666` access permissions filtered by the process umask.
+Replacing an existing regular receipt preserves its access permission bits.
+Temporary files remain private during serialization. Atomic replacement creates
+a new inode, so ownership, hard-link identity, ACLs, and extended attributes are
+not preservation guarantees.
 Keep the receipt when a comparison may need re-analysis; Markdown alone does
 not contain enough information to reconstruct every pair.
 
