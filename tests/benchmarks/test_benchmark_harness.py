@@ -51,6 +51,24 @@ def _summary(*, median_ms: float) -> TimingSummary:
 _UNIT_SIZES = BenchSizes(b=1, n=1, d=1, h=1, w=1, r=1, j=1)
 
 
+def _dynamic_config(
+    *,
+    batches: int = 2,
+    warmup_batches: int = 0,
+    repeats: int = 1,
+    rounds: int = 1,
+) -> DynamicTaskConfig:
+    return DynamicTaskConfig(
+        scale="medium",
+        seed=7,
+        batches=batches,
+        warmup_batches=warmup_batches,
+        repeats=repeats,
+        rounds=rounds,
+        round_order_seed=1234,
+    )
+
+
 def _vector_workload() -> DynamicShapeWorkload:
     return DynamicShapeWorkload(
         sampled_dimensions=(),
@@ -184,7 +202,6 @@ def test_dynamic_runner_warms_before_timing(
             repeats=1,
             rounds=1,
             round_order_seed=1,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -195,6 +212,128 @@ def test_dynamic_runner_warms_before_timing(
         "clock_start",
         "call",
         "clock_stop",
+        "factory",
+        "call",
+    ]
+
+
+def test_dynamic_runner_validates_every_measured_coordinate() -> None:
+    factory_count = 0
+
+    def make_stateful_runner() -> Callable[[tuple[Array, ...]], Output]:
+        nonlocal factory_count
+        factory_count += 1
+        call_count = 0
+
+        def run(inputs: tuple[Array, ...]) -> Output:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return inputs[0]
+            return np.zeros_like(inputs[0])
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="late_wrong_result",
+        description="Returns an incorrect result after the first coordinate.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=make_stateful_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=case,
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(),
+            case_index=0,
+        )
+
+    assert factory_count == 2
+
+
+@pytest.mark.parametrize(
+    ("repeats", "message"),
+    (
+        (1, "replay produced different input shapes"),
+        (2, "repeated input produced different shapes"),
+    ),
+)
+def test_dynamic_runner_rejects_input_shape_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    repeats: int,
+    message: str,
+) -> None:
+    generation_count = 0
+
+    def generate_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        nonlocal generation_count
+        _ = self, case_spec, seed
+        generation_count += 1
+        size = 1 if generation_count <= 2 else 2
+        return (np.ones((size,), dtype=np.float32),)
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        generate_batch,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(RuntimeError, match=message):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=_timing_case(events=[]),
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(repeats=repeats),
+            case_index=0,
+        )
+
+
+def test_dynamic_runner_validates_each_distinct_coordinate_once() -> None:
+    events: list[str] = []
+    backend = BackendSpec(name="numpy")
+
+    result = _single_library_runner(backend=backend).run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=events),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=_dynamic_config(
+            batches=3,
+            warmup_batches=1,
+            repeats=3,
+            rounds=2,
+        ),
+        case_index=0,
+    )
+
+    factory_indices = [
+        index for index, event in enumerate(events) if event == "factory"
+    ]
+    assert factory_indices == [0, len(events) - 5]
+    assert events[factory_indices[1] :] == ["factory", "call", "call", "call", "call"]
+    assert [(unit.round_index, unit.unit_index) for unit in result.realized_units] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
     ]
 
 
@@ -711,7 +850,6 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -723,8 +861,10 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         runner._rotate_order(order, offset=1),
         runner._rotate_order(order, offset=2),
         order,
+        order,
+        runner._rotate_order(order, offset=1),
     ]
-    assert len(events) == 15
+    assert len(events) == 21
 
     for batch_index, expected_order in enumerate(expected_orders):
         batch_events = events[batch_index * 3 : (batch_index + 1) * 3]
@@ -761,7 +901,7 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
     ]
 
     assert len(result.evidence.observations) == 12
-    measured_orders = expected_orders[1:]
+    measured_orders = expected_orders[1:5]
     for coordinate_index, expected_order in enumerate(measured_orders):
         start = coordinate_index * 3
         batch_observations = result.evidence.observations[start : start + 3]
@@ -814,7 +954,6 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -880,7 +1019,6 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=2,
         ),
         case_index=0,
     )
@@ -929,7 +1067,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
                 repeats=1,
                 rounds=1,
                 round_order_seed=1234,
-                parity_checks=0,
             ),
             case_index=0,
         )

@@ -49,16 +49,39 @@ def _summary(*, mean_ms: float = 5.6) -> TimingSummary:
     )
 
 
+def _dynamic_config(
+    *,
+    batches: int = 2,
+    warmup_batches: int = 0,
+    repeats: int = 1,
+    rounds: int = 1,
+) -> DynamicTaskConfig:
+    return DynamicTaskConfig(
+        scale="medium",
+        seed=7,
+        batches=batches,
+        warmup_batches=warmup_batches,
+        repeats=repeats,
+        rounds=rounds,
+        round_order_seed=1234,
+    )
+
+
 def _case(
     *,
     events: list[tuple[str, np.ndarray]] | None = None,
     factory_events: list[str] | None = None,
+    runner_events: list[tuple[str, int, np.ndarray]] | None = None,
 ) -> ExpressionParityCase:
+    factory_counts: dict[str, int] = {}
+
     def make_spec(
         name: str,
         semantics: ExpressionSemantics,
     ) -> ExpressionRunnerSpec:
         def make_runner() -> Callable[[tuple[Array, ...]], Array]:
+            factory_counts[name] = factory_counts.get(name, 0) + 1
+            factory_generation = factory_counts[name]
             if factory_events is not None:
                 factory_events.append(name)
 
@@ -67,6 +90,8 @@ def _case(
                 assert isinstance(array, np.ndarray)
                 if events is not None:
                     events.append((name, array))
+                if runner_events is not None:
+                    runner_events.append((name, factory_generation, array))
                 return array
 
             return run
@@ -311,7 +336,6 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
                 repeats=1,
                 rounds=1,
                 round_order_seed=1234,
-                parity_checks=1,
             ),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
             backend=BackendSpec(name="numpy"),
@@ -319,7 +343,128 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
         )
 
 
-def test_parity_checks_use_disposable_runner_instances(
+def test_run_dynamic_case_validates_every_measured_coordinate() -> None:
+    case = _case()
+    target = case.target
+    factory_count = 0
+
+    def make_stateful_runner() -> Callable[[tuple[Array, ...]], Array]:
+        nonlocal factory_count
+        factory_count += 1
+        call_count = 0
+
+        def run(batch: tuple[Array, ...]) -> Array:
+            nonlocal call_count
+            call_count += 1
+            array = batch[0]
+            assert isinstance(array, np.ndarray)
+            if call_count == 1:
+                return array
+            return np.zeros_like(array)
+
+        return run
+
+    late_wrong_target = ExpressionRunnerSpec(
+        name=target.name,
+        semantics=target.semantics,
+        description=target.description,
+        call_repr=target.call_repr,
+        available=target.available,
+        reason=target.reason,
+        reference=target.reference,
+        make_runner=make_stateful_runner,
+    )
+    late_wrong_case = ExpressionParityCase(
+        name=case.name,
+        description=case.description,
+        target_name=case.target_name,
+        batch_factory=case.batch_factory,
+        runner_specs=(late_wrong_target, *case.runner_specs[1:]),
+    )
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _run_dynamic_case(
+            case=late_wrong_case,
+            config=_dynamic_config(),
+            profiler=Profiler(backend=BackendSpec(name="numpy")),
+            backend=BackendSpec(name="numpy"),
+            case_index=0,
+        )
+
+    assert factory_count == 2
+
+
+@pytest.mark.parametrize(
+    ("repeats", "message"),
+    (
+        (1, "replay produced different input shapes"),
+        (2, "repeated input produced different shapes"),
+    ),
+)
+def test_run_dynamic_case_rejects_input_shape_drift(
+    repeats: int,
+    message: str,
+) -> None:
+    case = _case()
+    generation_count = 0
+
+    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
+        nonlocal generation_count
+        generation_count += 1
+        size = 2 if generation_count <= 2 else 3
+        return generator.backend_batch((generator.randn_numpy((size,)),))
+
+    drifting_case = ExpressionParityCase(
+        name=case.name,
+        description=case.description,
+        target_name=case.target_name,
+        batch_factory=batch_factory,
+        runner_specs=case.runner_specs,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        _run_dynamic_case(
+            case=drifting_case,
+            config=_dynamic_config(repeats=repeats),
+            profiler=Profiler(backend=BackendSpec(name="numpy")),
+            backend=BackendSpec(name="numpy"),
+            case_index=0,
+        )
+
+
+def test_run_dynamic_case_validates_each_distinct_coordinate_once() -> None:
+    runner_events: list[tuple[str, int, np.ndarray]] = []
+
+    result = _run_dynamic_case(
+        case=_case(runner_events=runner_events),
+        config=_dynamic_config(
+            batches=3,
+            warmup_batches=1,
+            repeats=3,
+            rounds=2,
+        ),
+        profiler=Profiler(backend=BackendSpec(name="numpy")),
+        backend=BackendSpec(name="numpy"),
+        case_index=0,
+    )
+
+    validation_calls = [
+        name for name, generation, _ in runner_events if generation == 2
+    ]
+    assert {name: validation_calls.count(name) for name in set(validation_calls)} == {
+        "target": 4,
+        "equivalent": 4,
+        "lower_bound": 4,
+    }
+    assert [(unit.round_index, unit.unit_index) for unit in result.realized_units] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    ]
+
+
+def test_validation_invokes_runner_factories_separately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     factory_events: list[str] = []
@@ -340,7 +485,6 @@ def test_parity_checks_use_disposable_runner_instances(
             repeats=1,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=1,
         ),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
         backend=BackendSpec(name="numpy"),
@@ -383,7 +527,6 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
         backend=BackendSpec(name="numpy"),
@@ -397,8 +540,10 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
         expression_parity_module._rotate_order(round_order, offset=1),
         expression_parity_module._rotate_order(round_order, offset=2),
         expression_parity_module._rotate_order(round_order, offset=3),
+        round_order,
+        expression_parity_module._rotate_order(round_order, offset=1),
     ]
-    assert len(events) == 15
+    assert len(events) == 21
     for coordinate_index, expected_order in enumerate(expected_orders):
         coordinate_events = events[
             coordinate_index * len(round_order) : (coordinate_index + 1)
@@ -414,7 +559,7 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
     assert [observation.latency_ms for observation in result.observations] == (
         pytest.approx(list(range(1, 13)))
     )
-    measured_orders = expected_orders[1:]
+    measured_orders = expected_orders[1:5]
     for coordinate_index, expected_order in enumerate(measured_orders):
         start = coordinate_index * len(round_order)
         coordinate_observations = result.observations[start : start + len(round_order)]
@@ -463,7 +608,6 @@ def test_run_dynamic_case_preserves_latency_identity_across_rounds(
             repeats=1,
             rounds=2,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
         backend=BackendSpec(name="numpy"),
@@ -517,14 +661,13 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
         backend=BackendSpec(name="numpy"),
         case_index=0,
     )
 
-    assert live_batches_before_generation == [0, 0, 0, 0, 0]
+    assert live_batches_before_generation == [0, 0, 0, 0, 0, 0, 0]
 
 
 def test_run_dynamic_case_rejects_partial_round_orders(
@@ -547,7 +690,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
                 repeats=1,
                 rounds=1,
                 round_order_seed=1234,
-                parity_checks=0,
             ),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
             backend=BackendSpec(name="numpy"),
@@ -574,6 +716,7 @@ def test_expression_result_rejects_missing_available_run() -> None:
     with pytest.raises(ValueError, match="runs must match"):
         ExpressionCaseResult(
             case=case,
+            realized_units=(),
             runs={
                 "target": ExpressionRun(
                     summary=summary,
@@ -602,7 +745,6 @@ def test_expression_result_rejects_missing_available_run() -> None:
             ["--batches", "2", "--warmup-batches", "1"],
             "at least two measured batches",
         ),
-        (["--parity-checks", "-1"], "parity-checks must be >= 0"),
     ),
 )
 def test_main_rejects_invalid_evidence_configuration(
@@ -644,7 +786,6 @@ def test_expression_parity_renderers_preserve_inference_contract(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
         backend=BackendSpec(name="numpy"),
@@ -671,7 +812,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
     )
     payload = _to_json(report, backend=BackendSpec(name="numpy"))
     json.dumps(payload)
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     environment = payload["environment"]
     assert isinstance(environment, dict)
     assert {
@@ -703,6 +844,20 @@ def test_expression_parity_renderers_preserve_inference_contract(
     assert case_payload["case"]["target"] == "target"
     assert case_payload["case"]["runner_specs"][0]["is_target"] is True
     assert case_payload["case"]["runner_specs"][0]["semantics"] == "output_equivalent"
+    assert [
+        (unit["round_index"], unit["unit_index"])
+        for unit in case_payload["realized_input_units"]
+    ] == [(0, 0), (0, 1)]
+    assert case_payload["validation"] == {
+        "scope": "all_distinct_measured_coordinates",
+        "coordinate_source": "realized_input_units",
+        "coordinate_count": 2,
+        "members": ["target", "equivalent", "lower_bound"],
+        "executions_per_member_per_coordinate": 1,
+        "phase": "after_measurement_before_receipt",
+        "input_replay": "deterministic_seed_regeneration",
+        "output_check": "numerical_reference_match",
+    }
     assert case_payload["observations"][0]["strategy"] == "target"
     assert case_payload["observations"][0]["unit_index"] == 0
     assert case_payload["comparisons"][0]["target"] == "target"

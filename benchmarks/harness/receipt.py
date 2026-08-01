@@ -1,5 +1,7 @@
+from collections.abc import Sequence
+
 from .backend import BackendSpec
-from .result import PairedEvidence, TimingSummary
+from .result import DynamicInputUnit, PairedEvidence, TimingSummary
 
 
 def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
@@ -32,6 +34,40 @@ def synchronized_measurement_contract_payload() -> dict[str, object]:
             "output_device_to_host_transfer",
             "summary_and_serialization",
         ],
+    }
+
+
+def dynamic_input_units_payload(
+    units: Sequence[DynamicInputUnit],
+) -> list[dict[str, object]]:
+    """Serialize exact dynamic input coordinates and their realized shapes."""
+    return [
+        {
+            "round_index": unit.round_index,
+            "unit_index": unit.unit_index,
+            "stream_index": unit.stream_index,
+            "seed": unit.seed,
+            "input_shapes": [list(shape) for shape in unit.input_shapes],
+        }
+        for unit in units
+    ]
+
+
+def validation_coverage_payload(
+    *,
+    coordinate_count: int,
+    members: Sequence[str],
+) -> dict[str, object]:
+    """Serialize exhaustive out-of-timer numerical validation coverage."""
+    return {
+        "scope": "all_distinct_measured_coordinates",
+        "coordinate_source": "realized_input_units",
+        "coordinate_count": coordinate_count,
+        "members": list(members),
+        "executions_per_member_per_coordinate": 1,
+        "phase": "after_measurement_before_receipt",
+        "input_replay": "deterministic_seed_regeneration",
+        "output_check": "numerical_reference_match",
     }
 
 

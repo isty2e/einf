@@ -415,40 +415,7 @@ class BenchmarkRunner:
             libraries=available_libs,
         )
 
-        checks = min(config.batches, config.parity_checks)
-        if checks:
-            validation_runners: dict[LibraryName, Runner] = {
-                library_name: runner_factories[library_name]()
-                for library_name in available_libs
-            }
-            for stream_index in range(checks):
-                numpy_batch = self._make_dynamic_numpy_batch(
-                    case_spec=case_spec,
-                    seed=self._dynamic_batch_seed(
-                        config=config,
-                        case_index=case_index,
-                        round_index=0,
-                        stream_index=stream_index,
-                    ),
-                )
-                expected = tuple(
-                    array.copy()
-                    for array in self.backend.to_numpy_output(
-                        case.reference(numpy_batch)
-                    )
-                )
-                batch = self.backend.to_backend_batch(numpy_batch)
-                del numpy_batch
-                self._validate_runners(
-                    case=case,
-                    runners=validation_runners,
-                    batch=batch,
-                    expected=expected,
-                    order=round_orders[0],
-                )
-                del batch, expected
-            del validation_runners
-
+        measured_batches = config.batches - config.warmup_batches
         runners: dict[LibraryName, Runner] = {
             library_name: runner_factories[library_name]()
             for library_name in available_libs
@@ -456,7 +423,6 @@ class BenchmarkRunner:
 
         observations: list[LibraryTimingObservation] = []
         realized_units: list[DynamicInputUnit] = []
-        measured_batches = config.batches - config.warmup_batches
         for round_index, round_order in enumerate(round_orders):
             for stream_index in range(config.warmup_batches):
                 numpy_batch = self._make_dynamic_numpy_batch(
@@ -504,6 +470,15 @@ class BenchmarkRunner:
                                 input_shapes=input_shapes,
                             )
                         )
+                    elif (
+                        input_shapes
+                        != realized_units[
+                            round_index * measured_batches + unit_index
+                        ].input_shapes
+                    ):
+                        raise RuntimeError(
+                            "dynamic repeated input produced different shapes"
+                        )
                     batch = self.backend.to_backend_batch(numpy_batch)
                     del numpy_batch
                     observations.extend(
@@ -520,6 +495,40 @@ class BenchmarkRunner:
                         ),
                     )
                     del batch
+
+        del runners
+        validation_runners: dict[LibraryName, Runner] = {
+            library_name: runner_factories[library_name]()
+            for library_name in available_libs
+        }
+        for unit in realized_units:
+            numpy_batch = self._make_dynamic_numpy_batch(
+                case_spec=case_spec,
+                seed=unit.seed,
+            )
+            replayed_shapes = tuple(array.shape for array in numpy_batch)
+            if replayed_shapes != unit.input_shapes:
+                raise RuntimeError(
+                    "dynamic validation replay produced different input shapes"
+                )
+            expected = tuple(
+                array.copy()
+                for array in self.backend.to_numpy_output(case.reference(numpy_batch))
+            )
+            batch = self.backend.to_backend_batch(numpy_batch)
+            del numpy_batch
+            self._validate_runners(
+                case=case,
+                runners=validation_runners,
+                batch=batch,
+                expected=expected,
+                order=self._rotate_order(
+                    round_orders[unit.round_index],
+                    offset=unit.unit_index,
+                ),
+            )
+            del batch, expected
+        del validation_runners
 
         for library_name in available_libs:
             runs[library_name] = self._available_run(

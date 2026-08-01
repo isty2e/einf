@@ -77,7 +77,6 @@ class DynamicTaskConfig(TaskConfig):
     repeats: int
     rounds: int
     round_order_seed: int
-    parity_checks: int
 
 
 def fixed_sizes_for_scale(scale: ScaleName) -> BenchSizes:

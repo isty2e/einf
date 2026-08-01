@@ -255,7 +255,6 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         repeats=2,
         rounds=1,
         round_order_seed=7,
-        parity_checks=0,
     )
 
     payload = _receipt_payload(
@@ -266,7 +265,7 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -296,6 +295,16 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
             "input_shapes": [[1, 3]],
         }
     ]
+    assert case_payload["validation"] == {
+        "scope": "all_distinct_measured_coordinates",
+        "coordinate_source": "realized_input_units",
+        "coordinate_count": 1,
+        "members": ["einf"],
+        "executions_per_member_per_coordinate": 1,
+        "phase": "after_measurement_before_receipt",
+        "input_replay": "deterministic_seed_regeneration",
+        "output_check": "numerical_reference_match",
+    }
     assert case_payload["workload"] == {
         "dimensions": [
             {
