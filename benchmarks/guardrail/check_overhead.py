@@ -4,6 +4,7 @@
 import argparse
 from pathlib import Path
 
+from benchmarks.guardrail.path_identity import existing_report_paths_alias
 from benchmarks.guardrail.policy import (
     MetricName,
     compare_overhead_reports,
@@ -52,6 +53,8 @@ def main() -> int:
 
     if args.max_regression_ratio < 0.0:
         raise ValueError("max-regression-ratio must be >= 0.0")
+    if existing_report_paths_alias(args.baseline, args.candidate):
+        raise ValueError("baseline and candidate reports must use different files")
 
     baseline = load_overhead_report(args.baseline)
     candidate = load_overhead_report(args.candidate)

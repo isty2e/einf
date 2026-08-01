@@ -1,9 +1,12 @@
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+import benchmarks.guardrail.check_overhead as check_overhead_module
+import benchmarks.guardrail.check_overhead_trials as check_overhead_trials_module
 from benchmarks.guardrail.policy import (
     MetricName,
     OverheadReportDict,
@@ -15,6 +18,9 @@ from benchmarks.guardrail.policy import (
     render_findings,
     render_trial_findings,
 )
+
+_ALIAS_ERROR = "baseline and candidate reports must use different files"
+_TRIAL_ALIAS_ERROR = "trial reports must use distinct files"
 
 
 def _report(*, call_ms: float) -> OverheadReportDict:
@@ -82,6 +88,312 @@ def _write_report(
     path = tmp_path / "overhead.json"
     path.write_text(json.dumps(report))
     return path
+
+
+def _assert_single_guardrail_rejects_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    baseline: Path,
+    candidate: Path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=_ALIAS_ERROR):
+        check_overhead_module.main()
+
+
+def _write_invalid_report(path: Path) -> Path:
+    path.write_text("{not-json", encoding="utf-8")
+    return path
+
+
+def test_single_guardrail_rejects_same_report_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+
+    _assert_single_guardrail_rejects_alias(
+        monkeypatch,
+        baseline=report,
+        candidate=report,
+    )
+
+
+def test_single_guardrail_rejects_resolved_path_alias_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+    (tmp_path / "nested").mkdir()
+
+    _assert_single_guardrail_rejects_alias(
+        monkeypatch,
+        baseline=report,
+        candidate=tmp_path / "nested" / ".." / "report.json",
+    )
+
+
+def test_single_guardrail_rejects_symlink_alias_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+    alias = tmp_path / "report-symlink.json"
+    try:
+        alias.symlink_to(report)
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    _assert_single_guardrail_rejects_alias(
+        monkeypatch,
+        baseline=report,
+        candidate=alias,
+    )
+
+
+def test_single_guardrail_rejects_hardlink_alias_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+    alias = tmp_path / "report-hardlink.json"
+    try:
+        alias.hardlink_to(report)
+    except OSError as error:
+        pytest.skip(f"hard links unavailable: {error}")
+
+    _assert_single_guardrail_rejects_alias(
+        monkeypatch,
+        baseline=report,
+        candidate=alias,
+    )
+
+
+def test_single_guardrail_rejects_case_alias_on_insensitive_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.JSON")
+    alias = tmp_path / "report.json"
+    try:
+        same_entry = alias.samefile(report)
+    except FileNotFoundError:
+        same_entry = False
+    if not same_entry:
+        pytest.skip("requires a case-insensitive filesystem")
+
+    _assert_single_guardrail_rejects_alias(
+        monkeypatch,
+        baseline=report,
+        candidate=alias,
+    )
+
+
+def test_single_guardrail_allows_distinct_reports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    baseline.write_text(json.dumps(_report(call_ms=1.0)), encoding="utf-8")
+    candidate.write_text(json.dumps(_report(call_ms=1.0)), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ],
+    )
+
+    assert check_overhead_module.main() == 0
+
+
+@pytest.mark.parametrize("identity_error_type", (OSError, FileNotFoundError))
+def test_single_guardrail_fails_closed_when_identity_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    identity_error_type: type[OSError],
+) -> None:
+    report = _write_invalid_report(tmp_path / "report.json")
+    alias = tmp_path / "report-hardlink.json"
+    try:
+        alias.hardlink_to(report)
+    except OSError as error:
+        pytest.skip(f"hard links unavailable: {error}")
+
+    def raise_identity_error(_first: Path, _second: Path) -> bool:
+        raise identity_error_type("simulated filesystem identity failure")
+
+    monkeypatch.setattr(Path, "samefile", raise_identity_error)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(report),
+            "--candidate",
+            str(alias),
+        ],
+    )
+
+    with pytest.raises(
+        identity_error_type,
+        match="simulated filesystem identity failure",
+    ):
+        check_overhead_module.main()
+
+
+def test_single_guardrail_reports_missing_normalized_path_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.json"
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(missing),
+            "--candidate",
+            str(nested / ".." / "missing.json"),
+        ],
+    )
+
+    with pytest.raises(FileNotFoundError):
+        check_overhead_module.main()
+
+
+@pytest.mark.parametrize("parent_name", ("数据", "123"))
+def test_single_guardrail_allows_case_distinct_reports_on_sensitive_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    parent_name: str,
+) -> None:
+    report_directory = tmp_path / parent_name
+    report_directory.mkdir()
+    baseline = report_directory / "report.JSON"
+    candidate = report_directory / "report.json"
+    baseline.write_text(json.dumps(_report(call_ms=1.0)), encoding="utf-8")
+    candidate.write_text(json.dumps(_report(call_ms=1.0)), encoding="utf-8")
+    if baseline.samefile(candidate):
+        pytest.skip("requires a case-sensitive filesystem")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ],
+    )
+
+    assert check_overhead_module.main() == 0
+
+
+def test_trial_guardrail_rejects_alias_across_pair_roles_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shared_report = _write_invalid_report(tmp_path / "shared.json")
+    first_candidate = _write_invalid_report(tmp_path / "first-candidate.json")
+    second_baseline = _write_invalid_report(tmp_path / "second-baseline.json")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead-trials",
+            "--pair",
+            str(shared_report),
+            str(first_candidate),
+            "--pair",
+            str(second_baseline),
+            str(shared_report),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=_TRIAL_ALIAS_ERROR):
+        check_overhead_trials_module.main()
+
+
+@pytest.mark.parametrize("reused_role", ("baseline", "candidate"))
+def test_trial_guardrail_rejects_reused_report_within_role_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reused_role: str,
+) -> None:
+    first_baseline = _write_invalid_report(tmp_path / "first-baseline.json")
+    first_candidate = _write_invalid_report(tmp_path / "first-candidate.json")
+    second_baseline = (
+        first_baseline
+        if reused_role == "baseline"
+        else _write_invalid_report(tmp_path / "second-baseline.json")
+    )
+    second_candidate = (
+        first_candidate
+        if reused_role == "candidate"
+        else _write_invalid_report(tmp_path / "second-candidate.json")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead-trials",
+            "--pair",
+            str(first_baseline),
+            str(first_candidate),
+            "--pair",
+            str(second_baseline),
+            str(second_candidate),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=_TRIAL_ALIAS_ERROR):
+        check_overhead_trials_module.main()
+
+
+def test_trial_guardrail_allows_distinct_reports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report_paths = tuple(tmp_path / f"report-{index}.json" for index in range(4))
+    for report_path in report_paths:
+        report_path.write_text(json.dumps(_report(call_ms=1.0)), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check-overhead-trials",
+            "--pair",
+            str(report_paths[0]),
+            str(report_paths[1]),
+            "--pair",
+            str(report_paths[2]),
+            str(report_paths[3]),
+        ],
+    )
+
+    assert check_overhead_trials_module.main() == 0
 
 
 def test_collect_case_metrics_builds_stable_keys() -> None:

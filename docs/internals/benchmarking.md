@@ -278,6 +278,9 @@ gate failure because they make regression status unknowable.
 By default, `check_overhead_trials` requires the same case to exceed the
 threshold in every supplied pair. For a two-order gate, a one-order regression
 is evidence to inspect or rerun, not a ticket-closing blocker by itself.
+Each path passed to a repeated-trial check must identify a distinct existing
+receipt. Reusing a receipt within or across pairs would count the same evidence
+more than once, so the command rejects aliases before loading any report.
 
 ### Interpretation Rules
 
