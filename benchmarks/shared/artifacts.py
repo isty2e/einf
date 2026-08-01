@@ -10,26 +10,49 @@ from pathlib import Path
 _TEMPORARY_NAME_ATTEMPTS = 128
 
 
-def _open_temporary_receipt(parent: Path) -> tuple[int, Path, int]:
+def _open_exclusive_temporary(
+    parent: Path,
+    *,
+    name_prefix: str,
+    mode: int,
+) -> tuple[int, Path]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     for _ in range(_TEMPORARY_NAME_ATTEMPTS):
-        path = parent / f".einf-receipt-{secrets.token_hex(8)}.tmp"
+        path = parent / f"{name_prefix}{secrets.token_hex(8)}.tmp"
         try:
-            descriptor = os.open(path, flags, 0o666)
+            return os.open(path, flags, mode), path
         except FileExistsError:
             continue
-        try:
-            creation_mode = stat.S_IMODE(os.fstat(descriptor).st_mode) & 0o777
-            path.chmod(0o600)
-        except BaseException:
-            os.close(descriptor)
+    raise FileExistsError("could not allocate a unique benchmark temporary file")
+
+
+def _normal_creation_mode(parent: Path) -> int:
+    # An empty sibling captures the effective umask without mutating
+    # process-global state or exposing receipt contents.
+    descriptor, probe_path = _open_exclusive_temporary(
+        parent,
+        name_prefix=".einf-mode-probe-",
+        mode=0o666,
+    )
+    open_descriptor: int | None = descriptor
+
+    try:
+        creation_mode = stat.S_IMODE(os.fstat(open_descriptor).st_mode) & 0o777
+        os.close(open_descriptor)
+        open_descriptor = None
+        probe_path.unlink()
+    except BaseException:
+        if open_descriptor is not None:
             try:
-                path.unlink(missing_ok=True)
+                os.close(open_descriptor)
             except OSError:
                 pass
-            raise
-        return descriptor, path, creation_mode
-    raise FileExistsError("could not allocate a unique receipt temporary file")
+        try:
+            probe_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return creation_mode
 
 
 def _regular_file_mode(path: Path) -> int | None:
@@ -53,8 +76,10 @@ def publish_receipt(path: Path, payload: Mapping[str, object]) -> None:
     requested_destination = path.expanduser()
     requested_destination.parent.mkdir(parents=True, exist_ok=True)
     destination = requested_destination.resolve(strict=False)
-    descriptor, temporary_path, creation_mode = _open_temporary_receipt(
-        destination.parent
+    descriptor, temporary_path = _open_exclusive_temporary(
+        destination.parent,
+        name_prefix=".einf-receipt-",
+        mode=0o600,
     )
     open_descriptor: int | None = descriptor
 
@@ -65,7 +90,12 @@ def publish_receipt(path: Path, payload: Mapping[str, object]) -> None:
             json.dump(payload, stream, indent=2)
             stream.write("\n")
         existing_mode = _regular_file_mode(destination)
-        temporary_path.chmod(creation_mode if existing_mode is None else existing_mode)
+        final_mode = (
+            _normal_creation_mode(destination.parent)
+            if existing_mode is None
+            else existing_mode
+        )
+        temporary_path.chmod(final_mode)
         os.replace(temporary_path, destination)
     except BaseException:
         if open_descriptor is not None:

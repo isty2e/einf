@@ -453,9 +453,9 @@ If `--receipt` points to a symbolic link, the link remains in place and
 publication atomically replaces its resolved target.
 New receipts use `0666` access permissions filtered by the process umask.
 Replacing an existing regular receipt preserves its access permission bits.
-Temporary files remain private during serialization. Atomic replacement creates
-a new inode, so ownership, hard-link identity, ACLs, and extended attributes are
-not preservation guarantees.
+The temporary file containing receipt data remains private during serialization.
+Atomic replacement creates a new inode, so ownership, hard-link identity, ACLs,
+and extended attributes are not preservation guarantees.
 Keep the receipt when a comparison may need re-analysis; Markdown alone does
 not contain enough information to reconstruct every pair.
 

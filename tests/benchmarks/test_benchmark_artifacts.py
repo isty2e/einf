@@ -116,6 +116,31 @@ def test_new_receipt_uses_normal_creation_mode(tmp_path: Path) -> None:
     assert stat.S_IMODE(receipt.stat().st_mode) == stat.S_IMODE(
         reference.stat().st_mode
     )
+    assert list(tmp_path.glob(".einf-mode-probe-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
+def test_temporary_receipt_is_created_private(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = artifact_module.os.open
+    creation_modes: list[int] = []
+
+    def observe_creation_mode(
+        path: os.PathLike[str],
+        flags: int,
+        mode: int,
+    ) -> int:
+        if Path(path).name.startswith(".einf-receipt-"):
+            creation_modes.append(mode)
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(artifact_module.os, "open", observe_creation_mode)
+
+    publish_receipt(tmp_path / "receipt.json", {"run": "new"})
+
+    assert creation_modes == [0o600]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
