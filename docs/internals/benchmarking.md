@@ -46,6 +46,11 @@ and serialization are outside the timed interval. The result is per-call
 completion latency after inputs and runners are ready, not input-pipeline latency
 or asynchronous launch latency.
 
+Reference functions receive private NumPy snapshots and are expected to be
+deterministic and side-effect free. The harness never passes a prepared backend
+batch to reference code, so accidental mutation cannot change the measured
+workload or another strategy's reference input.
+
 Fixed cases prepare one batch and reuse it across measured coordinates. Dynamic
 cases materialize one target batch per coordinate before the first library runs.
 After each timed call has completed and its timer has stopped, the harness checks

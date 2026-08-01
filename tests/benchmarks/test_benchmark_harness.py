@@ -217,6 +217,55 @@ def test_fixed_runner_rejects_wrong_timed_output_after_correct_warmup() -> None:
         )
 
 
+def test_fixed_runner_isolates_reference_from_measured_inputs() -> None:
+    measured_inputs: list[np.ndarray] = []
+
+    def reference(inputs: tuple[np.ndarray, ...]) -> np.ndarray:
+        array = inputs[0]
+        expected = array.copy()
+        array.resize((3,), refcheck=False)
+        array[:] = (10.0, 20.0, 30.0)
+        return expected
+
+    def make_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            array = inputs[0]
+            assert isinstance(array, np.ndarray)
+            measured_inputs.append(array.copy())
+            return array
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="mutating_fixed_reference",
+        description="Reference mutation must not change the measured input.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=reference,
+        make_einf_runner=make_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    inputs = (np.asarray([1.0, 2.0], dtype=np.float32),)
+
+    _single_library_runner(backend=BackendSpec(name="numpy")).run_fixed_case(
+        case_spec=FixedCaseSpec(case=case, inputs=inputs),
+        config=FixedTaskConfig(
+            scale="small",
+            seed=1,
+            rounds=1,
+            warmup=0,
+            repeats=1,
+            iterations=1,
+        ),
+        order_seed=1,
+    )
+
+    np.testing.assert_array_equal(inputs[0], np.asarray([1.0, 2.0]))
+    assert [array.shape for array in measured_inputs] == [(2,)]
+    np.testing.assert_array_equal(measured_inputs[0], np.asarray([1.0, 2.0]))
+
+
 def test_dynamic_runner_warms_before_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -426,6 +475,72 @@ def test_dynamic_runner_rejects_input_shape_drift(
             config=_dynamic_config(repeats=2),
             case_index=0,
         )
+
+
+def test_dynamic_runner_isolates_reference_from_measured_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measured_inputs: list[np.ndarray] = []
+
+    def make_dynamic_numpy_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        _ = self, case_spec, seed
+        return (np.asarray([1.0, 2.0], dtype=np.float32),)
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        make_dynamic_numpy_batch,
+    )
+
+    def reference(inputs: tuple[np.ndarray, ...]) -> np.ndarray:
+        array = inputs[0]
+        expected = array.copy()
+        array.resize((3,), refcheck=False)
+        array[:] = (10.0, 20.0, 30.0)
+        return expected
+
+    def make_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            array = inputs[0]
+            assert isinstance(array, np.ndarray)
+            measured_inputs.append(array.copy())
+            return array
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="mutating_dynamic_reference",
+        description="Reference mutation must not change the measured input.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=reference,
+        make_einf_runner=make_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+
+    result = _single_library_runner(backend=BackendSpec(name="numpy")).run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=case,
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=_dynamic_config(),
+        case_index=0,
+    )
+
+    assert [unit.input_shapes for unit in result.realized_units] == [
+        ((2,),),
+        ((2,),),
+    ]
+    assert [array.shape for array in measured_inputs] == [(2,), (2,)]
+    for array in measured_inputs:
+        np.testing.assert_array_equal(array, np.asarray([1.0, 2.0]))
 
 
 def test_dynamic_runner_validates_every_measured_execution() -> None:

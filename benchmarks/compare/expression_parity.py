@@ -55,6 +55,7 @@ else:
 
 
 ExpressionSemantics = Literal["output_equivalent", "lower_bound"]
+# References receive private snapshots; they must not mutate them and must be deterministic.
 Reference = Callable[[tuple[NumpyArray, ...]], Output]
 BatchFactory = Callable[[TensorGenerator], tuple[Array, ...]]
 RunnerFactory = Callable[[], Runner]
@@ -657,12 +658,14 @@ def _run_dynamic_case(
                 )
                 for order_position, name in enumerate(batch_order):
                     spec = spec_by_name[name]
+                    reference_batch = tuple(array.copy() for array in numpy_batch)
                     expected = tuple(
                         array.copy()
                         for array in backend.to_numpy_output(
-                            spec.reference(numpy_batch)
+                            spec.reference(reference_batch)
                         )
                     )
+                    del reference_batch
 
                     def validate_output(
                         output: Output,

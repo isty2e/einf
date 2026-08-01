@@ -269,14 +269,14 @@ class BenchmarkRunner:
             libraries=available_libs,
         )
 
+        reference_inputs = tuple(
+            self.backend.to_numpy_array(item).copy() for item in inputs
+        )
         expected = tuple(
             array.copy()
-            for array in self.backend.to_numpy_output(
-                case.reference(
-                    tuple(self.backend.to_numpy_array(item) for item in inputs)
-                )
-            )
+            for array in self.backend.to_numpy_output(case.reference(reference_inputs))
         )
+        del reference_inputs
         runners: dict[LibraryName, Runner] = {
             library_name: runner_factories[library_name]()
             for library_name in available_libs
@@ -464,12 +464,14 @@ class BenchmarkRunner:
                         raise RuntimeError(
                             "dynamic repeated input produced different shapes"
                         )
+                    reference_batch = tuple(array.copy() for array in numpy_batch)
                     expected = tuple(
                         array.copy()
                         for array in self.backend.to_numpy_output(
-                            case.reference(numpy_batch)
+                            case.reference(reference_batch)
                         )
                     )
+                    del reference_batch
                     batch = self.backend.to_backend_batch(numpy_batch)
                     del numpy_batch
                     observations.extend(

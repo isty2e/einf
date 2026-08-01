@@ -370,6 +370,48 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
         )
 
 
+def test_run_dynamic_case_isolates_strategy_reference_inputs() -> None:
+    case = _case()
+
+    def mutating_reference(inputs: tuple[np.ndarray, ...]) -> np.ndarray:
+        array = inputs[0]
+        expected = array.copy()
+        array.resize((3,), refcheck=False)
+        array[:] = (10.0, 20.0, 30.0)
+        return expected
+
+    runner_specs = tuple(
+        ExpressionRunnerSpec(
+            name=spec.name,
+            semantics=spec.semantics,
+            description=spec.description,
+            call_repr=spec.call_repr,
+            available=spec.available,
+            reason=spec.reason,
+            reference=mutating_reference,
+            make_runner=spec.make_runner,
+        )
+        for spec in case.runner_specs
+    )
+    mutation_case = ExpressionParityCase(
+        name=case.name,
+        description=case.description,
+        target_name=case.target_name,
+        batch_factory=case.batch_factory,
+        runner_specs=runner_specs,
+    )
+
+    result = _run_dynamic_case(
+        case=mutation_case,
+        config=_dynamic_config(),
+        profiler=Profiler(backend=BackendSpec(name="numpy")),
+        backend=BackendSpec(name="numpy"),
+        case_index=0,
+    )
+
+    assert len(result.observations) == 2 * len(runner_specs)
+
+
 def test_run_dynamic_case_validates_every_measured_coordinate() -> None:
     case = _case()
     factory_count = 0
