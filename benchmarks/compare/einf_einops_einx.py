@@ -2,8 +2,8 @@
 """Compare einf/einops/einx performance on common tensor operations."""
 
 import argparse
-import json
 import platform
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +28,6 @@ from benchmarks.harness import (
 from benchmarks.harness.receipt import (
     execution_target_payload,
     paired_evidence_payload,
-    resolve_raw_output_path,
     synchronized_measurement_contract_payload,
     timing_summary_payload,
 )
@@ -38,6 +37,7 @@ from benchmarks.shared import (
     einf_source_metadata,
     version_or_missing,
 )
+from benchmarks.shared.artifacts import publish_receipt
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -401,7 +401,7 @@ def _build_case_specs(*, sizes, seed: int, backend: BackendSpec) -> list[FixedCa
     ]
 
 
-def _raw_payload(
+def _receipt_payload(
     *,
     config: FixedTaskConfig,
     sizes: BenchSizes,
@@ -504,16 +504,10 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=7)
     parser.add_argument("--iterations", type=int, default=150)
     parser.add_argument(
-        "--output",
+        "--receipt",
         type=Path,
         default=None,
-        help="Optional markdown output path.",
-    )
-    parser.add_argument(
-        "--raw-output",
-        type=Path,
-        default=None,
-        help="Optional raw JSON path; defaults to --output with a .json suffix.",
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
     args = parser.parse_args()
 
@@ -527,11 +521,6 @@ def main() -> int:
     backend_name: BackendName = args.backend
     backend = BackendSpec(name=backend_name, requested_device=args.device)
     sizes = fixed_sizes_for_scale(args.scale)
-    raw_output_path = resolve_raw_output_path(
-        output=args.output,
-        raw_output=args.raw_output,
-    )
-
     config = FixedTaskConfig(
         scale=args.scale,
         seed=args.seed,
@@ -591,11 +580,6 @@ def main() -> int:
                 "call observations per available library: "
                 f"`{args.rounds * args.repeats * args.iterations}`"
             ),
-            *(
-                [f"raw JSON artifact: `{raw_output_path}`"]
-                if raw_output_path is not None
-                else []
-            ),
             "table units: `ms`",
             "phase: synchronized steady completion latency",
         ],
@@ -618,29 +602,19 @@ def main() -> int:
     )
 
     report = MarkdownPrinter().render_fixed(result)
-    print(report)
-
-    if raw_output_path is not None:
-        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_output_path.write_text(
-            json.dumps(
-                _raw_payload(
-                    config=config,
-                    sizes=sizes,
-                    case_results=case_results,
-                    backend=backend,
-                ),
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+    if args.receipt is not None:
+        publish_receipt(
+            args.receipt,
+            _receipt_payload(
+                config=config,
+                sizes=sizes,
+                case_results=case_results,
+                backend=backend,
+            ),
         )
-        print(f"\nWrote raw observations: {raw_output_path}")
-
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(report + "\n", encoding="utf-8")
-        print(f"\nWrote report: {args.output}")
+    print(report)
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
 
     return 0
 

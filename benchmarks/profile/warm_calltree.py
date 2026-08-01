@@ -3,8 +3,8 @@
 
 import argparse
 import cProfile
-import json
 import platform
+import sys
 from _lsprof import profiler_entry
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,6 +20,7 @@ from benchmarks.profile.overhead_breakdown import (
     _touch_output,
 )
 from benchmarks.shared import version_or_missing
+from benchmarks.shared.artifacts import publish_receipt
 
 SortName = Literal["cumtime", "tottime", "ncalls"]
 
@@ -234,7 +235,7 @@ def _to_markdown(report: WarmCallTreeReport, /) -> str:
         f"  --loops {report.loops} \\",
         f"  --sort {report.sort_by} \\",
         f"  --top {report.top} \\",
-        "  --output docs/benchmarks/2026-04-09-warm-calltree.md",
+        "  --receipt artifacts/bench/raw/warm-calltree.json",
         "```",
         "",
         "## Environment",
@@ -296,8 +297,12 @@ def main() -> int:
         "--sort", choices=("cumtime", "tottime", "ncalls"), default="cumtime"
     )
     parser.add_argument("--top", type=int, default=40)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--raw-output", type=Path, default=None)
+    parser.add_argument(
+        "--receipt",
+        type=Path,
+        default=None,
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
+    )
     args = parser.parse_args()
 
     case = _find_case(
@@ -319,18 +324,11 @@ def main() -> int:
         top=args.top,
     )
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(_to_markdown(report), encoding="utf-8")
+    if args.receipt is not None:
+        publish_receipt(args.receipt, _to_json(report))
     print(_to_markdown(report))
-    print(f"\nWrote report: {args.output}")
-
-    if args.raw_output is not None:
-        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-        args.raw_output.write_text(
-            json.dumps(_to_json(report), indent=2),
-            encoding="utf-8",
-        )
-        print(f"Wrote raw artifact: {args.raw_output}")
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
     return 0
 
 

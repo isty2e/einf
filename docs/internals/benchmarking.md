@@ -17,6 +17,14 @@ Assumption:
 - you are running from the repository root,
 - `einf` and optional benchmark dependencies are already installed in your environment.
 
+The receipt-producing compare, audit, and profile commands described here write
+Markdown to stdout. Use `--receipt PATH` to publish their canonical JSON
+receipt. Publication uses a same-directory temporary file and atomic
+replacement, so a failed write does not leave a partial receipt at the
+destination. Redirect stdout when you also want to retain the Markdown
+projection; create the projection's parent directory before running the
+command because the shell opens that file first.
+
 ## Compare Methodology
 
 Fixed and dynamic comparisons use the same measurement contract. Their only
@@ -128,14 +136,14 @@ Order A, baseline first:
   cd "$BASE_WORKTREE"
   python -m benchmarks.profile.overhead_breakdown \
     --backend torch \
-    --output "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-a-torch.md" \
-    --raw-output "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-a-torch.json"
+    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-a-torch.json" \
+    > "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-a-torch.md"
 )
 
 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
-  --output "$BENCH_DIR/candidate-overhead-order-a-torch.md" \
-  --raw-output "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json"
+  --receipt "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json" \
+  > "$BENCH_DIR/candidate-overhead-order-a-torch.md"
 ```
 
 Order B, candidate first:
@@ -143,15 +151,15 @@ Order B, candidate first:
 ```bash
 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
-  --output "$BENCH_DIR/candidate-overhead-order-b-torch.md" \
-  --raw-output "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json"
+  --receipt "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json" \
+  > "$BENCH_DIR/candidate-overhead-order-b-torch.md"
 
 (
   cd "$BASE_WORKTREE"
   python -m benchmarks.profile.overhead_breakdown \
     --backend torch \
-    --output "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-b-torch.md" \
-    --raw-output "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-b-torch.json"
+    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-b-torch.json" \
+    > "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-b-torch.md"
 )
 ```
 
@@ -183,7 +191,8 @@ guardrail.
     --warmup 4 \
     --repeats 5 \
     --iterations 60 \
-    --output "$REPO_ROOT/$BENCH_DIR/baseline-fixed-large-torch.md"
+    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-fixed-large-torch.json" \
+    > "$REPO_ROOT/$BENCH_DIR/baseline-fixed-large-torch.md"
 )
 
 python -m benchmarks.compare.einf_einops_einx \
@@ -194,7 +203,8 @@ python -m benchmarks.compare.einf_einops_einx \
   --warmup 4 \
   --repeats 5 \
   --iterations 60 \
-  --output "$BENCH_DIR/candidate-fixed-large-torch.md"
+  --receipt "$BENCH_DIR/raw/candidate-fixed-large-torch.json" \
+  > "$BENCH_DIR/candidate-fixed-large-torch.md"
 
 (
   cd "$BASE_WORKTREE"
@@ -207,7 +217,8 @@ python -m benchmarks.compare.einf_einops_einx \
     --repeats 6 \
     --rounds 3 \
     --parity-checks 8 \
-    --output "$REPO_ROOT/$BENCH_DIR/baseline-dynamic-large-torch.md"
+    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-dynamic-large-torch.json" \
+    > "$REPO_ROOT/$BENCH_DIR/baseline-dynamic-large-torch.md"
 )
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
@@ -219,15 +230,20 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output "$BENCH_DIR/candidate-dynamic-large-torch.md"
+  --receipt "$BENCH_DIR/raw/candidate-dynamic-large-torch.json" \
+  > "$BENCH_DIR/candidate-dynamic-large-torch.md"
 ```
 
 Expected compare artifacts:
 
 - `$BENCH_DIR/baseline-fixed-large-torch.md`
+- `$BENCH_DIR/raw/baseline-fixed-large-torch.json`
 - `$BENCH_DIR/baseline-dynamic-large-torch.md`
+- `$BENCH_DIR/raw/baseline-dynamic-large-torch.json`
 - `$BENCH_DIR/candidate-fixed-large-torch.md`
+- `$BENCH_DIR/raw/candidate-fixed-large-torch.json`
 - `$BENCH_DIR/candidate-dynamic-large-torch.md`
+- `$BENCH_DIR/raw/candidate-dynamic-large-torch.json`
 
 ### Guardrail Checks
 
@@ -298,8 +314,8 @@ python -m benchmarks.profile.warm_calltree \
   --loops 256 \
   --sort cumtime \
   --top 40 \
-  --output "$BENCH_DIR/candidate-warm-calltree-dynamic-large-einop-contract-split.md" \
-  --raw-output "$BENCH_DIR/raw/candidate-warm-calltree-dynamic-large-einop-contract-split.json"
+  --receipt "$BENCH_DIR/raw/candidate-warm-calltree-dynamic-large-einop-contract-split.json" \
+  > "$BENCH_DIR/candidate-warm-calltree-dynamic-large-einop-contract-split.md"
 ```
 
 Use the call tree to explain the regression source. Do not relax the guardrail
@@ -313,6 +329,8 @@ comparisons.
 Example:
 
 ```bash
+mkdir -p artifacts/bench/current/raw
+
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch \
   --device cpu \
@@ -321,7 +339,8 @@ python -m benchmarks.compare.einf_einops_einx \
   --warmup 4 \
   --repeats 3 \
   --iterations 60 \
-  --output artifacts/bench/current/fixed-large-torch.md
+  --receipt artifacts/bench/current/raw/fixed-large-torch.json \
+  > artifacts/bench/current/fixed-large-torch.md
 ```
 
 What the script reports:
@@ -331,8 +350,7 @@ What the script reports:
 - round-level summaries,
 - per-case library order for each round,
 - requested and resolved execution devices,
-- a versioned raw JSON receipt with the measured source revision alongside the
-  Markdown report.
+- a versioned JSON receipt with the measured source revision.
 
 ## Dynamic-Shape Compare
 
@@ -350,7 +368,8 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output artifacts/bench/current/dynamic-large-torch.md
+  --receipt artifacts/bench/current/raw/dynamic-large-torch.json \
+  > artifacts/bench/current/dynamic-large-torch.md
 ```
 
 What matters here:
@@ -364,7 +383,7 @@ What matters here:
 - one target batch is materialized per paired coordinate and shared by all
   libraries,
 - host and target inputs are released before the next coordinate,
-- repeats regenerate the same logical unit from its recorded seed, and each raw
+- repeats regenerate the same logical unit from its recorded seed, and each
   receipt includes the realized input shapes.
 
 ### Paired evidence contract
@@ -399,12 +418,13 @@ of cross-machine or long-run generalization.
 Each measured phase requires at least two paired units per round. The scripts
 reject smaller configurations rather than emit a degenerate interval.
 
-### Raw receipts
+### Canonical receipts
 
-When `--output report.md` is provided, the fixed, dynamic, and
-expression-parity scripts also write `report.json` unless `--raw-output`
-selects another path. Fixed and dynamic receipts use schema v5 and the same
-single `steady` measurement phase. Each receipt includes:
+Pass `--receipt report.json` to the comparison, layout-audit, overhead, and
+warm-call-tree commands described on this page. The JSON receipt is the
+canonical artifact; Markdown is a stdout projection for reading or redirection.
+Fixed and dynamic receipts use schema v5 and the same single `steady`
+measurement phase. Each receipt includes:
 
 - environment and benchmark configuration; `environment.einf` identifies the
   imported source as a Git checkout or installed distribution,
@@ -422,13 +442,22 @@ round, unit, stream, derived seed, and input shapes used for that paired unit.
 Ratios use integer `numerator` and `denominator` fields rather than rounded
 decimals.
 
-Expression-parity receipts use schema v4. They share the source-provenance and
-path-alias checks used by the fixed and dynamic scripts, but keep their
+Expression-parity receipts use schema v4. They share the source-provenance
+contract used by the fixed and dynamic scripts, but keep their
 strategy-specific result shape.
 
-The raw receipt is written before the Markdown file. Keep it when a comparison
-may need re-analysis; Markdown alone intentionally does not contain enough
-information to reconstruct every pair.
+Receipt publication serializes the complete document before atomically
+replacing the destination. Concurrent writers are last-writer-wins, but a
+reader sees one complete receipt rather than a partially overwritten file.
+If `--receipt` points to a symbolic link, the link remains in place and
+publication atomically replaces its resolved target.
+New receipts use `0666` access permissions filtered by the process umask.
+Replacing an existing regular receipt preserves its access permission bits.
+The temporary file containing receipt data remains private during serialization.
+Atomic replacement creates a new inode, so ownership, hard-link identity, ACLs,
+and extended attributes are not preservation guarantees.
+Keep the receipt when a comparison may need re-analysis; Markdown alone does
+not contain enough information to reconstruct every pair.
 
 The dynamic reports currently stored under `artifacts/bench/` predate this
 receipt schema, and the archived fixed reports likewise retain only marginal
@@ -456,8 +485,8 @@ python -m benchmarks.compare.expression_parity \
   --repeats 6 \
   --rounds 3 \
   --parity-checks 8 \
-  --output artifacts/bench/current/expression-parity-large.md \
-  --raw-output artifacts/bench/current/raw/expression-parity-large.json
+  --receipt artifacts/bench/current/raw/expression-parity-large.json \
+  > artifacts/bench/current/expression-parity-large.md
 ```
 
 Current built-in strategies include:
@@ -492,7 +521,7 @@ repeated calls are not counted as independent inputs.
 Keep the JSON receipt when the result may need re-analysis. It records the
 schedule and estimand, per-round summaries, every call's round, batch, repeat,
 strategy, order, and latency identity, and the paired estimates. The Markdown
-report is meant for interpretation; it does not replace the raw evidence.
+report is meant for interpretation; it does not replace the receipt evidence.
 Expression receipt schema v4 also records structured environment metadata, the
 requested and resolved device, and the shared synchronized-completion contract.
 
@@ -515,14 +544,16 @@ Use `benchmarks/audit/expression_layout.py` when parity results alone do not exp
 Example:
 
 ```bash
+mkdir -p artifacts/bench/raw
+
 python -m benchmarks.audit.expression_layout \
   --scale large \
   --case einop_contract_split_dynamic \
   --seed 20260215 \
   --batches 32 \
   --top-k 3 \
-  --output artifacts/bench/2026-04-10-gap-expression-layout.md \
-  --raw-output artifacts/bench/raw/2026-04-10-gap-expression-layout.json
+  --receipt artifacts/bench/raw/2026-04-10-gap-expression-layout.json \
+  > artifacts/bench/2026-04-10-gap-expression-layout.md
 ```
 
 This audit records:
@@ -541,8 +572,8 @@ Example:
 ```bash
 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
-  --output artifacts/bench/2026-02-15-overhead-breakdown-torch.md \
-  --raw-output artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json
+  --receipt artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json \
+  > artifacts/bench/2026-02-15-overhead-breakdown-torch.md
 ```
 
 This is an internal profiler, not a library-to-library fairness benchmark.
@@ -563,8 +594,8 @@ python -m benchmarks.profile.warm_calltree \
   --loops 128 \
   --sort cumtime \
   --top 40 \
-  --output artifacts/bench/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.md \
-  --raw-output artifacts/bench/raw/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.json
+  --receipt artifacts/bench/raw/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.json \
+  > artifacts/bench/2026-04-09-warm-calltree-dynamic-large-einop-contract-split.md
 ```
 
 ## LSP Latency Smoke

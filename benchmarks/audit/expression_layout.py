@@ -2,8 +2,8 @@
 """Audit layout and tail sensitivity for one gap expression case."""
 
 import argparse
-import json
 import platform
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -20,6 +20,7 @@ from benchmarks.harness import (
 from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.types import Array, TorchTensor
 from benchmarks.shared import version_or_missing
+from benchmarks.shared.artifacts import publish_receipt
 from einf import ax, axes, einop
 
 try:
@@ -464,8 +465,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260215)
     parser.add_argument("--batches", type=int, default=32)
     parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--raw-output", type=Path, default=None)
+    parser.add_argument(
+        "--receipt",
+        type=Path,
+        default=None,
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
+    )
     args = parser.parse_args()
 
     if args.batches < 1:
@@ -483,15 +488,11 @@ def main() -> int:
         top_k=args.top_k,
     )
     markdown = _render_markdown(report)
+    if args.receipt is not None:
+        publish_receipt(args.receipt, _to_json(report))
     print(markdown)
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(markdown, encoding="utf-8")
-    if args.raw_output is not None:
-        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-        args.raw_output.write_text(
-            json.dumps(_to_json(report), indent=2), encoding="utf-8"
-        )
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
     return 0
 
 

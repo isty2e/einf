@@ -1,52 +1,5 @@
-from pathlib import Path
-
 from .backend import BackendSpec
 from .result import PairedEvidence, TimingSummary
-
-
-def _alternate_case(path: Path) -> Path | None:
-    name = path.name
-    for index, character in enumerate(name):
-        if character.isalpha():
-            replacement = (
-                character.upper() if character.islower() else character.lower()
-            )
-            return path.with_name(name[:index] + replacement + name[index + 1 :])
-    return None
-
-
-def _filesystem_is_case_insensitive(path: Path) -> bool:
-    candidate = path.expanduser().resolve(strict=False)
-    while not candidate.exists() and candidate != candidate.parent:
-        candidate = candidate.parent
-    for ancestor in (candidate, *candidate.parents):
-        alternate = _alternate_case(ancestor)
-        if alternate is None:
-            continue
-        try:
-            return alternate.exists() and alternate.samefile(ancestor)
-        except OSError:
-            return False
-    return False
-
-
-def _paths_alias(first: Path, second: Path) -> bool:
-    resolved_first = first.expanduser().resolve(strict=False)
-    resolved_second = second.expanduser().resolve(strict=False)
-    if resolved_first == resolved_second:
-        return True
-    try:
-        if (
-            resolved_first.exists()
-            and resolved_second.exists()
-            and resolved_first.samefile(resolved_second)
-        ):
-            return True
-    except OSError:
-        pass
-    return str(resolved_first).casefold() == str(
-        resolved_second
-    ).casefold() and _filesystem_is_case_insensitive(resolved_first.parent)
 
 
 def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
@@ -80,26 +33,6 @@ def synchronized_measurement_contract_payload() -> dict[str, object]:
             "summary_and_serialization",
         ],
     }
-
-
-def resolve_raw_output_path(
-    *,
-    output: Path | None,
-    raw_output: Path | None,
-) -> Path | None:
-    """Resolve an explicit or report-derived raw receipt path."""
-    if raw_output is not None:
-        if output is not None and _paths_alias(raw_output, output):
-            raise ValueError("--output and --raw-output must use different paths")
-        return raw_output
-    if output is None:
-        return None
-    derived_path = output.with_suffix(".json")
-    if _paths_alias(derived_path, output):
-        raise ValueError(
-            "--output must have a non-JSON suffix when --raw-output is omitted"
-        )
-    return derived_path
 
 
 def timing_summary_payload(summary: TimingSummary) -> dict[str, int | float]:

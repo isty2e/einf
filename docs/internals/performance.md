@@ -320,33 +320,37 @@ From the repo root, in an environment with `einf`, `einops`, `einx`,
 and `torch` installed:
 
 ```bash
+mkdir -p artifacts/bench/current/raw
+
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch --device cpu --scale medium \
   --rounds 6 --warmup 4 --repeats 5 --iterations 60 \
-  --output artifacts/bench/current/bench-torch-medium.md
+  --receipt artifacts/bench/current/raw/bench-torch-medium.json \
+  > artifacts/bench/current/bench-torch-medium.md
 
 python -m benchmarks.compare.einf_einops_einx \
   --backend torch --device cpu --scale large \
   --rounds 6 --warmup 4 --repeats 5 --iterations 60 \
-  --output artifacts/bench/current/bench-torch-large.md
+  --receipt artifacts/bench/current/raw/bench-torch-large.json \
+  > artifacts/bench/current/bench-torch-large.md
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch --device cpu --scale medium \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
-  --output artifacts/bench/current/bench-torch-medium-dynamic.md \
-  --raw-output artifacts/bench/current/raw/bench-torch-medium-dynamic.json
+  --receipt artifacts/bench/current/raw/bench-torch-medium-dynamic.json \
+  > artifacts/bench/current/bench-torch-medium-dynamic.md
 
 python -m benchmarks.compare.einf_einops_einx_dynamic \
   --backend torch --device cpu --scale large \
   --batches 32 --warmup-batches 4 --repeats 5 --rounds 3 \
-  --output artifacts/bench/current/bench-torch-large-dynamic.md \
-  --raw-output artifacts/bench/current/raw/bench-torch-large-dynamic.json
+  --receipt artifacts/bench/current/raw/bench-torch-large-dynamic.json \
+  > artifacts/bench/current/bench-torch-large-dynamic.md
 ```
 
-Running these commands now produces current-harness Markdown and raw JSON
-receipts. It does not recreate the archived 2026-04-17 environment, measurement
-contract, or missing pairing identities. Use new output paths rather than
-overwriting the historical artifacts listed above.
+These commands publish the current-harness JSON receipts and redirect each
+Markdown projection to a separate file. They do not recreate the archived
+2026-04-17 environment, measurement contract, or missing pairing identities.
+Use new paths rather than overwrite the historical artifacts listed above.
 
 See [Benchmarking](benchmarking.md) for the full methodology, other
 backends, and audit tools.

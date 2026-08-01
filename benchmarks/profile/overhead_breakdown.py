@@ -17,9 +17,9 @@ Scenarios:
 
 import argparse
 import importlib
-import json
 import platform
 import statistics
+import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -32,6 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from benchmarks.shared import version_or_missing
+from benchmarks.shared.artifacts import publish_receipt
 from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -993,7 +994,6 @@ def _to_markdown(
     *,
     result: tuple[ScenarioResult, ...],
     backend: BackendName,
-    raw_output: Path,
 ) -> str:
     lines = [
         "# Overhead Decomposition (einf)",
@@ -1018,15 +1018,12 @@ def _to_markdown(
         "- `kernel`: einsum/reducer kernel calls",
         "- `residual`: `instrumented __call__ - covered stage sum`",
         "",
-        f"Raw JSON artifact: `{raw_output}`",
-        "",
         "## Repro",
         "",
         "```bash",
         "python -m benchmarks.profile.overhead_breakdown \\",
         f"  --backend {backend} \\",
-        "  --output docs/benchmarks/2026-02-18-overhead-breakdown.md \\",
-        f"  --raw-output {raw_output}",
+        "  --receipt artifacts/bench/raw/overhead-breakdown.json",
         "```",
         "",
         "## Environment",
@@ -1075,14 +1072,10 @@ def main() -> int:
         default="numpy",
     )
     parser.add_argument(
-        "--output",
+        "--receipt",
         type=Path,
-        default=Path("docs/benchmarks/2026-02-18-overhead-breakdown.md"),
-    )
-    parser.add_argument(
-        "--raw-output",
-        type=Path,
-        default=Path("docs/benchmarks/raw/2026-02-18-overhead-breakdown.json"),
+        default=None,
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
     args = parser.parse_args()
     backend: BackendName = args.backend
@@ -1106,20 +1099,16 @@ def main() -> int:
         for offset, (scenario, mode, scale) in enumerate(scenario_specs)
     )
 
-    raw_payload = _to_json(results, backend=backend)
-    args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-    args.raw_output.write_text(json.dumps(raw_payload, indent=2) + "\n")
-
+    receipt_payload = _to_json(results, backend=backend)
     markdown = _to_markdown(
         result=results,
         backend=backend,
-        raw_output=args.raw_output,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(markdown + "\n")
+    if args.receipt is not None:
+        publish_receipt(args.receipt, receipt_payload)
     print(markdown)
-    print(f"\nWrote raw artifact: {args.raw_output}")
-    print(f"Wrote report: {args.output}")
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
     return 0
 
 
