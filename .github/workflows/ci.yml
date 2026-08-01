@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check VCS checkout completeness
+        run: |
+          test "$(git rev-parse --is-shallow-repository)" = "false"
+          git describe --tags --abbrev=0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -29,6 +35,8 @@ jobs:
         run: mkdocs build --strict
       - name: Build
         run: python -m build
+      - name: Check wheel VCS version
+        run: python tests/package/verify_wheel_version.py dist src/einf/_version.py
       - name: Check shipped entry points
         run: python tests/package/verify_wheel_entrypoints.py dist
       - name: Check base install runtime
