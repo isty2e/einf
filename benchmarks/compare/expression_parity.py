@@ -2,9 +2,9 @@
 """Benchmark gap-case expression strategies on dynamic torch batches."""
 
 import argparse
-import json
 import math
 import platform
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,11 +27,11 @@ from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.generator import derive_coordinate_seed
 from benchmarks.harness.receipt import (
     execution_target_payload,
-    resolve_raw_output_path,
     synchronized_measurement_contract_payload,
 )
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
 from benchmarks.shared import as_single_array, einf_source_metadata, version_or_missing
+from benchmarks.shared.artifacts import publish_receipt
 from einf import ax, axes, einop
 
 try:
@@ -962,16 +962,10 @@ def main() -> int:
         help="Number of first batches used for per-strategy parity validation.",
     )
     parser.add_argument(
-        "--output",
+        "--receipt",
         type=Path,
         default=None,
-        help="Optional markdown output path.",
-    )
-    parser.add_argument(
-        "--raw-output",
-        type=Path,
-        default=None,
-        help="Optional raw JSON path; defaults to --output with a .json suffix.",
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
     args = parser.parse_args()
 
@@ -993,11 +987,6 @@ def main() -> int:
         raise ValueError(f"rounds must be >= 1, got {args.rounds}")
     if args.parity_checks < 0:
         raise ValueError(f"parity-checks must be >= 0, got {args.parity_checks}")
-    raw_output_path = resolve_raw_output_path(
-        output=args.output,
-        raw_output=args.raw_output,
-    )
-
     backend = BackendSpec(name="torch", requested_device=args.device)
     profiler = Profiler(backend=backend)
     sizes = dynamic_sizes_for_scale(args.scale)
@@ -1048,11 +1037,6 @@ def main() -> int:
             f"repeats: `{args.repeats}`",
             f"rounds: `{args.rounds}`",
             f"measured batches per repeat: `{measured_batches_per_repeat}`",
-            *(
-                [f"raw JSON artifact: `{raw_output_path}`"]
-                if raw_output_path is not None
-                else []
-            ),
             "table units: `ms`",
         ],
         methodology=[
@@ -1108,16 +1092,11 @@ def main() -> int:
     )
 
     markdown = _render_markdown(report)
+    if args.receipt is not None:
+        publish_receipt(args.receipt, _to_json(report, backend=backend))
     print(markdown)
-    if raw_output_path is not None:
-        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_output_path.write_text(
-            json.dumps(_to_json(report, backend=backend), indent=2),
-            encoding="utf-8",
-        )
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(markdown, encoding="utf-8")
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
     return 0
 
 

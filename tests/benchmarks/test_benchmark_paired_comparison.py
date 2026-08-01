@@ -1,18 +1,16 @@
 import json
 import sys
-from pathlib import Path
 
 import pytest
 
-import benchmarks.harness.receipt as receipt_module
 from benchmarks.compare.einf_einops_einx import (
-    _raw_payload as _fixed_raw_payload,
+    _receipt_payload as _fixed_receipt_payload,
 )
 from benchmarks.compare.einf_einops_einx import (
     main as fixed_main,
 )
 from benchmarks.compare.einf_einops_einx_dynamic import (
-    _raw_payload,
+    _receipt_payload,
 )
 from benchmarks.harness import (
     AvailableRun,
@@ -32,7 +30,6 @@ from benchmarks.harness import (
     TimingSummary,
 )
 from benchmarks.harness.comparison import compare_library_timings
-from benchmarks.harness.receipt import resolve_raw_output_path
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import LibraryName
 
@@ -191,7 +188,7 @@ def test_paired_comparison_rejects_duplicate_members() -> None:
         )
 
 
-def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> None:
+def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
     sizes, workload = _workload()
     workload_comparison = workload.compare_to(
         workload,
@@ -261,7 +258,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
         parity_checks=0,
     )
 
-    payload = _raw_payload(
+    payload = _receipt_payload(
         config=config,
         sizes=sizes,
         case_results=[result],
@@ -354,7 +351,7 @@ def test_dynamic_raw_payload_preserves_observation_and_analysis_identity() -> No
     assert measurement["comparisons"][0]["paired_unit_count"] == 4
 
 
-def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
+def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
     sizes, _ = _workload()
     observation = LibraryTimingObservation(
         round_index=0,
@@ -401,7 +398,7 @@ def test_fixed_raw_payload_uses_the_same_paired_evidence_shape() -> None:
         iterations=3,
     )
 
-    payload = _fixed_raw_payload(
+    payload = _fixed_receipt_payload(
         config=config,
         sizes=sizes,
         case_results=[result],
@@ -430,88 +427,3 @@ def test_fixed_main_rejects_degenerate_paired_units(
 
     with pytest.raises(ValueError, match="repeats must be >= 2"):
         fixed_main()
-
-
-@pytest.mark.parametrize(
-    ("output", "raw_output", "expected"),
-    (
-        (Path("report.md"), None, Path("report.json")),
-        (Path("report.md"), Path("raw/data.json"), Path("raw/data.json")),
-        (None, Path("raw/data.json"), Path("raw/data.json")),
-        (None, None, None),
-    ),
-)
-def test_resolve_raw_output_path(
-    output: Path | None,
-    raw_output: Path | None,
-    expected: Path | None,
-) -> None:
-    assert resolve_raw_output_path(output=output, raw_output=raw_output) == expected
-
-
-def test_resolve_raw_output_path_rejects_collision() -> None:
-    with pytest.raises(ValueError, match="must use different paths"):
-        resolve_raw_output_path(
-            output=Path("report.md"),
-            raw_output=Path("report.md"),
-        )
-
-
-def test_resolve_raw_output_path_rejects_implicit_json_collision() -> None:
-    with pytest.raises(ValueError, match="non-JSON suffix"):
-        resolve_raw_output_path(
-            output=Path("report.json"),
-            raw_output=None,
-        )
-
-
-def test_resolve_raw_output_path_rejects_case_alias_on_insensitive_filesystem(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        receipt_module,
-        "_filesystem_is_case_insensitive",
-        lambda path: True,
-    )
-
-    with pytest.raises(ValueError, match="non-JSON suffix"):
-        resolve_raw_output_path(
-            output=tmp_path / "report.JSON",
-            raw_output=None,
-        )
-
-
-def test_resolve_raw_output_path_allows_case_distinction_on_sensitive_filesystem(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        receipt_module,
-        "_filesystem_is_case_insensitive",
-        lambda path: False,
-    )
-    output = tmp_path / "report.JSON"
-
-    assert (
-        resolve_raw_output_path(
-            output=output,
-            raw_output=None,
-        )
-        == tmp_path / "report.json"
-    )
-
-
-def test_resolve_raw_output_path_rejects_existing_hard_link_alias(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "report.md"
-    output.write_text("", encoding="utf-8")
-    raw_output = tmp_path / "raw.json"
-    raw_output.hardlink_to(output)
-
-    with pytest.raises(ValueError, match="must use different paths"):
-        resolve_raw_output_path(
-            output=output,
-            raw_output=raw_output,
-        )

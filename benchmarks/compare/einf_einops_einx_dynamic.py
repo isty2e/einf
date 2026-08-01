@@ -2,8 +2,8 @@
 """Compare einf/einops/einx on dynamic-shape batches."""
 
 import argparse
-import json
 import platform
+import sys
 from collections.abc import Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -32,7 +32,6 @@ from benchmarks.harness import (
 from benchmarks.harness.receipt import (
     execution_target_payload,
     paired_evidence_payload,
-    resolve_raw_output_path,
     synchronized_measurement_contract_payload,
     timing_summary_payload,
 )
@@ -42,6 +41,7 @@ from benchmarks.shared import (
     einf_source_metadata,
     version_or_missing,
 )
+from benchmarks.shared.artifacts import publish_receipt
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -463,7 +463,7 @@ def _workload_payload(
     }
 
 
-def _raw_payload(
+def _receipt_payload(
     *,
     config: DynamicTaskConfig,
     sizes: BenchSizes,
@@ -625,16 +625,10 @@ def main() -> int:
         help="Number of first batches used for parity validation.",
     )
     parser.add_argument(
-        "--output",
+        "--receipt",
         type=Path,
         default=None,
-        help="Optional markdown output path.",
-    )
-    parser.add_argument(
-        "--raw-output",
-        type=Path,
-        default=None,
-        help="Optional raw JSON path; defaults to --output with a .json suffix.",
+        help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
     args = parser.parse_args()
 
@@ -657,10 +651,6 @@ def main() -> int:
 
     round_order_seed = (
         args.seed if args.round_order_seed is None else args.round_order_seed
-    )
-    raw_output_path = resolve_raw_output_path(
-        output=args.output,
-        raw_output=args.raw_output,
     )
     backend_name: BackendName = args.backend
     backend = BackendSpec(name=backend_name, requested_device=args.device)
@@ -734,11 +724,6 @@ def main() -> int:
                 f"`{paired_batch_units_per_library}`"
             ),
             "table units: `ms`",
-            *(
-                [f"raw JSON artifact: `{raw_output_path}`"]
-                if raw_output_path is not None
-                else []
-            ),
         ],
         methodology=[
             "The timer starts after target synchronization and stops when the call's submitted work has completed on that target.",
@@ -763,30 +748,20 @@ def main() -> int:
         result,
         workload_comparisons=workload_comparisons,
     )
-    print(report)
-
-    if raw_output_path is not None:
-        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_output_path.write_text(
-            json.dumps(
-                _raw_payload(
-                    config=config,
-                    sizes=sizes,
-                    case_results=case_results,
-                    workload_comparisons=workload_comparisons,
-                    backend=backend,
-                ),
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+    if args.receipt is not None:
+        publish_receipt(
+            args.receipt,
+            _receipt_payload(
+                config=config,
+                sizes=sizes,
+                case_results=case_results,
+                workload_comparisons=workload_comparisons,
+                backend=backend,
+            ),
         )
-        print(f"\nWrote raw observations: {raw_output_path}")
-
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(report + "\n", encoding="utf-8")
-        print(f"\nWrote report: {args.output}")
+    print(report)
+    if args.receipt is not None:
+        print(f"Wrote receipt: {args.receipt}", file=sys.stderr)
 
     return 0
 

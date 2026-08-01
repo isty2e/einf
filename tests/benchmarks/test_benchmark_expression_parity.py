@@ -603,10 +603,6 @@ def test_expression_result_rejects_missing_available_run() -> None:
             "at least two measured batches",
         ),
         (["--parity-checks", "-1"], "parity-checks must be >= 0"),
-        (
-            ["--output", "report.txt", "--raw-output", "report.txt"],
-            "must use different paths",
-        ),
     ),
 )
 def test_main_rejects_invalid_evidence_configuration(
@@ -620,29 +616,6 @@ def test_main_rejects_invalid_evidence_configuration(
     )
 
     with pytest.raises(ValueError, match=message):
-        main()
-
-
-def test_main_rejects_aliased_receipt_and_report_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = tmp_path / "report.md"
-    output.write_text("existing report", encoding="utf-8")
-    raw_output = tmp_path / "receipt.json"
-    raw_output.hardlink_to(output)
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "expression_parity.py",
-            "--output",
-            str(output),
-            "--raw-output",
-            str(raw_output),
-        ],
-    )
-
-    with pytest.raises(ValueError, match="must use different paths"):
         main()
 
 
