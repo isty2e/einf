@@ -1,11 +1,12 @@
 import statistics
 import time
+from collections.abc import Callable
 
 import numpy as np
 
 from .backend import BackendSpec
 from .result import TimingSummary
-from .types import Array, Runner
+from .types import Array, Output, Runner
 
 
 class Profiler:
@@ -37,8 +38,9 @@ class Profiler:
         *,
         runner: Runner,
         batch: tuple[Array, ...],
+        validate_output: Callable[[Output], None],
     ) -> float:
-        """Measure one call through completion on the configured target."""
+        """Measure one call and validate its exact output after the timer stops."""
         self.backend.synchronize()
         started = time.perf_counter()
         try:
@@ -49,4 +51,5 @@ class Profiler:
         self.backend.synchronize()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.backend.validate_output_target(output)
+        validate_output(output)
         return elapsed_ms

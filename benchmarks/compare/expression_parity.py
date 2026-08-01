@@ -594,6 +594,7 @@ def _run_dynamic_case(
         raise RuntimeError(
             "expression benchmark round orders must be full strategy permutations"
         )
+    spec_by_name = {spec.name: spec for spec in available_specs}
     runners = {spec.name: spec.make_runner() for spec in available_specs}
     observations: list[ExpressionObservation] = []
     realized_units: list[DynamicInputUnit] = []
@@ -651,7 +652,30 @@ def _run_dynamic_case(
                     round_order,
                     offset=(repeat_index * measured_batch_count + measured_batch_index),
                 )
+                numpy_batch = tuple(
+                    array.copy() for array in _numpy_batch(backend=backend, batch=batch)
+                )
                 for order_position, name in enumerate(batch_order):
+                    spec = spec_by_name[name]
+                    expected = tuple(
+                        array.copy()
+                        for array in backend.to_numpy_output(
+                            spec.reference(numpy_batch)
+                        )
+                    )
+
+                    def validate_output(
+                        output: Output,
+                        runner_spec: ExpressionRunnerSpec = spec,
+                        expected_output: tuple[NumpyArray, ...] = expected,
+                    ) -> None:
+                        _validate_output(
+                            backend=backend,
+                            runner_spec=runner_spec,
+                            expected=expected_output,
+                            output=output,
+                        )
+
                     observations.append(
                         ExpressionObservation(
                             round_index=round_index,
@@ -662,47 +686,12 @@ def _run_dynamic_case(
                             latency_ms=profiler.measure_call(
                                 runner=runners[name],
                                 batch=batch,
+                                validate_output=validate_output,
                             ),
                         )
                     )
-                del batch
-
-    spec_by_name = {spec.name: spec for spec in available_specs}
-    for unit in realized_units:
-        batch = make_batch(
-            round_index=unit.round_index,
-            batch_index=unit.stream_index,
-        )
-        replayed_shapes = tuple(
-            tuple(int(dimension) for dimension in array.shape) for array in batch
-        )
-        if replayed_shapes != unit.input_shapes:
-            raise RuntimeError(
-                "expression validation replay produced different input shapes"
-            )
-        numpy_batch = tuple(
-            array.copy() for array in _numpy_batch(backend=backend, batch=batch)
-        )
-        validation_order = _rotate_order(
-            round_orders[unit.round_index],
-            offset=unit.unit_index,
-        )
-        for name in validation_order:
-            spec = spec_by_name[name]
-            expected = tuple(
-                array.copy()
-                for array in backend.to_numpy_output(spec.reference(numpy_batch))
-            )
-            output = runners[name](batch)
-            backend.synchronize()
-            _validate_output(
-                backend=backend,
-                runner_spec=spec,
-                expected=expected,
-                output=output,
-            )
-            del expected, output
-        del batch, numpy_batch
+                    del expected, validate_output
+                del batch, numpy_batch
     del runners
 
     observation_tuple = tuple(observations)
@@ -753,6 +742,7 @@ def _to_json(
     report: ExpressionParityReport,
     *,
     backend: BackendSpec,
+    config: DynamicTaskConfig,
 ) -> dict[str, object]:
     return {
         "schema_version": 5,
@@ -829,12 +819,22 @@ def _to_json(
                     case_result.realized_units
                 ),
                 "validation": validation_coverage_payload(
+                    coordinate_source="realized_input_units",
                     coordinate_count=len(case_result.realized_units),
-                    members=tuple(
-                        spec.name
+                    expected_executions_per_member_per_coordinate=config.repeats,
+                    execution_identities_by_member={
+                        spec.name: tuple(
+                            (
+                                observation.round_index,
+                                observation.unit_index,
+                                observation.repeat_index,
+                            )
+                            for observation in case_result.observations
+                            if observation.strategy == spec.name
+                        )
                         for spec in case_result.case.runner_specs
                         if spec.available
-                    ),
+                    },
                 ),
                 "measured_round_start_orders": [
                     list(order) for order in case_result.round_orders
@@ -1124,8 +1124,8 @@ def main() -> int:
                 "transfer, and output validation stay outside the interval."
             ),
             (
-                "Every measured input is replayed in a separate validation pass "
-                "after timing. A mismatch aborts report generation."
+                "The output returned by every timed call is compared with its "
+                "reference after the timer stops. A mismatch aborts report generation."
             ),
             (
                 "Every timed call retains its round, measured batch, repeat, "
@@ -1161,7 +1161,10 @@ def main() -> int:
 
     markdown = _render_markdown(report)
     if args.receipt is not None:
-        publish_receipt(args.receipt, _to_json(report, backend=backend))
+        publish_receipt(
+            args.receipt,
+            _to_json(report, backend=backend, config=config),
+        )
     print(markdown)
     if args.receipt is not None:
         print(f"Wrote receipt: {args.receipt}", file=sys.stderr)

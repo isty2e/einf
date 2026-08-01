@@ -30,6 +30,7 @@ from benchmarks.harness.receipt import (
     paired_evidence_payload,
     synchronized_measurement_contract_payload,
     timing_summary_payload,
+    validation_coverage_payload,
 )
 from benchmarks.shared import (
     as_single_array,
@@ -409,7 +410,7 @@ def _receipt_payload(
     backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "benchmark": "einf-vs-einops-einx-fixed",
         "environment": {
             "python": platform.python_version(),
@@ -465,6 +466,31 @@ def _receipt_payload(
                 "round_orders": [
                     list(round_order) for round_order in case_result.round_orders
                 ],
+                "validation": validation_coverage_payload(
+                    coordinate_source="measurement_observations",
+                    coordinate_count=(
+                        config.rounds * config.repeats
+                        if case_result.evidence.observations
+                        else 0
+                    ),
+                    expected_executions_per_member_per_coordinate=config.iterations,
+                    execution_identities_by_member={
+                        library: tuple(
+                            (
+                                observation.round_index,
+                                observation.unit_index,
+                                observation.repeat_index,
+                            )
+                            for observation in case_result.evidence.observations
+                            if observation.library == library
+                        )
+                        for library in ("einf", "einops", "einx")
+                        if any(
+                            observation.library == library
+                            for observation in case_result.evidence.observations
+                        )
+                    },
+                ),
                 "measurements": [
                     {
                         "phase": "steady",
@@ -586,7 +612,8 @@ def main() -> int:
         methodology=[
             "The timer starts after target synchronization and stops when the call's submitted work has completed on that target.",
             "For each case, balanced round orders rotate libraries through first/middle/last positions deterministically.",
-            "Runner construction, parity validation, warmup, input preparation, and device transfer stay outside the timed interval.",
+            "Runner construction, warmup, input preparation, device transfer, and numerical output validation stay outside the timed interval.",
+            "The output returned by every timed call is validated immediately after its timer stops.",
             "At each paired coordinate, every library receives the same prepared tuple and tensor objects.",
             "Every timed call remains an individual observation.",
             "Within each round, per-call library order rotates from the reported base order to spread position bias.",

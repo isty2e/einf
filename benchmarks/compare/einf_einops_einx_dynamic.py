@@ -526,15 +526,25 @@ def _receipt_payload(
                     case_result.realized_units
                 ),
                 "validation": validation_coverage_payload(
+                    coordinate_source="realized_input_units",
                     coordinate_count=len(case_result.realized_units),
-                    members=tuple(
-                        library
+                    expected_executions_per_member_per_coordinate=config.repeats,
+                    execution_identities_by_member={
+                        library: tuple(
+                            (
+                                observation.round_index,
+                                observation.unit_index,
+                                observation.repeat_index,
+                            )
+                            for observation in case_result.evidence.observations
+                            if observation.library == library
+                        )
                         for library in ("einf", "einops", "einx")
                         if any(
                             observation.library == library
                             for observation in case_result.evidence.observations
                         )
-                    ),
+                    },
                 ),
                 "runs": {
                     library: (
@@ -737,7 +747,7 @@ def main() -> int:
         case_results=case_results,
         notes=[
             "Measurement runners are constructed once per case and reused across batches.",
-            "Every measured input is replayed in a separate validation pass after timing.",
+            "Every timed output is checked against its reference after the timer stops.",
             "Prepared target batches are released before the next coordinate is materialized.",
         ],
     )
