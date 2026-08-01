@@ -2,8 +2,10 @@
 """Compare repeated overhead raw JSON pairs and fail on repeated regressions."""
 
 import argparse
+from itertools import combinations
 from pathlib import Path
 
+from benchmarks.guardrail.path_identity import existing_report_paths_alias
 from benchmarks.guardrail.policy import (
     MetricName,
     compare_overhead_report_trials,
@@ -59,6 +61,13 @@ def main() -> int:
 
     if args.max_regression_ratio < 0.0:
         raise ValueError("max-regression-ratio must be >= 0.0")
+
+    report_paths = tuple(path for pair in args.pair for path in pair)
+    if any(
+        existing_report_paths_alias(first, second)
+        for first, second in combinations(report_paths, 2)
+    ):
+        raise ValueError("trial reports must use distinct files")
 
     report_pairs = tuple(
         (load_overhead_report(baseline), load_overhead_report(candidate))
