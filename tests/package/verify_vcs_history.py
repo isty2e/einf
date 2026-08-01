@@ -1,4 +1,3 @@
-import argparse
 import re
 import subprocess
 
@@ -27,11 +26,6 @@ def _validate_history(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Check VCS history required for package artifact versioning."
-    )
-    parser.parse_args()
-
     shallow_state = subprocess.run(
         ["git", "rev-parse", "--is-shallow-repository"],
         check=True,

@@ -1,10 +1,16 @@
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 import tests.package.verify_vcs_history as verifier
+
+
+def _run_git(repository: Path, *arguments: str) -> None:
+    subprocess.run(
+        ["git", "-C", repository, *arguments],
+        check=True,
+    )
 
 
 def test_vcs_history_verifier_accepts_reachable_release_tags() -> None:
@@ -75,35 +81,22 @@ def test_vcs_history_verifier_rejects_repository_with_only_nonrelease_tag(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    repository = tmp_path
-    subprocess.run(["git", "init", "--quiet", repository], check=True)
-    subprocess.run(
-        ["git", "-C", repository, "config", "user.name", "probe"],
-        check=True,
+    _run_git(tmp_path, "init", "--quiet")
+    (tmp_path / "file.txt").write_text("probe\n", encoding="utf-8")
+    _run_git(tmp_path, "add", "file.txt")
+    _run_git(
+        tmp_path,
+        "-c",
+        "user.name=probe",
+        "-c",
+        "user.email=probe@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "initial",
     )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            repository,
-            "config",
-            "user.email",
-            "probe@example.invalid",
-        ],
-        check=True,
-    )
-    (repository / "file.txt").write_text("probe\n", encoding="utf-8")
-    subprocess.run(["git", "-C", repository, "add", "file.txt"], check=True)
-    subprocess.run(
-        ["git", "-C", repository, "commit", "--quiet", "-m", "initial"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", repository, "tag", "ci-marker"],
-        check=True,
-    )
-    monkeypatch.chdir(repository)
-    monkeypatch.setattr(sys, "argv", ["verify-vcs-history"])
+    _run_git(tmp_path, "tag", "ci-marker")
+    monkeypatch.chdir(tmp_path)
 
     with pytest.raises(RuntimeError, match="no reachable vX.Y.Z release tag"):
         verifier.main()
