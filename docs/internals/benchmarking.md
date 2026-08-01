@@ -449,6 +449,8 @@ strategy-specific result shape.
 Receipt publication serializes the complete document before atomically
 replacing the destination. Concurrent writers are last-writer-wins, but a
 reader sees one complete receipt rather than a partially overwritten file.
+If `--receipt` points to a symbolic link, the link remains in place and
+publication atomically replaces its resolved target.
 New receipts use `0666` access permissions filtered by the process umask.
 Replacing an existing regular receipt preserves its access permission bits.
 Temporary files remain private during serialization. Atomic replacement creates

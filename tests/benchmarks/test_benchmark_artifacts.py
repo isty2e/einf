@@ -37,6 +37,63 @@ def test_publish_receipt_replaces_existing_artifact(tmp_path: Path) -> None:
     assert list(receipt.parent.glob(".einf-receipt-*.tmp")) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlink semantics")
+def test_publish_receipt_updates_existing_symlink_target(tmp_path: Path) -> None:
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = target_dir / "receipt.json"
+    target.write_text('{"run": "old"}\n', encoding="utf-8")
+    target.chmod(0o640)
+    receipt = tmp_path / "current.json"
+    receipt.symlink_to(target)
+
+    publish_receipt(receipt, {"run": "new"})
+
+    assert receipt.is_symlink()
+    assert receipt.resolve() == target
+    assert json.loads(target.read_text(encoding="utf-8")) == {"run": "new"}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert list(target_dir.glob(".einf-receipt-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlink semantics")
+def test_publish_receipt_creates_dangling_symlink_target(tmp_path: Path) -> None:
+    target = tmp_path / "receipt.json"
+    receipt = tmp_path / "current.json"
+    receipt.symlink_to(target.name)
+
+    publish_receipt(receipt, {"run": "new"})
+
+    assert receipt.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8")) == {"run": "new"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX symlink semantics")
+def test_failed_symlink_publication_preserves_link_and_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "receipt.json"
+    original = '{"run": "old"}\n'
+    target.write_text(original, encoding="utf-8")
+    receipt = tmp_path / "current.json"
+    receipt.symlink_to(target.name)
+
+    def fail_serialization(payload: object, stream: TextIO, *, indent: int) -> None:
+        _ = payload, indent
+        stream.write('{"run":')
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr(artifact_module.json, "dump", fail_serialization)
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        publish_receipt(receipt, {"run": "new"})
+
+    assert receipt.is_symlink()
+    assert target.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob(".einf-receipt-*.tmp")) == []
+
+
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
 def test_publish_receipt_preserves_existing_file_mode(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"

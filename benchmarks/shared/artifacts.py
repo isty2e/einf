@@ -46,11 +46,13 @@ def publish_receipt(path: Path, payload: Mapping[str, object]) -> None:
     """Atomically publish JSON while preserving ordinary file permissions.
 
     New receipts use ``0o666`` filtered by the process umask. Replacing an
-    existing regular file preserves its access permission bits. Other inode
-    metadata is not part of this boundary's preservation contract.
+    existing regular file preserves its access permission bits. Existing
+    symlinks remain in place while their resolved targets are replaced. Other
+    inode metadata is not part of this boundary's preservation contract.
     """
-    destination = path.expanduser()
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    requested_destination = path.expanduser()
+    requested_destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = requested_destination.resolve(strict=False)
     descriptor, temporary_path, creation_mode = _open_temporary_receipt(
         destination.parent
     )
