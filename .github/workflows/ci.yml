@@ -17,9 +17,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check VCS checkout completeness
-        run: |
-          test "$(git rev-parse --is-shallow-repository)" = "false"
-          git describe --tags --abbrev=0
+        run: python tests/package/verify_vcs_history.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
