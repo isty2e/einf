@@ -28,4 +28,5 @@ Array: TypeAlias = NumpyArray | TorchTensor
 Output: TypeAlias = Array | tuple[Array, ...]
 NumpyOutput: TypeAlias = NumpyArray | tuple[NumpyArray, ...]
 Runner: TypeAlias = Callable[[tuple[Array, ...]], Output]
+# References receive private snapshots; they must not mutate them and must be deterministic.
 Reference: TypeAlias = Callable[[tuple[NumpyArray, ...]], NumpyOutput]

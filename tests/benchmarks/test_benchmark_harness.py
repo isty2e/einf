@@ -51,6 +51,24 @@ def _summary(*, median_ms: float) -> TimingSummary:
 _UNIT_SIZES = BenchSizes(b=1, n=1, d=1, h=1, w=1, r=1, j=1)
 
 
+def _dynamic_config(
+    *,
+    batches: int = 2,
+    warmup_batches: int = 0,
+    repeats: int = 1,
+    rounds: int = 1,
+) -> DynamicTaskConfig:
+    return DynamicTaskConfig(
+        scale="medium",
+        seed=7,
+        batches=batches,
+        warmup_batches=warmup_batches,
+        repeats=repeats,
+        rounds=rounds,
+        round_order_seed=1234,
+    )
+
+
 def _vector_workload() -> DynamicShapeWorkload:
     return DynamicShapeWorkload(
         sampled_dimensions=(),
@@ -114,7 +132,7 @@ def _timing_case(*, events: list[str]) -> BenchmarkCase:
     )
 
 
-def test_fixed_runner_constructs_and_validates_before_timing(
+def test_fixed_runner_validates_timed_output_after_timing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -147,8 +165,6 @@ def test_fixed_runner_constructs_and_validates_before_timing(
 
     assert events == [
         "factory",
-        "call",
-        "factory",
         "clock_start",
         "call",
         "clock_stop",
@@ -156,6 +172,98 @@ def test_fixed_runner_constructs_and_validates_before_timing(
     assert [item.latency_ms for item in result.evidence.observations] == [
         pytest.approx(2.0)
     ]
+
+
+def test_fixed_runner_rejects_wrong_timed_output_after_correct_warmup() -> None:
+    call_count = 0
+
+    def make_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                return np.zeros_like(inputs[0])
+            return inputs[0]
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="timed_wrong_result",
+        description="Returns an incorrect result only for the timed call.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=make_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _single_library_runner(backend=backend).run_fixed_case(
+            case_spec=FixedCaseSpec(
+                case=case,
+                inputs=(np.asarray([1.0], dtype=np.float32),),
+            ),
+            config=FixedTaskConfig(
+                scale="small",
+                seed=1,
+                rounds=1,
+                warmup=1,
+                repeats=1,
+                iterations=1,
+            ),
+            order_seed=1,
+        )
+
+
+def test_fixed_runner_isolates_reference_from_measured_inputs() -> None:
+    measured_inputs: list[np.ndarray] = []
+
+    def reference(inputs: tuple[np.ndarray, ...]) -> np.ndarray:
+        array = inputs[0]
+        expected = array.copy()
+        array.resize((3,), refcheck=False)
+        array[:] = (10.0, 20.0, 30.0)
+        return expected
+
+    def make_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            array = inputs[0]
+            assert isinstance(array, np.ndarray)
+            measured_inputs.append(array.copy())
+            return array
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="mutating_fixed_reference",
+        description="Reference mutation must not change the measured input.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=reference,
+        make_einf_runner=make_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    inputs = (np.asarray([1.0, 2.0], dtype=np.float32),)
+
+    _single_library_runner(backend=BackendSpec(name="numpy")).run_fixed_case(
+        case_spec=FixedCaseSpec(case=case, inputs=inputs),
+        config=FixedTaskConfig(
+            scale="small",
+            seed=1,
+            rounds=1,
+            warmup=0,
+            repeats=1,
+            iterations=1,
+        ),
+        order_seed=1,
+    )
+
+    np.testing.assert_array_equal(inputs[0], np.asarray([1.0, 2.0]))
+    assert [array.shape for array in measured_inputs] == [(2,)]
+    np.testing.assert_array_equal(measured_inputs[0], np.asarray([1.0, 2.0]))
 
 
 def test_dynamic_runner_warms_before_timing(
@@ -184,7 +292,6 @@ def test_dynamic_runner_warms_before_timing(
             repeats=1,
             rounds=1,
             round_order_seed=1,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -195,6 +302,273 @@ def test_dynamic_runner_warms_before_timing(
         "clock_start",
         "call",
         "clock_stop",
+    ]
+
+
+def test_dynamic_runner_validates_every_measured_coordinate() -> None:
+    factory_count = 0
+
+    def make_stateful_runner() -> Callable[[tuple[Array, ...]], Output]:
+        nonlocal factory_count
+        factory_count += 1
+        call_count = 0
+
+        def run(inputs: tuple[Array, ...]) -> Output:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return inputs[0]
+            return np.zeros_like(inputs[0])
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="late_wrong_result",
+        description="Returns an incorrect result after the first coordinate.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=make_stateful_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=case,
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(),
+            case_index=0,
+        )
+
+    assert factory_count == 1
+
+
+def test_dynamic_runner_rejects_shape_first_timed_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape_by_seed: dict[int, int] = {}
+
+    def generate_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        _ = self, case_spec
+        size = shape_by_seed.setdefault(seed, len(shape_by_seed) + 1)
+        return (np.arange(1, size + 1, dtype=np.float32),)
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        generate_batch,
+    )
+    seen_shapes: set[tuple[int, ...]] = set()
+
+    def make_shape_cached_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            shape = tuple(int(dimension) for dimension in inputs[0].shape)
+            if shape not in seen_shapes:
+                seen_shapes.add(shape)
+                return np.zeros_like(inputs[0])
+            return inputs[0]
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="shape_first_wrong_result",
+        description="Returns an incorrect result on the first call for each shape.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=make_shape_cached_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=case,
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(),
+            case_index=0,
+        )
+
+
+def test_dynamic_runner_rejects_repeat_specific_timed_output() -> None:
+    call_count = 0
+
+    def make_repeat_sensitive_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                return np.zeros_like(inputs[0])
+            return inputs[0]
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="repeat_specific_wrong_result",
+        description="Returns an incorrect result in one measured repeat.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=lambda inputs: inputs[0],
+        make_einf_runner=make_repeat_sensitive_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(ValueError, match="value mismatch"):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=case,
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(repeats=2),
+            case_index=0,
+        )
+
+
+def test_dynamic_runner_rejects_input_shape_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation_count = 0
+
+    def generate_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        nonlocal generation_count
+        _ = self, case_spec, seed
+        generation_count += 1
+        size = 1 if generation_count <= 2 else 2
+        return (np.ones((size,), dtype=np.float32),)
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        generate_batch,
+    )
+    backend = BackendSpec(name="numpy")
+
+    with pytest.raises(RuntimeError, match="repeated input produced different shapes"):
+        _single_library_runner(backend=backend).run_dynamic_case(
+            case_spec=DynamicCaseSpec(
+                case=_timing_case(events=[]),
+                sizes=_UNIT_SIZES,
+                workload=_vector_workload(),
+            ),
+            config=_dynamic_config(repeats=2),
+            case_index=0,
+        )
+
+
+def test_dynamic_runner_isolates_reference_from_measured_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measured_inputs: list[np.ndarray] = []
+
+    def make_dynamic_numpy_batch(
+        self: BenchmarkRunner,
+        *,
+        case_spec: DynamicCaseSpec,
+        seed: int,
+    ) -> tuple[np.ndarray, ...]:
+        _ = self, case_spec, seed
+        return (np.asarray([1.0, 2.0], dtype=np.float32),)
+
+    monkeypatch.setattr(
+        BenchmarkRunner,
+        "_make_dynamic_numpy_batch",
+        make_dynamic_numpy_batch,
+    )
+
+    def reference(inputs: tuple[np.ndarray, ...]) -> np.ndarray:
+        array = inputs[0]
+        expected = array.copy()
+        array.resize((3,), refcheck=False)
+        array[:] = (10.0, 20.0, 30.0)
+        return expected
+
+    def make_runner() -> Callable[[tuple[Array, ...]], Output]:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            array = inputs[0]
+            assert isinstance(array, np.ndarray)
+            measured_inputs.append(array.copy())
+            return array
+
+        return run
+
+    unavailable_factory = lambda: lambda inputs: inputs[0]
+    case = BenchmarkCase(
+        name="mutating_dynamic_reference",
+        description="Reference mutation must not change the measured input.",
+        calls=CaseCalls(einf="a()", einops="b()", einx="c()"),
+        reference=reference,
+        make_einf_runner=make_runner,
+        make_einops_runner=unavailable_factory,
+        make_einx_runner=unavailable_factory,
+    )
+
+    result = _single_library_runner(backend=BackendSpec(name="numpy")).run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=case,
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=_dynamic_config(),
+        case_index=0,
+    )
+
+    assert [unit.input_shapes for unit in result.realized_units] == [
+        ((2,),),
+        ((2,),),
+    ]
+    assert [array.shape for array in measured_inputs] == [(2,), (2,)]
+    for array in measured_inputs:
+        np.testing.assert_array_equal(array, np.asarray([1.0, 2.0]))
+
+
+def test_dynamic_runner_validates_every_measured_execution() -> None:
+    events: list[str] = []
+    backend = BackendSpec(name="numpy")
+
+    result = _single_library_runner(backend=backend).run_dynamic_case(
+        case_spec=DynamicCaseSpec(
+            case=_timing_case(events=events),
+            sizes=_UNIT_SIZES,
+            workload=_vector_workload(),
+        ),
+        config=_dynamic_config(
+            batches=3,
+            warmup_batches=1,
+            repeats=3,
+            rounds=2,
+        ),
+        case_index=0,
+    )
+
+    assert events == ["factory", *("call" for _ in range(14))]
+    assert len(result.evidence.observations) == 12
+    assert [(unit.round_index, unit.unit_index) for unit in result.realized_units] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
     ]
 
 
@@ -219,9 +593,16 @@ def test_profiler_measure_call_synchronizes_around_timed_call(
         events.append("call")
         return batch[0]
 
+    input_array = np.asarray([1.0], dtype=np.float32)
+
+    def validate_output(output: Output) -> None:
+        assert output is input_array
+        events.append("validate")
+
     elapsed_ms = Profiler(backend=backend).measure_call(
         runner=run,
-        batch=(np.asarray([1.0], dtype=np.float32),),
+        batch=(input_array,),
+        validate_output=validate_output,
     )
 
     assert events == [
@@ -230,8 +611,30 @@ def test_profiler_measure_call_synchronizes_around_timed_call(
         "call",
         "sync",
         "clock_stop",
+        "validate",
     ]
     assert elapsed_ms == pytest.approx(4.0)
+
+
+def test_profiler_releases_timed_output_after_validation() -> None:
+    output_reference: ReferenceType[np.ndarray] | None = None
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        nonlocal output_reference
+        array = batch[0]
+        assert isinstance(array, np.ndarray)
+        output = array.copy()
+        output_reference = ref(output)
+        return output
+
+    Profiler(backend=BackendSpec(name="numpy")).measure_call(
+        runner=run,
+        batch=(np.asarray([1.0], dtype=np.float32),),
+        validate_output=lambda _: None,
+    )
+
+    assert output_reference is not None
+    assert output_reference() is None
 
 
 def test_torch_backend_resolves_open_accelerator_device_once(
@@ -622,7 +1025,6 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
     order = result.round_orders[0]
     expected_orders = [
         order,
-        order,
         runner._rotate_order(order, offset=1),
         runner._rotate_order(order, offset=2),
         order,
@@ -633,14 +1035,13 @@ def test_run_fixed_case_uses_paired_inputs_per_library() -> None:
 
     for lib_name in ("einf", "einops", "einx"):
         arrays = captured[lib_name]
-        assert len(arrays) == 5
+        assert len(arrays) == 4
         assert all(array is original for array in arrays)
 
     assert len(result.evidence.observations) == 12
     assert len(result.evidence.comparisons) == 2
 
-    measured_orders = expected_orders[1:]
-    for timing_index, expected_order in enumerate(measured_orders):
+    for timing_index, expected_order in enumerate(expected_orders):
         start = timing_index * 3
         observations = result.evidence.observations[start : start + 3]
         assert tuple(item.library for item in observations) == expected_order
@@ -711,7 +1112,6 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -722,7 +1122,7 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
         order,
         runner._rotate_order(order, offset=1),
         runner._rotate_order(order, offset=2),
-        order,
+        runner._rotate_order(order, offset=3),
     ]
     assert len(events) == 15
 
@@ -761,7 +1161,7 @@ def test_run_dynamic_case_uses_same_batch_paired_order() -> None:
     ]
 
     assert len(result.evidence.observations) == 12
-    measured_orders = expected_orders[1:]
+    measured_orders = expected_orders[1:5]
     for coordinate_index, expected_order in enumerate(measured_orders):
         start = coordinate_index * 3
         batch_observations = result.evidence.observations[start : start + 3]
@@ -814,7 +1214,6 @@ def test_run_dynamic_case_preserves_latency_execution_identity(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=0,
         ),
         case_index=0,
     )
@@ -880,13 +1279,12 @@ def test_run_dynamic_case_releases_prepared_batch_between_coordinates(
             repeats=2,
             rounds=1,
             round_order_seed=1234,
-            parity_checks=2,
         ),
         case_index=0,
     )
 
-    assert live_host_batches_before_generation == [0, 0, 0, 0, 0, 0, 0]
-    assert live_batches_before_preparation == [0, 0, 0, 0, 0, 0, 0]
+    assert live_host_batches_before_generation == [0, 0, 0, 0, 0]
+    assert live_batches_before_preparation == [0, 0, 0, 0, 0]
 
 
 def test_run_dynamic_case_rejects_partial_round_orders(
@@ -929,7 +1327,6 @@ def test_run_dynamic_case_rejects_partial_round_orders(
                 repeats=1,
                 rounds=1,
                 round_order_seed=1234,
-                parity_checks=0,
             ),
             case_index=0,
         )

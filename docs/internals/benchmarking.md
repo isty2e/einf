@@ -40,14 +40,23 @@ At each measured coordinate, the harness:
 4. calls one library,
 5. waits for that call's target work to complete before stopping the clock.
 
-Runner construction, parity validation, warmup, input generation, device
-transfer, output validation, device-to-host transfer, summary calculation, and
-serialization are outside the timed interval. The result is per-call completion
-latency after inputs and runners are ready, not input-pipeline latency or
-asynchronous launch latency.
+Runner construction, warmup, input generation, device transfer, reference
+evaluation, numerical comparison, device-to-host transfer, summary calculation,
+and serialization are outside the timed interval. The result is per-call
+completion latency after inputs and runners are ready, not input-pipeline latency
+or asynchronous launch latency.
+
+Reference functions receive private NumPy snapshots and are expected to be
+deterministic and side-effect free. The harness never passes a prepared backend
+batch to reference code, so accidental mutation cannot change the measured
+workload or another strategy's reference input.
 
 Fixed cases prepare one batch and reuse it across measured coordinates. Dynamic
 cases materialize one target batch per coordinate before the first library runs.
+After each timed call has completed and its timer has stopped, the harness checks
+that call's returned output against the reference. It then releases the output
+before moving on. This covers every repeat without retaining the input stream or
+more than one call's output.
 
 Library order rotates at each paired coordinate to spread first-executor and
 position effects. Fixed calls use repeats as paired units and iterations as
@@ -216,7 +225,6 @@ python -m benchmarks.compare.einf_einops_einx \
     --warmup-batches 8 \
     --repeats 6 \
     --rounds 3 \
-    --parity-checks 8 \
     --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-dynamic-large-torch.json" \
     > "$REPO_ROOT/$BENCH_DIR/baseline-dynamic-large-torch.md"
 )
@@ -229,7 +237,6 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --warmup-batches 8 \
   --repeats 6 \
   --rounds 3 \
-  --parity-checks 8 \
   --receipt "$BENCH_DIR/raw/candidate-dynamic-large-torch.json" \
   > "$BENCH_DIR/candidate-dynamic-large-torch.md"
 ```
@@ -370,7 +377,6 @@ python -m benchmarks.compare.einf_einops_einx_dynamic \
   --warmup-batches 8 \
   --repeats 6 \
   --rounds 3 \
-  --parity-checks 8 \
   --receipt artifacts/bench/current/raw/dynamic-large-torch.json \
   > artifacts/bench/current/dynamic-large-torch.md
 ```
@@ -386,6 +392,8 @@ What matters here:
 - one target batch is materialized per paired coordinate and shared by all
   libraries,
 - host and target inputs are released before the next coordinate,
+- every distinct measured coordinate is numerically checked after timing and
+  before report generation,
 - repeats regenerate the same logical unit from its recorded seed, and each
   receipt includes the realized input shapes.
 
@@ -426,7 +434,7 @@ reject smaller configurations rather than emit a degenerate interval.
 Pass `--receipt report.json` to the comparison, layout-audit, overhead, and
 warm-call-tree commands described on this page. The JSON receipt is the
 canonical artifact; Markdown is a stdout projection for reading or redirection.
-Fixed and dynamic receipts use schema v5 and the same single `steady`
+Fixed and dynamic receipts use schema v6 and keep the same single `steady`
 measurement phase. Each receipt includes:
 
 - environment and benchmark configuration; `environment.einf` identifies the
@@ -442,10 +450,13 @@ measurement phase. Each receipt includes:
 Dynamic receipts also record case-specific workload dimensions, shapes, element
 counts, and exact scale ratios. Each `realized_input_units` entry records the
 round, unit, stream, derived seed, and input shapes used for that paired unit.
+The case-level `validation` object identifies the measured coordinate source,
+participating libraries, executions per coordinate, and the fact that the timed
+call's own return value was checked immediately after its timer stopped.
 Ratios use integer `numerator` and `denominator` fields rather than rounded
 decimals.
 
-Expression-parity receipts use schema v4. They share the source-provenance
+Expression-parity receipts use schema v5. They share the source-provenance
 contract used by the fixed and dynamic scripts, but keep their
 strategy-specific result shape.
 
@@ -487,7 +498,6 @@ python -m benchmarks.compare.expression_parity \
   --warmup-batches 8 \
   --repeats 6 \
   --rounds 3 \
-  --parity-checks 8 \
   --receipt artifacts/bench/current/raw/expression-parity-large.json \
   > artifacts/bench/current/expression-parity-large.md
 ```
@@ -508,9 +518,9 @@ the next coordinate. The strategies run back-to-back, with their order rotated
 from one deterministic shuffle across all measured coordinates. Warmup uses a
 separate continuous rotation.
 
-Parity checks run before warmup and timing on disposable strategy instances. A
-mismatch aborts report generation without warming the runner instances used for
-measurement.
+Every timed strategy output is checked against its reference after that call's
+timer stops. A mismatch aborts report generation. The check covers every repeat,
+not a sample of shapes or a separately generated output.
 
 Expression timing uses the same synchronized-completion boundary as the fixed
 and dynamic comparisons. Generation, device transfer, and output validation are
@@ -525,8 +535,9 @@ Keep the JSON receipt when the result may need re-analysis. It records the
 schedule and estimand, per-round summaries, every call's round, batch, repeat,
 strategy, order, and latency identity, and the paired estimates. The Markdown
 report is meant for interpretation; it does not replace the receipt evidence.
-Expression receipt schema v4 also records structured environment metadata, the
-requested and resolved device, and the shared synchronized-completion contract.
+Expression receipt schema v5 also records structured environment metadata, the
+requested and resolved device, the shared synchronized-completion contract, and
+the exact measured executions covered by validation.
 
 Read the two comparison sections differently:
 

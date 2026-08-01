@@ -30,6 +30,7 @@ from benchmarks.harness import (
     TimingSummary,
 )
 from benchmarks.harness.comparison import compare_library_timings
+from benchmarks.harness.receipt import validation_coverage_payload
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import LibraryName
 
@@ -69,6 +70,70 @@ def _summary(*, mean_ms: float) -> TimingSummary:
         min_ms=mean_ms,
         max_ms=mean_ms,
     )
+
+
+@pytest.mark.parametrize(
+    ("execution_identities_by_member", "coordinate_count", "message"),
+    (
+        (
+            {},
+            1,
+            "require at least one member",
+        ),
+        (
+            {"einf": ((0, 0, 0), (0, 0, 0))},
+            1,
+            "must be unique",
+        ),
+        (
+            {"einf": ((0, 0, 0), (0, 1, 0), (0, 1, 1))},
+            2,
+            "uneven repeat coverage",
+        ),
+        (
+            {
+                "einf": ((0, 0, 0),),
+                "einops": ((0, 1, 0),),
+            },
+            1,
+            "coverage must match across members",
+        ),
+    ),
+)
+def test_validation_coverage_rejects_incomplete_observation_identity(
+    execution_identities_by_member: dict[str, tuple[tuple[int, int, int], ...]],
+    coordinate_count: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            coordinate_count=coordinate_count,
+            expected_executions_per_member_per_coordinate=1,
+            execution_identities_by_member=execution_identities_by_member,
+        )
+
+
+def test_validation_coverage_rejects_configuration_mismatch() -> None:
+    with pytest.raises(ValueError, match="does not match benchmark configuration"):
+        validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            coordinate_count=1,
+            expected_executions_per_member_per_coordinate=2,
+            execution_identities_by_member={"einf": ((0, 0, 0),)},
+        )
+
+
+def test_validation_coverage_preserves_empty_measurement_world() -> None:
+    payload = validation_coverage_payload(
+        coordinate_source="measurement_observations",
+        coordinate_count=0,
+        expected_executions_per_member_per_coordinate=3,
+        execution_identities_by_member={},
+    )
+
+    assert payload["members"] == []
+    assert payload["executions_per_member_per_coordinate"] == 0
 
 
 def _case() -> BenchmarkCase:
@@ -198,10 +263,18 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
     observation = LibraryTimingObservation(
         round_index=1,
         unit_index=2,
-        repeat_index=3,
+        repeat_index=0,
         library="einf",
         order_position=0,
         latency_ms=1.25,
+    )
+    repeated_observation = LibraryTimingObservation(
+        round_index=1,
+        unit_index=2,
+        repeat_index=1,
+        library="einf",
+        order_position=0,
+        latency_ms=1.3,
     )
     comparison: PairedComparison[LibraryName] = PairedComparison(
         baseline="einf",
@@ -243,7 +316,7 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         },
         round_orders=[("einf", "einops", "einx")],
         evidence=PairedEvidence(
-            observations=(observation,),
+            observations=(observation, repeated_observation),
             comparisons=(comparison,),
         ),
     )
@@ -255,7 +328,6 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         repeats=2,
         rounds=1,
         round_order_seed=7,
-        parity_checks=0,
     )
 
     payload = _receipt_payload(
@@ -266,7 +338,7 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -296,6 +368,16 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
             "input_shapes": [[1, 3]],
         }
     ]
+    assert case_payload["validation"] == {
+        "scope": "all_measured_executions",
+        "coordinate_source": "realized_input_units",
+        "coordinate_count": 1,
+        "members": ["einf"],
+        "executions_per_member_per_coordinate": 2,
+        "phase": "immediately_after_each_timed_execution",
+        "output_source": "timed_call_return_value",
+        "output_check": "numerical_reference_match",
+    }
     assert case_payload["workload"] == {
         "dimensions": [
             {
@@ -342,24 +424,36 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         {
             "round_index": 1,
             "unit_index": 2,
-            "repeat_index": 3,
+            "repeat_index": 0,
             "library": "einf",
             "order_position": 0,
             "latency_ms": 1.25,
-        }
+        },
+        {
+            "round_index": 1,
+            "unit_index": 2,
+            "repeat_index": 1,
+            "library": "einf",
+            "order_position": 0,
+            "latency_ms": 1.3,
+        },
     ]
     assert measurement["comparisons"][0]["paired_unit_count"] == 4
 
 
 def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
     sizes, _ = _workload()
-    observation = LibraryTimingObservation(
-        round_index=0,
-        unit_index=1,
-        repeat_index=2,
-        library="einf",
-        order_position=0,
-        latency_ms=1.25,
+    observations = tuple(
+        LibraryTimingObservation(
+            round_index=0,
+            unit_index=unit_index,
+            repeat_index=repeat_index,
+            library="einf",
+            order_position=0,
+            latency_ms=1.25,
+        )
+        for unit_index in (1, 0)
+        for repeat_index in range(3)
     )
     comparison: PairedComparison[LibraryName] = PairedComparison(
         baseline="einf",
@@ -374,7 +468,7 @@ def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
         bootstrap_seed=9,
     )
     evidence = PairedEvidence(
-        observations=(observation,),
+        observations=observations,
         comparisons=(comparison,),
     )
     result = FixedCaseResult(
@@ -405,7 +499,7 @@ def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
         backend=BackendSpec(name="numpy"),
     )
 
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -414,6 +508,16 @@ def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
     cases = payload["cases"]
     assert isinstance(cases, list)
     json.dumps(payload)
+    assert cases[0]["validation"] == {
+        "scope": "all_measured_executions",
+        "coordinate_source": "measurement_observations",
+        "coordinate_count": 2,
+        "members": ["einf"],
+        "executions_per_member_per_coordinate": 3,
+        "phase": "immediately_after_each_timed_execution",
+        "output_source": "timed_call_return_value",
+        "output_check": "numerical_reference_match",
+    }
     measurements = cases[0]["measurements"]
     assert [measurement["phase"] for measurement in measurements] == ["steady"]
     assert measurements[0]["observations"][0]["unit_index"] == 1

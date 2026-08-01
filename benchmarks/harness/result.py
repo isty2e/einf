@@ -132,7 +132,7 @@ class FixedCaseResult:
 
 @dataclass(frozen=True, slots=True)
 class DynamicInputUnit:
-    """Realized input descriptor for one measured dynamic workload unit."""
+    """Realized input descriptor for one measured and validated dynamic unit."""
 
     round_index: int
     unit_index: int
@@ -165,6 +165,23 @@ class DynamicCaseResult:
     runs: dict[LibraryName, RunResult]
     round_orders: list[tuple[LibraryName, ...]]
     evidence: PairedEvidence
+
+    def __post_init__(self) -> None:
+        """Keep realized input units aligned with measured coordinates."""
+        realized_coordinates = {
+            (unit.round_index, unit.unit_index) for unit in self.realized_units
+        }
+        if len(realized_coordinates) != len(self.realized_units):
+            raise ValueError("dynamic input units must have unique coordinates")
+
+        observed_coordinates = {
+            (observation.round_index, observation.unit_index)
+            for observation in self.evidence.observations
+        }
+        if realized_coordinates != observed_coordinates:
+            raise ValueError(
+                "dynamic input units must match measured observation coordinates"
+            )
 
 
 _CaseResultT = TypeVar("_CaseResultT", FixedCaseResult, DynamicCaseResult)

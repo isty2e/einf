@@ -26,9 +26,12 @@ from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.generator import derive_coordinate_seed
 from benchmarks.harness.receipt import (
+    dynamic_input_units_payload,
     execution_target_payload,
     synchronized_measurement_contract_payload,
+    validation_coverage_payload,
 )
+from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
 from benchmarks.shared import as_single_array, einf_source_metadata, version_or_missing
 from benchmarks.shared.artifacts import publish_receipt
@@ -52,6 +55,7 @@ else:
 
 
 ExpressionSemantics = Literal["output_equivalent", "lower_bound"]
+# References receive private snapshots; they must not mutate them and must be deterministic.
 Reference = Callable[[tuple[NumpyArray, ...]], Output]
 BatchFactory = Callable[[TensorGenerator], tuple[Array, ...]]
 RunnerFactory = Callable[[], Runner]
@@ -152,6 +156,7 @@ class ExpressionCaseResult:
     """One gap case measured across expression strategies."""
 
     case: ExpressionParityCase
+    realized_units: tuple[DynamicInputUnit, ...]
     runs: dict[str, ExpressionRun]
     round_orders: list[tuple[str, ...]]
     observations: tuple[ExpressionObservation, ...]
@@ -193,6 +198,20 @@ class ExpressionCaseResult:
             for observation in self.observations
         ):
             raise ValueError("expression observation references an unknown round")
+
+        realized_coordinates = {
+            (unit.round_index, unit.unit_index) for unit in self.realized_units
+        }
+        if len(realized_coordinates) != len(self.realized_units):
+            raise ValueError("expression input units must have unique coordinates")
+        observed_coordinates = {
+            (observation.round_index, observation.unit_index)
+            for observation in self.observations
+        }
+        if realized_coordinates != observed_coordinates:
+            raise ValueError(
+                "expression input units must match measured observation coordinates"
+            )
 
         target_name = self.case.target.name
         expected_competitors = available_names - {target_name}
@@ -533,15 +552,21 @@ def _run_dynamic_case(
     available_specs = tuple(spec for spec in case.runner_specs if spec.available)
     runs: dict[str, ExpressionRun] = {}
 
+    def batch_seed(*, round_index: int, batch_index: int) -> int:
+        return derive_coordinate_seed(
+            seed=config.seed,
+            case_index=case_index,
+            round_index=round_index,
+            stream_index=batch_index,
+        )
+
     def make_batch(*, round_index: int, batch_index: int) -> tuple[Array, ...]:
         return case.batch_factory(
             TensorGenerator.from_seed(
                 backend=backend,
-                seed=derive_coordinate_seed(
-                    seed=config.seed,
-                    case_index=case_index,
+                seed=batch_seed(
                     round_index=round_index,
-                    stream_index=batch_index,
+                    batch_index=batch_index,
                 ),
             )
         )
@@ -570,33 +595,10 @@ def _run_dynamic_case(
         raise RuntimeError(
             "expression benchmark round orders must be full strategy permutations"
         )
-    validation_runners = {spec.name: spec.make_runner() for spec in available_specs}
-    checks = min(config.batches, config.parity_checks)
-    for batch_index in range(checks):
-        batch = make_batch(round_index=0, batch_index=batch_index)
-        numpy_batch = _numpy_batch(backend=backend, batch=batch)
-        expected_by_name = {
-            spec.name: tuple(
-                array.copy()
-                for array in backend.to_numpy_output(spec.reference(numpy_batch))
-            )
-            for spec in available_specs
-        }
-        for spec in available_specs:
-            output = validation_runners[spec.name](batch)
-            backend.synchronize()
-            _validate_output(
-                backend=backend,
-                runner_spec=spec,
-                expected=expected_by_name[spec.name],
-                output=output,
-            )
-            del output
-        del batch
-    del validation_runners
-
+    spec_by_name = {spec.name: spec for spec in available_specs}
     runners = {spec.name: spec.make_runner() for spec in available_specs}
     observations: list[ExpressionObservation] = []
+    realized_units: list[DynamicInputUnit] = []
     for round_index, round_order in enumerate(round_orders):
         for batch_index in range(config.warmup_batches):
             batch = make_batch(
@@ -620,11 +622,63 @@ def _run_dynamic_case(
                     round_index=round_index,
                     batch_index=(config.warmup_batches + measured_batch_index),
                 )
+                input_shapes = tuple(
+                    tuple(int(dimension) for dimension in array.shape)
+                    for array in batch
+                )
+                if repeat_index == 0:
+                    batch_index = config.warmup_batches + measured_batch_index
+                    realized_units.append(
+                        DynamicInputUnit(
+                            round_index=round_index,
+                            unit_index=measured_batch_index,
+                            stream_index=batch_index,
+                            seed=batch_seed(
+                                round_index=round_index,
+                                batch_index=batch_index,
+                            ),
+                            input_shapes=input_shapes,
+                        )
+                    )
+                elif (
+                    input_shapes
+                    != realized_units[
+                        round_index * measured_batch_count + measured_batch_index
+                    ].input_shapes
+                ):
+                    raise RuntimeError(
+                        "expression repeated input produced different shapes"
+                    )
                 batch_order = _rotate_order(
                     round_order,
                     offset=(repeat_index * measured_batch_count + measured_batch_index),
                 )
+                numpy_batch = tuple(
+                    array.copy() for array in _numpy_batch(backend=backend, batch=batch)
+                )
                 for order_position, name in enumerate(batch_order):
+                    spec = spec_by_name[name]
+                    reference_batch = tuple(array.copy() for array in numpy_batch)
+                    expected = tuple(
+                        array.copy()
+                        for array in backend.to_numpy_output(
+                            spec.reference(reference_batch)
+                        )
+                    )
+                    del reference_batch
+
+                    def validate_output(
+                        output: Output,
+                        runner_spec: ExpressionRunnerSpec = spec,
+                        expected_output: tuple[NumpyArray, ...] = expected,
+                    ) -> None:
+                        _validate_output(
+                            backend=backend,
+                            runner_spec=runner_spec,
+                            expected=expected_output,
+                            output=output,
+                        )
+
                     observations.append(
                         ExpressionObservation(
                             round_index=round_index,
@@ -635,10 +689,13 @@ def _run_dynamic_case(
                             latency_ms=profiler.measure_call(
                                 runner=runners[name],
                                 batch=batch,
+                                validate_output=validate_output,
                             ),
                         )
                     )
-                del batch
+                    del expected, validate_output
+                del batch, numpy_batch
+    del runners
 
     observation_tuple = tuple(observations)
     available_names = tuple(spec.name for spec in available_specs)
@@ -676,6 +733,7 @@ def _run_dynamic_case(
     )
     return ExpressionCaseResult(
         case=case,
+        realized_units=tuple(realized_units),
         runs=runs,
         round_orders=round_orders,
         observations=observation_tuple,
@@ -687,9 +745,10 @@ def _to_json(
     report: ExpressionParityReport,
     *,
     backend: BackendSpec,
+    config: DynamicTaskConfig,
 ) -> dict[str, object]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "title": report.title,
         "environment": {
             "python": platform.python_version(),
@@ -759,6 +818,27 @@ def _to_json(
                     )
                     for spec in case_result.case.runner_specs
                 },
+                "realized_input_units": dynamic_input_units_payload(
+                    case_result.realized_units
+                ),
+                "validation": validation_coverage_payload(
+                    coordinate_source="realized_input_units",
+                    coordinate_count=len(case_result.realized_units),
+                    expected_executions_per_member_per_coordinate=config.repeats,
+                    execution_identities_by_member={
+                        spec.name: tuple(
+                            (
+                                observation.round_index,
+                                observation.unit_index,
+                                observation.repeat_index,
+                            )
+                            for observation in case_result.observations
+                            if observation.strategy == spec.name
+                        )
+                        for spec in case_result.case.runner_specs
+                        if spec.available
+                    },
+                ),
                 "measured_round_start_orders": [
                     list(order) for order in case_result.round_orders
                 ],
@@ -956,12 +1036,6 @@ def main() -> int:
         help="Optional seed controlling the initial deterministic strategy order.",
     )
     parser.add_argument(
-        "--parity-checks",
-        type=int,
-        default=8,
-        help="Number of first batches used for per-strategy parity validation.",
-    )
-    parser.add_argument(
         "--receipt",
         type=Path,
         default=None,
@@ -985,8 +1059,6 @@ def main() -> int:
         raise ValueError(f"repeats must be >= 1, got {args.repeats}")
     if args.rounds < 1:
         raise ValueError(f"rounds must be >= 1, got {args.rounds}")
-    if args.parity_checks < 0:
-        raise ValueError(f"parity-checks must be >= 0, got {args.parity_checks}")
     backend = BackendSpec(name="torch", requested_device=args.device)
     profiler = Profiler(backend=backend)
     sizes = dynamic_sizes_for_scale(args.scale)
@@ -1001,7 +1073,6 @@ def main() -> int:
         repeats=args.repeats,
         rounds=args.rounds,
         round_order_seed=round_order_seed,
-        parity_checks=args.parity_checks,
     )
 
     case = _find_case(sizes=sizes, case_name=args.case)
@@ -1056,8 +1127,8 @@ def main() -> int:
                 "transfer, and output validation stay outside the interval."
             ),
             (
-                "Parity checks run before timing on disposable runners. A mismatch "
-                "aborts without warming the runner instances used for measurement."
+                "The output returned by every timed call is compared with its "
+                "reference after the timer stops. A mismatch aborts report generation."
             ),
             (
                 "Every timed call retains its round, measured batch, repeat, "
@@ -1093,7 +1164,10 @@ def main() -> int:
 
     markdown = _render_markdown(report)
     if args.receipt is not None:
-        publish_receipt(args.receipt, _to_json(report, backend=backend))
+        publish_receipt(
+            args.receipt,
+            _to_json(report, backend=backend, config=config),
+        )
     print(markdown)
     if args.receipt is not None:
         print(f"Wrote receipt: {args.receipt}", file=sys.stderr)

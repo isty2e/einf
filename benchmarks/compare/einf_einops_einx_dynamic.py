@@ -30,10 +30,12 @@ from benchmarks.harness import (
     dynamic_sizes_for_scale,
 )
 from benchmarks.harness.receipt import (
+    dynamic_input_units_payload,
     execution_target_payload,
     paired_evidence_payload,
     synchronized_measurement_contract_payload,
     timing_summary_payload,
+    validation_coverage_payload,
 )
 from benchmarks.shared import (
     as_single_array,
@@ -472,7 +474,7 @@ def _receipt_payload(
     backend: BackendSpec,
 ) -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -495,7 +497,6 @@ def _receipt_payload(
             "warmup_batches": config.warmup_batches,
             "repeats": config.repeats,
             "rounds": config.rounds,
-            "parity_checks": config.parity_checks,
             "base_sizes": {
                 "b": sizes.b,
                 "n": sizes.n,
@@ -521,16 +522,30 @@ def _receipt_payload(
                     case_result.workload,
                     workload_comparisons[case_result.case.name],
                 ),
-                "realized_input_units": [
-                    {
-                        "round_index": unit.round_index,
-                        "unit_index": unit.unit_index,
-                        "stream_index": unit.stream_index,
-                        "seed": unit.seed,
-                        "input_shapes": [list(shape) for shape in unit.input_shapes],
-                    }
-                    for unit in case_result.realized_units
-                ],
+                "realized_input_units": dynamic_input_units_payload(
+                    case_result.realized_units
+                ),
+                "validation": validation_coverage_payload(
+                    coordinate_source="realized_input_units",
+                    coordinate_count=len(case_result.realized_units),
+                    expected_executions_per_member_per_coordinate=config.repeats,
+                    execution_identities_by_member={
+                        library: tuple(
+                            (
+                                observation.round_index,
+                                observation.unit_index,
+                                observation.repeat_index,
+                            )
+                            for observation in case_result.evidence.observations
+                            if observation.library == library
+                        )
+                        for library in ("einf", "einops", "einx")
+                        if any(
+                            observation.library == library
+                            for observation in case_result.evidence.observations
+                        )
+                    },
+                ),
                 "runs": {
                     library: (
                         {
@@ -619,12 +634,6 @@ def main() -> int:
         help="Optional seed controlling deterministic per-round library order.",
     )
     parser.add_argument(
-        "--parity-checks",
-        type=int,
-        default=8,
-        help="Number of first batches used for parity validation.",
-    )
-    parser.add_argument(
         "--receipt",
         type=Path,
         default=None,
@@ -664,7 +673,6 @@ def main() -> int:
         repeats=args.repeats,
         rounds=args.rounds,
         round_order_seed=round_order_seed,
-        parity_checks=args.parity_checks,
     )
 
     available = available_libraries(
@@ -738,8 +746,8 @@ def main() -> int:
         ],
         case_results=case_results,
         notes=[
-            "Each runner is constructed once per case and reused across batches.",
-            "Dynamic parity checks use disposable runners before warmup and timing.",
+            "Measurement runners are constructed once per case and reused across batches.",
+            "Every timed output is checked against its reference after the timer stops.",
             "Prepared target batches are released before the next coordinate is materialized.",
         ],
     )

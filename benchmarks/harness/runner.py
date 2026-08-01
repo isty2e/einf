@@ -143,26 +143,6 @@ class BenchmarkRunner:
                     f"max abs diff={max_abs}, atol={atol}, rtol={rtol}"
                 )
 
-    def _validate_runners(
-        self,
-        *,
-        case: BenchmarkCase,
-        runners: dict[LibraryName, Runner],
-        batch: tuple[Array, ...],
-        expected: tuple[NumpyArray, ...],
-        order: tuple[LibraryName, ...],
-    ) -> None:
-        """Validate available runners on one shared prepared batch."""
-        for library_name in order:
-            output = runners[library_name](batch)
-            self.backend.synchronize()
-            self._validate_output(
-                case=case,
-                expected=expected,
-                output=output,
-                library_name=library_name,
-            )
-
     def _warmup_coordinate(
         self,
         *,
@@ -179,8 +159,10 @@ class BenchmarkRunner:
     def _measure_coordinate(
         self,
         *,
+        case: BenchmarkCase,
         runners: dict[LibraryName, Runner],
         batch: tuple[Array, ...],
+        expected: tuple[NumpyArray, ...],
         order: tuple[LibraryName, ...],
         round_index: int,
         unit_index: int,
@@ -189,6 +171,18 @@ class BenchmarkRunner:
         """Measure every library at one paired prepared-input coordinate."""
         observations: list[LibraryTimingObservation] = []
         for order_position, library_name in enumerate(order):
+
+            def validate_output(
+                output: Array | tuple[Array, ...],
+                current_library: LibraryName = library_name,
+            ) -> None:
+                self._validate_output(
+                    case=case,
+                    expected=expected,
+                    output=output,
+                    library_name=current_library,
+                )
+
             observations.append(
                 LibraryTimingObservation(
                     round_index=round_index,
@@ -199,9 +193,11 @@ class BenchmarkRunner:
                     latency_ms=self.profiler.measure_call(
                         runner=runners[library_name],
                         batch=batch,
+                        validate_output=validate_output,
                     ),
                 )
             )
+            del validate_output
         return observations
 
     def _available_run(
@@ -263,10 +259,6 @@ class BenchmarkRunner:
             )
 
         runner_factories = self._libraries_for_case(case)
-        validation_runners: dict[LibraryName, Runner] = {
-            library_name: runner_factories[library_name]()
-            for library_name in available_libs
-        }
         round_orders = self._round_orders(
             library_names=available_libs,
             rounds=config.rounds,
@@ -277,23 +269,14 @@ class BenchmarkRunner:
             libraries=available_libs,
         )
 
+        reference_inputs = tuple(
+            self.backend.to_numpy_array(item).copy() for item in inputs
+        )
         expected = tuple(
             array.copy()
-            for array in self.backend.to_numpy_output(
-                case.reference(
-                    tuple(self.backend.to_numpy_array(item) for item in inputs)
-                )
-            )
+            for array in self.backend.to_numpy_output(case.reference(reference_inputs))
         )
-        self._validate_runners(
-            case=case,
-            runners=validation_runners,
-            batch=inputs,
-            expected=expected,
-            order=round_orders[0],
-        )
-        del validation_runners
-
+        del reference_inputs
         runners: dict[LibraryName, Runner] = {
             library_name: runner_factories[library_name]()
             for library_name in available_libs
@@ -315,8 +298,10 @@ class BenchmarkRunner:
                 for repeat_index in range(config.iterations):
                     observations.extend(
                         self._measure_coordinate(
+                            case=case,
                             runners=runners,
                             batch=inputs,
+                            expected=expected,
                             order=self._rotate_order(
                                 round_order,
                                 offset=(unit_index * config.iterations + repeat_index),
@@ -415,40 +400,7 @@ class BenchmarkRunner:
             libraries=available_libs,
         )
 
-        checks = min(config.batches, config.parity_checks)
-        if checks:
-            validation_runners: dict[LibraryName, Runner] = {
-                library_name: runner_factories[library_name]()
-                for library_name in available_libs
-            }
-            for stream_index in range(checks):
-                numpy_batch = self._make_dynamic_numpy_batch(
-                    case_spec=case_spec,
-                    seed=self._dynamic_batch_seed(
-                        config=config,
-                        case_index=case_index,
-                        round_index=0,
-                        stream_index=stream_index,
-                    ),
-                )
-                expected = tuple(
-                    array.copy()
-                    for array in self.backend.to_numpy_output(
-                        case.reference(numpy_batch)
-                    )
-                )
-                batch = self.backend.to_backend_batch(numpy_batch)
-                del numpy_batch
-                self._validate_runners(
-                    case=case,
-                    runners=validation_runners,
-                    batch=batch,
-                    expected=expected,
-                    order=round_orders[0],
-                )
-                del batch, expected
-            del validation_runners
-
+        measured_batches = config.batches - config.warmup_batches
         runners: dict[LibraryName, Runner] = {
             library_name: runner_factories[library_name]()
             for library_name in available_libs
@@ -456,7 +408,6 @@ class BenchmarkRunner:
 
         observations: list[LibraryTimingObservation] = []
         realized_units: list[DynamicInputUnit] = []
-        measured_batches = config.batches - config.warmup_batches
         for round_index, round_order in enumerate(round_orders):
             for stream_index in range(config.warmup_batches):
                 numpy_batch = self._make_dynamic_numpy_batch(
@@ -504,12 +455,31 @@ class BenchmarkRunner:
                                 input_shapes=input_shapes,
                             )
                         )
+                    elif (
+                        input_shapes
+                        != realized_units[
+                            round_index * measured_batches + unit_index
+                        ].input_shapes
+                    ):
+                        raise RuntimeError(
+                            "dynamic repeated input produced different shapes"
+                        )
+                    reference_batch = tuple(array.copy() for array in numpy_batch)
+                    expected = tuple(
+                        array.copy()
+                        for array in self.backend.to_numpy_output(
+                            case.reference(reference_batch)
+                        )
+                    )
+                    del reference_batch
                     batch = self.backend.to_backend_batch(numpy_batch)
                     del numpy_batch
                     observations.extend(
                         self._measure_coordinate(
+                            case=case,
                             runners=runners,
                             batch=batch,
+                            expected=expected,
                             order=self._rotate_order(
                                 round_order,
                                 offset=(repeat_index * measured_batches + unit_index),
@@ -519,7 +489,8 @@ class BenchmarkRunner:
                             repeat_index=repeat_index,
                         ),
                     )
-                    del batch
+                    del batch, expected
+        del runners
 
         for library_name in available_libs:
             runs[library_name] = self._available_run(
