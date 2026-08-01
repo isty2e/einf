@@ -120,12 +120,12 @@ def test_new_receipt_uses_normal_creation_mode(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
-def test_temporary_receipt_is_created_private(
+def test_temporary_receipt_requests_private_creation_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_open = artifact_module.os.open
-    creation_modes: list[int] = []
+    requested_modes: list[int] = []
 
     def observe_creation_mode(
         path: os.PathLike[str],
@@ -133,14 +133,14 @@ def test_temporary_receipt_is_created_private(
         mode: int,
     ) -> int:
         if Path(path).name.startswith(".einf-receipt-"):
-            creation_modes.append(mode)
+            requested_modes.append(mode)
         return original_open(path, flags, mode)
 
     monkeypatch.setattr(artifact_module.os, "open", observe_creation_mode)
 
     publish_receipt(tmp_path / "receipt.json", {"run": "new"})
 
-    assert creation_modes == [0o600]
+    assert requested_modes == [0o600]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX permission bits")
@@ -159,7 +159,37 @@ def test_temporary_receipt_is_private_during_serialization(
 
     publish_receipt(tmp_path / "receipt.json", {"run": "new"})
 
-    assert observed_modes == [0o600]
+    assert len(observed_modes) == 1
+    assert observed_modes[0] & ~0o600 == 0
+
+
+def test_fdopen_failure_preserves_primary_error_when_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_close = artifact_module.os.close
+
+    def fail_stream_open(
+        descriptor: int,
+        mode: str,
+        *,
+        encoding: str,
+        newline: str,
+    ) -> TextIO:
+        _ = descriptor, mode, encoding, newline
+        raise RuntimeError("fdopen failed")
+
+    def close_then_fail(descriptor: int) -> None:
+        original_close(descriptor)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(artifact_module.os, "fdopen", fail_stream_open)
+    monkeypatch.setattr(artifact_module.os, "close", close_then_fail)
+
+    with pytest.raises(RuntimeError, match="fdopen failed"):
+        publish_receipt(tmp_path / "receipt.json", {"run": "new"})
+
+    assert list(tmp_path.glob(".einf-receipt-*.tmp")) == []
 
 
 def test_publish_receipt_preserves_target_when_serialization_fails(

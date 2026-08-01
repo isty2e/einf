@@ -26,6 +26,18 @@ def _open_exclusive_temporary(
     raise FileExistsError("could not allocate a unique benchmark temporary file")
 
 
+def _discard_temporary(path: Path, *, descriptor: int | None) -> None:
+    if descriptor is not None:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _normal_creation_mode(parent: Path) -> int:
     # An empty sibling captures the effective umask without mutating
     # process-global state or exposing receipt contents.
@@ -42,15 +54,7 @@ def _normal_creation_mode(parent: Path) -> int:
         open_descriptor = None
         probe_path.unlink()
     except BaseException:
-        if open_descriptor is not None:
-            try:
-                os.close(open_descriptor)
-            except OSError:
-                pass
-        try:
-            probe_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_temporary(probe_path, descriptor=open_descriptor)
         raise
     return creation_mode
 
@@ -98,10 +102,5 @@ def publish_receipt(path: Path, payload: Mapping[str, object]) -> None:
         temporary_path.chmod(final_mode)
         os.replace(temporary_path, destination)
     except BaseException:
-        if open_descriptor is not None:
-            os.close(open_descriptor)
-        try:
-            temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_temporary(temporary_path, descriptor=open_descriptor)
         raise
