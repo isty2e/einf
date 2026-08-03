@@ -639,6 +639,13 @@ python -m benchmarks.profile.lsp_latency \
 
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
 
+The guardrail compares latencies only when both receipts describe the same
+experiment. The profiler source, backend and device, dependency versions, seed,
+instrumentation stages, and each shared case's call form and loop count must
+match. The measured `einf` source is kept separate: baseline and candidate
+revisions may differ, while repeated trials must keep each side on one revision.
+Receipts produced before this metadata was added must be regenerated.
+
 Example:
 
 ```bash

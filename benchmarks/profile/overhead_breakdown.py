@@ -16,6 +16,7 @@ Scenarios:
 """
 
 import argparse
+import hashlib
 import importlib
 import platform
 import statistics
@@ -31,7 +32,8 @@ from unittest.mock import patch
 import numpy as np
 from numpy.typing import NDArray
 
-from benchmarks.shared import version_or_missing
+from benchmarks.guardrail.policy import OVERHEAD_REPORT_SCHEMA_VERSION
+from benchmarks.shared import einf_source_metadata, version_or_missing
 from benchmarks.shared.artifacts import publish_receipt
 from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repeat
 
@@ -956,15 +958,28 @@ def _to_json(
     result: tuple[ScenarioResult, ...],
     *,
     backend: BackendName,
+    seed: int,
 ) -> dict[str, object]:
     return {
+        "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
         "meta": {
-            "backend": backend,
-            "python": platform.python_version(),
-            "numpy": version_or_missing("numpy"),
-            "torch": version_or_missing("torch"),
-            "einops": version_or_missing("einops"),
-            "einx": version_or_missing("einx"),
+            "harness_source_sha256": hashlib.sha256(
+                Path(__file__).read_bytes()
+            ).hexdigest(),
+            "subject_source": einf_source_metadata(),
+            "execution_target": {
+                "backend": backend,
+                "requested_device": "cpu",
+                "resolved_device": "cpu",
+            },
+            "environment": {
+                "python": platform.python_version(),
+                "numpy": version_or_missing("numpy"),
+                "torch": version_or_missing("torch"),
+                "array_api_compat": version_or_missing("array-api-compat"),
+                "opt_einsum": version_or_missing("opt_einsum"),
+            },
+            "seed": seed,
             "stages": list(STAGES),
         },
         "scenarios": [
@@ -1099,7 +1114,7 @@ def main() -> int:
         for offset, (scenario, mode, scale) in enumerate(scenario_specs)
     )
 
-    receipt_payload = _to_json(results, backend=backend)
+    receipt_payload = _to_json(results, backend=backend, seed=args.seed)
     markdown = _to_markdown(
         result=results,
         backend=backend,

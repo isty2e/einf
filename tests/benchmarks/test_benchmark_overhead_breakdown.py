@@ -4,7 +4,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from benchmarks.guardrail.policy import load_overhead_report
+from benchmarks.guardrail.policy import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    load_overhead_report,
+)
 from benchmarks.profile.overhead_breakdown import (
     STAGE_TARGETS,
     CaseResult,
@@ -54,24 +57,47 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
         ),
     )
 
-    payload = _to_json(result, backend="numpy")
+    payload = _to_json(result, backend="numpy", seed=20260215)
     path = tmp_path / "report.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded = load_overhead_report(path)
+    assert loaded["schema_version"] == OVERHEAD_REPORT_SCHEMA_VERSION
+    assert loaded["meta"]["execution_target"] == {
+        "backend": "numpy",
+        "requested_device": "cpu",
+        "resolved_device": "cpu",
+    }
+    assert loaded["meta"]["seed"] == 20260215
+    assert len(loaded["meta"]["harness_source_sha256"]) == 64
     case = loaded["scenarios"][0]["cases"][0]
     assert case.get("residual_ms_per_call") == 0.2
 
 
 def test_guardrail_loader_accepts_residual_field(tmp_path: Path) -> None:
     payload = {
+        "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
         "meta": {
-            "backend": "numpy",
-            "python": "3.11",
-            "numpy": "1.26",
-            "torch": "not-installed",
-            "einops": "not-installed",
-            "einx": "not-installed",
+            "harness_source_sha256": "0" * 64,
+            "subject_source": {
+                "kind": "git_checkout",
+                "distribution_version": "0.2.0.dev1",
+                "git_revision": "a" * 40,
+                "git_dirty": False,
+            },
+            "execution_target": {
+                "backend": "numpy",
+                "requested_device": "cpu",
+                "resolved_device": "cpu",
+            },
+            "environment": {
+                "python": "3.11",
+                "numpy": "1.26",
+                "torch": "not-installed",
+                "array_api_compat": "1.12",
+                "opt_einsum": "3.4",
+            },
+            "seed": 20260215,
             "stages": ["__call__", "solve", "runner_resolve", "fusion", "kernel"],
         },
         "scenarios": [
