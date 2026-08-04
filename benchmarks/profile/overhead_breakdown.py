@@ -1466,9 +1466,6 @@ def _cpu_allocation_metadata() -> OverheadCpuAllocationDict:
 def _native_threadpool_metadata(
     backend: BackendName,
 ) -> list[OverheadNativeThreadPoolDict]:
-    if backend == "torch":
-        return []
-
     threadpools: list[OverheadNativeThreadPoolDict] = []
     for index, raw_threadpool in enumerate(threadpool_info()):
         context = f"native thread pool {index}"
@@ -1478,7 +1475,7 @@ def _native_threadpool_metadata(
             if not isinstance(value, str) or not value:
                 raise RuntimeError(f"{context} has no valid {field_name}")
             required_strings[field_name] = value
-        if required_strings["user_api"] != "blas":
+        if backend == "numpy" and required_strings["user_api"] != "blas":
             continue
         num_threads = raw_threadpool.get("num_threads")
         if type(num_threads) is not int or num_threads < 1:

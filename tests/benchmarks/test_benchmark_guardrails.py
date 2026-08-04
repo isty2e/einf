@@ -1113,6 +1113,31 @@ def test_torch_comparison_rejects_effective_thread_count_changes() -> None:
         )
 
 
+def test_torch_comparison_rejects_native_runtime_changes() -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
+    for report in (baseline, candidate):
+        report["meta"]["execution_target"]["backend"] = "torch"
+        report["meta"]["environment"]["torch"] = "2.6"
+        report["meta"]["execution_resources"]["torch_threads"] = {
+            "intra_op": 8,
+            "inter_op": 2,
+        }
+    candidate["meta"]["execution_resources"]["native_threadpools"][0][
+        "internal_api"
+    ] = "mkl"
+
+    with pytest.raises(ValueError, match="execution_resources"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="unpatched_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
 @pytest.mark.parametrize("drifting_role", ("baseline", "candidate"))
 def test_compare_overhead_report_trials_requires_stable_role_sources(
     drifting_role: str,

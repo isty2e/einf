@@ -256,7 +256,10 @@ def test_execution_resources_capture_affinity_and_effective_threads(
     )
 
     assert resources["cpu_allocation"]["process_cpu_affinity"] == [1, 3]
-    assert resources["native_threadpools"] == []
+    assert [pool["user_api"] for pool in resources["native_threadpools"]] == [
+        "blas",
+        "openmp",
+    ]
     assert resources.get("torch_threads") == {"intra_op": 4, "inter_op": 2}
     assert [pool["user_api"] for pool in numpy_resources["native_threadpools"]] == [
         "blas"
