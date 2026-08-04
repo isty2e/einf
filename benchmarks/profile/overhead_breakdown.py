@@ -16,33 +16,117 @@ Scenarios:
 """
 
 import argparse
+import hashlib
 import importlib
+import os
 import platform
 import statistics
+import subprocess
 import sys
+import sysconfig
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal, TypeVar
+from importlib.metadata import Distribution, PackageNotFoundError, distribution
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, TypeVar, cast
 from unittest.mock import patch
+from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
+from threadpoolctl import threadpool_info
 
-from benchmarks.shared import version_or_missing
+from benchmarks.guardrail.experiment import (
+    CgroupCpuHierarchyFingerprint,
+    CgroupV1CpuLevel,
+    CgroupV2CpuLevel,
+    CpuAllocationFingerprint,
+    CpuBandwidthLimit,
+    CpuUtilizationClamp,
+    DependencyBuildFingerprint,
+    ExecutionResourcesFingerprint,
+    NativeRuntimeEnvironmentFingerprint,
+    NativeThreadPoolFingerprint,
+    ProcessSchedulingFingerprint,
+)
+from benchmarks.guardrail.receipt import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    BackendName,
+    OverheadEnvironmentDict,
+    OverheadExecutionResourcesDict,
+    OverheadPythonRuntimeDict,
+)
 from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import (
+    einf_source_receipt_metadata,
+    require_einf_source_root,
+    require_stable_einf_source_content,
+    version_or_missing,
+)
 from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repeat
 
-try:
-    import torch
-except ImportError:
-    torch = None
+torch: Any = None
+
+_DEPENDENCY_IMPORT_NAMES = {
+    "array-api-compat": "array_api_compat",
+    "numpy": "numpy",
+    "opt_einsum": "opt_einsum",
+    "torch": "torch",
+}
 
 Array = NDArray[np.float32]
-BackendName = Literal["numpy", "torch"]
+_CgroupVersion = Literal[1, 2]
 _TensorFamily = TypeVar("_TensorFamily", bound=TensorLike)
+
+_CGROUP_MEMBERSHIP_PATH = Path("/proc/self/cgroup")
+_CGROUP_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+_CGROUP_V1_FINGERPRINTED_CPU_CONTROLS = frozenset(
+    {
+        "cpu.cfs_burst_us",
+        "cpu.cfs_period_us",
+        "cpu.cfs_quota_us",
+        "cpu.shares",
+    }
+)
+_CGROUP_V1_CLASSIFIED_CPU_CONTROLS = _CGROUP_V1_FINGERPRINTED_CPU_CONTROLS | {
+    # Runtime/statistics files do not configure fair-scheduler benchmark tasks.
+    "cpu.rt_period_us",
+    "cpu.rt_runtime_us",
+    "cpu.stat",
+}
+_CGROUP_V2_FINGERPRINTED_CPU_CONTROLS = frozenset(
+    {
+        "cpu.idle",
+        "cpu.max",
+        "cpu.max.burst",
+        "cpu.uclamp.max",
+        "cpu.uclamp.min",
+        "cpu.weight",
+    }
+)
+_CGROUP_V2_CLASSIFIED_CPU_CONTROLS = _CGROUP_V2_FINGERPRINTED_CPU_CONTROLS | {
+    # These are observations or alternate projections of fingerprinted controls.
+    "cpu.pressure",
+    "cpu.stat",
+    "cpu.stat.local",
+    "cpu.weight.nice",
+}
+
+
+def _require_torch_backend() -> Any:
+    global torch
+    if torch is not None:
+        return torch
+    try:
+        torch = importlib.import_module("torch")
+    except (ImportError, OSError) as error:
+        raise RuntimeError(
+            "torch backend selected but torch cannot be imported"
+        ) from error
+    return torch
+
 
 Tensor = TensorLike
 TensorBatch = tuple[Tensor, ...]
@@ -188,6 +272,12 @@ class OverheadCase:
 
 
 @dataclass(frozen=True, slots=True)
+class _CgroupMount:
+    root: PurePosixPath
+    mount_point: Path
+
+
+@dataclass(frozen=True, slots=True)
 class RearrangeSplitDynamicBatch:
     tensor: Tensor
     h: int
@@ -251,9 +341,8 @@ def _to_backend_tensor(
     """Convert deterministic numpy-generated data to selected backend tensors."""
     if backend == "numpy":
         return array
-    if torch is None:
-        raise RuntimeError("torch backend selected without torch installed")
-    return torch.from_numpy(np.ascontiguousarray(array))
+    torch_backend = _require_torch_backend()
+    return torch_backend.from_numpy(np.ascontiguousarray(array))
 
 
 def _touch_tensor(
@@ -270,11 +359,12 @@ def _touch_tensor(
         return
 
     if torch is not None and isinstance(tensor, torch.Tensor):
-        if tensor.numel() > 0:
-            if tensor.ndim == 0:
-                _ = float(tensor.item())
+        torch_tensor = cast(Any, tensor)
+        if torch_tensor.numel() > 0:
+            if torch_tensor.ndim == 0:
+                _ = float(torch_tensor.item())
             else:
-                _ = float(tensor[(0,) * tensor.ndim].item())
+                _ = float(torch_tensor[(0,) * torch_tensor.ndim].item())
         return
 
     raise TypeError(f"unsupported tensor type: {type(tensor)!r}")
@@ -337,6 +427,30 @@ def _resolve_target(target: str) -> tuple[object, str, Callable[..., object]]:
         return parent, attr_name, original
 
     raise ModuleNotFoundError(f"cannot resolve patch target: {target}")
+
+
+def _resolved_stage_target_names() -> dict[str, tuple[str, ...]]:
+    """Resolve the instrumentation coverage used by this profiler process."""
+    resolved_by_stage: dict[str, tuple[str, ...]] = {}
+    for stage, targets in STAGE_TARGETS.items():
+        resolved_names: list[str] = []
+        resolved_slots: set[tuple[int, str]] = set()
+        for target in targets:
+            try:
+                parent, attr_name, _ = _resolve_target(target)
+            except (AttributeError, ModuleNotFoundError, TypeError):
+                continue
+            slot = (id(parent), attr_name)
+            if slot in resolved_slots:
+                continue
+            resolved_slots.add(slot)
+            resolved_names.append(target)
+        if not resolved_names:
+            raise RuntimeError(
+                f"no instrumentation target resolved for stage {stage!r}"
+            )
+        resolved_by_stage[stage] = tuple(resolved_names)
+    return resolved_by_stage
 
 
 def _stage_wrapper(
@@ -956,16 +1070,33 @@ def _to_json(
     result: tuple[ScenarioResult, ...],
     *,
     backend: BackendName,
+    seed: int,
+    resolved_stage_targets: dict[str, tuple[str, ...]],
+    harness_source_sha256: str,
+    subject_source: dict[str, str | bool | None],
+    execution_resources: OverheadExecutionResourcesDict,
+    environment: OverheadEnvironmentDict,
 ) -> dict[str, object]:
     return {
+        "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
         "meta": {
-            "backend": backend,
-            "python": platform.python_version(),
-            "numpy": version_or_missing("numpy"),
-            "torch": version_or_missing("torch"),
-            "einops": version_or_missing("einops"),
-            "einx": version_or_missing("einx"),
+            "capture_id": str(uuid4()),
+            "harness_source_sha256": harness_source_sha256,
+            "subject_source": subject_source,
+            "execution_target": {
+                "backend": backend,
+                "requested_device": "cpu",
+                "resolved_device": "cpu",
+            },
+            "host": _host_metadata(),
+            "execution_resources": execution_resources,
+            "environment": environment,
+            "seed": seed,
             "stages": list(STAGES),
+            "resolved_stage_targets": {
+                stage: list(targets)
+                for stage, targets in resolved_stage_targets.items()
+            },
         },
         "scenarios": [
             {
@@ -990,11 +1121,765 @@ def _to_json(
     }
 
 
+def _harness_source_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _subject_source_metadata() -> dict[str, str | bool | None]:
+    return einf_source_receipt_metadata()
+
+
+def _require_stable_receipt_sources(
+    *,
+    harness_source_sha256: str,
+    subject_content_sha256: str,
+) -> None:
+    if _harness_source_sha256() != harness_source_sha256:
+        raise RuntimeError("overhead profiler source changed during measurement")
+    require_stable_einf_source_content(subject_content_sha256)
+
+
+def _command_stdout(*command: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _cpu_model() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            _command_stdout("sysctl", "-n", "machdep.cpu.brand_string")
+            or _command_stdout("sysctl", "-n", "hw.model")
+            or platform.processor()
+            or "unknown"
+        )
+    if system == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() in {"model name", "Hardware"}:
+                    return value.strip()
+        except OSError:
+            pass
+    return os.environ.get("PROCESSOR_IDENTIFIER") or platform.processor() or "unknown"
+
+
+def _host_metadata() -> dict[str, str | int]:
+    """Return stable host facts required for CPU latency comparison."""
+    logical_cpu_count = os.cpu_count()
+    if logical_cpu_count is None:
+        raise RuntimeError("cannot determine logical CPU count")
+    system = platform.system()
+    release = platform.release()
+    machine = platform.machine()
+    cpu_model = _cpu_model()
+    if not system or not release or not machine or cpu_model == "unknown":
+        raise RuntimeError("cannot determine complete host CPU identity")
+    return {
+        "system": system,
+        "release": release,
+        "machine": machine,
+        "cpu_model": cpu_model,
+        "logical_cpu_count": logical_cpu_count,
+    }
+
+
+def _process_cpu_affinity() -> list[int] | None:
+    get_affinity = cast(
+        Callable[[int], set[int]] | None,
+        getattr(os, "sched_getaffinity", None),
+    )
+    if get_affinity is None:
+        return None
+    try:
+        affinity = sorted(get_affinity(0))
+    except OSError as error:
+        raise RuntimeError("cannot determine process CPU affinity") from error
+    if not affinity:
+        raise RuntimeError("process CPU affinity is empty")
+    return affinity
+
+
+def _process_scheduling_fingerprint() -> ProcessSchedulingFingerprint:
+    get_scheduler = cast(
+        Callable[[int], int] | None,
+        getattr(os, "sched_getscheduler", None),
+    )
+    get_scheduler_parameters = cast(
+        Callable[[int], object] | None,
+        getattr(os, "sched_getparam", None),
+    )
+    if (get_scheduler is None) != (get_scheduler_parameters is None):
+        raise RuntimeError("process scheduler inspection support is incomplete")
+
+    scheduler_policy: Literal["SCHED_OTHER"] | None = None
+    scheduler_priority: int | None = None
+    if get_scheduler is not None and get_scheduler_parameters is not None:
+        try:
+            observed_scheduler_policy = get_scheduler(0)
+            parameters = get_scheduler_parameters(0)
+        except OSError as error:
+            raise RuntimeError("cannot determine process scheduler state") from error
+        scheduler_priority = getattr(parameters, "sched_priority", None)
+        if (
+            type(observed_scheduler_policy) is not int
+            or type(scheduler_priority) is not int
+        ):
+            raise RuntimeError("process scheduler state is invalid")
+        default_policy = getattr(os, "SCHED_OTHER", None)
+        if type(default_policy) is not int:
+            raise RuntimeError("default process scheduler policy is unavailable")
+        if observed_scheduler_policy != default_policy:
+            raise RuntimeError(
+                "receipt capture requires the default SCHED_OTHER policy"
+            )
+        scheduler_policy = "SCHED_OTHER"
+
+    get_priority = cast(
+        Callable[[int, int], int] | None,
+        getattr(os, "getpriority", None),
+    )
+    priority_scope = getattr(os, "PRIO_PROCESS", None)
+    if (get_priority is None) != (priority_scope is None):
+        raise RuntimeError("process niceness inspection support is incomplete")
+    nice_value: int | None = None
+    if get_priority is not None:
+        if type(priority_scope) is not int:
+            raise RuntimeError("process niceness scope is invalid")
+        try:
+            nice_value = get_priority(priority_scope, 0)
+        except OSError as error:
+            raise RuntimeError("cannot determine process niceness") from error
+        if type(nice_value) is not int:
+            raise RuntimeError("process niceness is invalid")
+
+    return ProcessSchedulingFingerprint(
+        scheduler_policy=scheduler_policy,
+        scheduler_priority=scheduler_priority,
+        nice_value=nice_value,
+    )
+
+
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode the escapes permitted in procfs mountinfo path fields."""
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _cgroup_cpu_membership(text: str) -> tuple[_CgroupVersion, PurePosixPath] | None:
+    """Return the process membership for the controller governing CPU bandwidth."""
+    unified_membership: PurePosixPath | None = None
+    for raw_line in text.splitlines():
+        if not raw_line:
+            continue
+        hierarchy, separator, remainder = raw_line.partition(":")
+        controllers, second_separator, raw_path = remainder.partition(":")
+        if not separator or not second_separator:
+            raise RuntimeError("cannot parse /proc/self/cgroup")
+        membership = PurePosixPath(raw_path)
+        if not membership.is_absolute():
+            raise RuntimeError("cgroup membership path must be absolute")
+        if "cpu" in controllers.split(","):
+            return 1, membership
+        if hierarchy == "0" and not controllers:
+            unified_membership = membership
+    if unified_membership is None:
+        return None
+    return 2, unified_membership
+
+
+def _cgroup_cpu_mounts(
+    text: str,
+    *,
+    version: _CgroupVersion,
+) -> tuple[_CgroupMount, ...]:
+    """Return cgroup mounts that can expose the selected CPU controller."""
+    mounts: list[_CgroupMount] = []
+    for raw_line in text.splitlines():
+        before_separator, separator, after_separator = raw_line.partition(" - ")
+        if not separator:
+            continue
+        mount_fields = before_separator.split()
+        filesystem_fields = after_separator.split()
+        if len(mount_fields) < 6 or len(filesystem_fields) < 3:
+            raise RuntimeError("cannot parse /proc/self/mountinfo")
+        filesystem_type = filesystem_fields[0]
+        if version == 2:
+            if filesystem_type != "cgroup2":
+                continue
+        else:
+            mount_options = set(mount_fields[5].split(","))
+            super_options = set(filesystem_fields[2].split(","))
+            if filesystem_type != "cgroup" or "cpu" not in (
+                mount_options | super_options
+            ):
+                continue
+
+        root = PurePosixPath(_decode_mountinfo_path(mount_fields[3]))
+        mount_point = Path(_decode_mountinfo_path(mount_fields[4]))
+        if not root.is_absolute() or not mount_point.is_absolute():
+            raise RuntimeError("cgroup mount paths must be absolute")
+        mounts.append(
+            _CgroupMount(
+                root=root,
+                mount_point=mount_point,
+            )
+        )
+    return tuple(sorted(mounts, key=lambda mount: len(mount.root.parts), reverse=True))
+
+
+def _candidate_cgroup_directories(
+    *,
+    membership: PurePosixPath,
+    mount: _CgroupMount,
+) -> tuple[Path, ...]:
+    """Return host- and cgroup-namespace interpretations of one membership."""
+    candidates: list[Path] = []
+    try:
+        relative_membership = membership.relative_to(mount.root)
+    except ValueError:
+        pass
+    else:
+        candidates.append(mount.mount_point.joinpath(*relative_membership.parts))
+
+    namespace_relative = mount.mount_point.joinpath(*membership.parts[1:])
+    if namespace_relative not in candidates:
+        candidates.append(namespace_relative)
+    return tuple(candidates)
+
+
+def _resolve_cgroup_directory(
+    *,
+    version: _CgroupVersion,
+    membership: PurePosixPath,
+    mounts: tuple[_CgroupMount, ...],
+) -> tuple[Path, Path]:
+    """Resolve the process cgroup directory and visible hierarchy root."""
+    control_name = "cpu.max" if version == 2 else "cpu.cfs_quota_us"
+    existing_candidates: list[tuple[Path, Path]] = []
+    for mount in mounts:
+        for candidate in _candidate_cgroup_directories(
+            membership=membership,
+            mount=mount,
+        ):
+            if not candidate.is_dir():
+                continue
+            resolved = (candidate, mount.mount_point)
+            if (candidate / control_name).is_file():
+                return resolved
+            existing_candidates.append(resolved)
+    if existing_candidates:
+        return existing_candidates[0]
+    raise RuntimeError("cannot resolve the process CPU cgroup directory")
+
+
+def _read_optional_control(path: Path) -> str | None:
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RuntimeError(f"cannot read cgroup CPU control {path.name}") from error
+    if not value:
+        raise RuntimeError(f"cgroup CPU control {path.name} is empty")
+    return value
+
+
+def _required_control_integer(
+    value: str,
+    *,
+    name: str,
+    minimum: int,
+) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"cgroup CPU control {name} is not an integer") from error
+    if parsed < minimum:
+        raise RuntimeError(f"cgroup CPU control {name} is below {minimum}")
+    return parsed
+
+
+def _v2_cpu_bandwidth_limit(directory: Path) -> CpuBandwidthLimit | None:
+    raw_max = _read_optional_control(directory / "cpu.max")
+    if raw_max is None:
+        return None
+    max_fields = raw_max.split()
+    if len(max_fields) != 2:
+        raise RuntimeError("cgroup v2 cpu.max must contain quota and period")
+    quota_field, period_field = max_fields
+    period_us = _required_control_integer(
+        period_field,
+        name="cpu.max period",
+        minimum=1,
+    )
+    raw_burst = _read_optional_control(directory / "cpu.max.burst")
+    burst_us = (
+        0
+        if raw_burst is None
+        else _required_control_integer(raw_burst, name="cpu.max.burst", minimum=0)
+    )
+    if quota_field == "max":
+        return None
+    return CpuBandwidthLimit(
+        quota_us=_required_control_integer(
+            quota_field,
+            name="cpu.max quota",
+            minimum=1,
+        ),
+        period_us=period_us,
+        burst_us=burst_us,
+    )
+
+
+def _v1_cpu_bandwidth_limit(directory: Path) -> CpuBandwidthLimit | None:
+    raw_quota = _read_optional_control(directory / "cpu.cfs_quota_us")
+    raw_period = _read_optional_control(directory / "cpu.cfs_period_us")
+    if raw_quota is None and raw_period is None:
+        return None
+    if raw_quota is None or raw_period is None:
+        raise RuntimeError("cgroup v1 CPU quota and period must both be available")
+    quota_us = _required_control_integer(
+        raw_quota,
+        name="cpu.cfs_quota_us",
+        minimum=-1,
+    )
+    period_us = _required_control_integer(
+        raw_period,
+        name="cpu.cfs_period_us",
+        minimum=1,
+    )
+    raw_burst = _read_optional_control(directory / "cpu.cfs_burst_us")
+    burst_us = (
+        0
+        if raw_burst is None
+        else _required_control_integer(
+            raw_burst,
+            name="cpu.cfs_burst_us",
+            minimum=0,
+        )
+    )
+    if quota_us == -1:
+        return None
+    if quota_us == 0:
+        raise RuntimeError("cgroup v1 CPU quota must be positive or -1")
+    return CpuBandwidthLimit(
+        quota_us=quota_us,
+        period_us=period_us,
+        burst_us=burst_us,
+    )
+
+
+def _bounded_optional_control_integer(
+    directory: Path,
+    *,
+    control_name: str,
+    minimum: int,
+    maximum: int,
+) -> int | None:
+    raw_weight = _read_optional_control(directory / control_name)
+    if raw_weight is None:
+        return None
+    weight = _required_control_integer(
+        raw_weight,
+        name=control_name,
+        minimum=minimum,
+    )
+    if weight > maximum:
+        raise RuntimeError(f"cgroup CPU control {control_name} is above {maximum}")
+    return weight
+
+
+def _v2_cpu_idle(directory: Path) -> bool | None:
+    raw_idle = _read_optional_control(directory / "cpu.idle")
+    if raw_idle is None:
+        return None
+    if raw_idle not in ("0", "1"):
+        raise RuntimeError("cgroup v2 cpu.idle must be 0 or 1")
+    return raw_idle == "1"
+
+
+def _v2_cpu_utilization_clamp(directory: Path) -> CpuUtilizationClamp | None:
+    minimum = _read_optional_control(directory / "cpu.uclamp.min")
+    maximum = _read_optional_control(directory / "cpu.uclamp.max")
+    if minimum is None and maximum is None:
+        return None
+    if minimum is None or maximum is None:
+        raise RuntimeError(
+            "cgroup v2 utilization clamp controls must both be available"
+        )
+    try:
+        return CpuUtilizationClamp(
+            minimum_percent=minimum,
+            maximum_percent=maximum,
+        )
+    except ValueError as error:
+        raise RuntimeError("cgroup v2 utilization clamp is invalid") from error
+
+
+def _reject_unknown_cgroup_cpu_controls(
+    directory: Path,
+    *,
+    version: _CgroupVersion,
+) -> None:
+    known_controls = (
+        _CGROUP_V1_CLASSIFIED_CPU_CONTROLS
+        if version == 1
+        else _CGROUP_V2_CLASSIFIED_CPU_CONTROLS
+    )
+    try:
+        observed_controls = {
+            entry.name for entry in directory.iterdir() if entry.name.startswith("cpu.")
+        }
+    except OSError as error:
+        raise RuntimeError("cannot enumerate cgroup CPU controls") from error
+    unknown_controls = sorted(observed_controls - known_controls)
+    if unknown_controls:
+        raise RuntimeError(
+            "unclassified cgroup CPU controls: " + ", ".join(unknown_controls)
+        )
+
+
+def _cgroup_cpu_controls() -> CgroupCpuHierarchyFingerprint | None:
+    """Return hierarchical CPU controls for this process."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        membership_text = _CGROUP_MEMBERSHIP_PATH.read_text()
+        mountinfo_text = _CGROUP_MOUNTINFO_PATH.read_text()
+    except OSError as error:
+        raise RuntimeError("cannot inspect process cgroup CPU allocation") from error
+    membership = _cgroup_cpu_membership(membership_text)
+    if membership is None:
+        return None
+    version, cgroup_path = membership
+    mounts = _cgroup_cpu_mounts(mountinfo_text, version=version)
+    if not mounts:
+        raise RuntimeError("cannot locate the process CPU cgroup mount")
+    directory, hierarchy_root = _resolve_cgroup_directory(
+        version=version,
+        membership=cgroup_path,
+        mounts=mounts,
+    )
+    if directory != hierarchy_root and hierarchy_root not in directory.parents:
+        raise RuntimeError("resolved CPU cgroup escapes its visible hierarchy")
+
+    levels: list[CgroupV1CpuLevel | CgroupV2CpuLevel] = []
+    current = directory
+    while True:
+        _reject_unknown_cgroup_cpu_controls(current, version=version)
+        if version == 1:
+            levels.append(
+                CgroupV1CpuLevel(
+                    bandwidth_limit=_v1_cpu_bandwidth_limit(current),
+                    shares=_bounded_optional_control_integer(
+                        current,
+                        control_name="cpu.shares",
+                        minimum=2,
+                        maximum=262_144,
+                    ),
+                )
+            )
+        else:
+            levels.append(
+                CgroupV2CpuLevel(
+                    bandwidth_limit=_v2_cpu_bandwidth_limit(current),
+                    weight=_bounded_optional_control_integer(
+                        current,
+                        control_name="cpu.weight",
+                        minimum=0,
+                        maximum=10_000,
+                    ),
+                    idle=_v2_cpu_idle(current),
+                    utilization_clamp=_v2_cpu_utilization_clamp(current),
+                )
+            )
+        if current == hierarchy_root:
+            break
+        current = current.parent
+
+    return CgroupCpuHierarchyFingerprint(
+        version=version,
+        child_to_root=tuple(levels),
+    )
+
+
+def _cpu_allocation_fingerprint() -> CpuAllocationFingerprint:
+    affinity = _process_cpu_affinity()
+    return CpuAllocationFingerprint(
+        process_cpu_affinity=None if affinity is None else tuple(affinity),
+        process_scheduling=_process_scheduling_fingerprint(),
+        cgroup_cpu_hierarchy=_cgroup_cpu_controls(),
+    )
+
+
+def _native_threadpool_fingerprints(
+    backend: BackendName,
+) -> tuple[NativeThreadPoolFingerprint, ...]:
+    threadpools: list[NativeThreadPoolFingerprint] = []
+    for index, raw_threadpool in enumerate(threadpool_info()):
+        context = f"native thread pool {index}"
+        required_strings: dict[str, str] = {}
+        for field_name in ("user_api", "internal_api", "prefix"):
+            value = raw_threadpool.get(field_name)
+            if not isinstance(value, str) or not value:
+                raise RuntimeError(f"{context} has no valid {field_name}")
+            required_strings[field_name] = value
+        if backend == "numpy" and required_strings["user_api"] != "blas":
+            continue
+        num_threads = raw_threadpool.get("num_threads")
+        if type(num_threads) is not int or num_threads < 1:
+            raise RuntimeError(f"{context} has no valid num_threads")
+
+        optional_strings: dict[str, str | None] = {}
+        for field_name in ("version", "threading_layer", "architecture"):
+            value = raw_threadpool.get(field_name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise RuntimeError(f"{context} has invalid {field_name}")
+            optional_strings[field_name] = value
+        threadpools.append(
+            NativeThreadPoolFingerprint(
+                user_api=required_strings["user_api"],
+                internal_api=required_strings["internal_api"],
+                prefix=required_strings["prefix"],
+                num_threads=num_threads,
+                version=optional_strings["version"],
+                threading_layer=optional_strings["threading_layer"],
+                architecture=optional_strings["architecture"],
+            )
+        )
+    return tuple(threadpools)
+
+
+def _native_runtime_environment_fingerprint() -> NativeRuntimeEnvironmentFingerprint:
+    return NativeRuntimeEnvironmentFingerprint(
+        variables=tuple(
+            sorted(
+                (name, value)
+                for name, value in os.environ.items()
+                if NativeRuntimeEnvironmentFingerprint.recognizes(name)
+            )
+        )
+    )
+
+
+def _execution_resources_fingerprint(
+    backend: BackendName,
+    *,
+    cpu_allocation: CpuAllocationFingerprint,
+) -> ExecutionResourcesFingerprint:
+    torch_threads: tuple[int, int] | None = None
+    if backend == "torch":
+        torch_backend = _require_torch_backend()
+        torch_threads = (
+            torch_backend.get_num_threads(),
+            torch_backend.get_num_interop_threads(),
+        )
+    return ExecutionResourcesFingerprint(
+        backend=backend,
+        cpu_allocation=cpu_allocation,
+        native_runtime_environment=_native_runtime_environment_fingerprint(),
+        native_threadpools=_native_threadpool_fingerprints(backend),
+        torch_threads=torch_threads,
+    )
+
+
+def _require_stable_execution_resources(
+    expected: ExecutionResourcesFingerprint,
+    *,
+    backend: BackendName,
+) -> None:
+    current = _execution_resources_fingerprint(
+        backend,
+        cpu_allocation=_cpu_allocation_fingerprint(),
+    )
+    if current != expected:
+        raise RuntimeError("execution resources changed during overhead measurement")
+
+
+def _fixed_python_hash_seed() -> int:
+    """Validate and return this process's fixed PYTHONHASHSEED setting."""
+    raw_seed = os.environ.get("PYTHONHASHSEED")
+    if raw_seed is None or raw_seed == "random":
+        raise RuntimeError(
+            "receipt capture requires a fixed PYTHONHASHSEED in [0, 4294967295]"
+        )
+    if not raw_seed.isascii() or not raw_seed.isdecimal():
+        raise RuntimeError("PYTHONHASHSEED must be an unsigned decimal integer")
+    seed = int(raw_seed)
+    if not 0 <= seed <= 4_294_967_295:
+        raise RuntimeError("PYTHONHASHSEED is outside [0, 4294967295]")
+    if sys.flags.ignore_environment:
+        raise RuntimeError("Python was started with environment variables disabled")
+    expected_randomization = int(seed != 0)
+    if sys.flags.hash_randomization != expected_randomization:
+        raise RuntimeError(
+            "PYTHONHASHSEED does not match the active hash-randomization mode"
+        )
+    return seed
+
+
+def _python_debug_build() -> bool | None:
+    raw_value = sysconfig.get_config_var("Py_DEBUG")
+    if raw_value is None:
+        return None
+    if raw_value in (0, "0"):
+        return False
+    if raw_value in (1, "1"):
+        return True
+    raise RuntimeError("Python Py_DEBUG build setting is not canonical")
+
+
+def _python_runtime_metadata() -> OverheadPythonRuntimeDict:
+    implementation = sys.implementation
+    implementation_version = implementation.version
+    cache_tag = implementation.cache_tag
+    if cache_tag is not None and (not isinstance(cache_tag, str) or not cache_tag):
+        raise RuntimeError("Python implementation cache tag is invalid")
+    abi_flags = getattr(sys, "abiflags", "")
+    if not isinstance(abi_flags, str):
+        raise TypeError("Python ABI flags are invalid")
+    return OverheadPythonRuntimeDict(
+        implementation_name=implementation.name,
+        implementation_version=(
+            f"{implementation_version.major}.{implementation_version.minor}."
+            f"{implementation_version.micro}-{implementation_version.releaselevel}."
+            f"{implementation_version.serial}"
+        ),
+        language_version=platform.python_version(),
+        build=sys.version,
+        cache_tag=cache_tag,
+        abi_flags=abi_flags,
+        optimize=sys.flags.optimize,
+        debug=sys.flags.debug,
+        py_debug=_python_debug_build(),
+        hash_seed=_fixed_python_hash_seed(),
+        hash_witness=(
+            hash("einf-overhead-hash-witness-v1"),
+            hash("einf-overhead-hash-witness-v2"),
+        ),
+    )
+
+
+def _dependency_versions(backend: BackendName) -> dict[str, str]:
+    dependencies = {
+        "numpy": version_or_missing("numpy"),
+        "array_api_compat": version_or_missing("array-api-compat"),
+        "opt_einsum": version_or_missing("opt_einsum"),
+    }
+    if backend == "torch":
+        dependencies["torch"] = version_or_missing("torch")
+    return dependencies
+
+
+def _require_distribution_owns_import(
+    distribution_name: str,
+    installed_distribution: Distribution,
+) -> None:
+    module_name = _DEPENDENCY_IMPORT_NAMES.get(distribution_name)
+    if module_name is None:
+        raise ValueError(f"unsupported dependency {distribution_name!r}")
+    try:
+        imported_module = importlib.import_module(module_name)
+    except (ImportError, OSError) as error:
+        raise RuntimeError(
+            f"cannot import required dependency {distribution_name!r}"
+        ) from error
+    module_file = getattr(imported_module, "__file__", None)
+    if not isinstance(module_file, str) or not module_file:
+        raise RuntimeError(
+            f"dependency {distribution_name!r} has no concrete import origin"
+        )
+    try:
+        imported_package = Path(module_file).resolve(strict=True).parent
+        distribution_package = Path(
+            installed_distribution.locate_file(module_name)
+        ).resolve(strict=True)
+        same_package = imported_package.samefile(distribution_package)
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot verify imported dependency {distribution_name!r}"
+        ) from error
+    if not same_package:
+        raise RuntimeError(
+            f"imported dependency {distribution_name!r} does not belong to its "
+            "installed distribution"
+        )
+
+
+def _dependency_build_fingerprint(
+    distribution_name: str,
+) -> DependencyBuildFingerprint:
+    try:
+        installed_distribution = distribution(distribution_name)
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            f"cannot identify required dependency {distribution_name!r}"
+        ) from error
+    _require_distribution_owns_import(distribution_name, installed_distribution)
+    record = installed_distribution.read_text("RECORD")
+    if record is None:
+        raise RuntimeError(
+            f"dependency {distribution_name!r} has no installed RECORD manifest"
+        )
+    return DependencyBuildFingerprint(
+        version=installed_distribution.version,
+        record_sha256=hashlib.sha256(record.encode("utf-8")).hexdigest(),
+    )
+
+
+def _environment_metadata(
+    backend: BackendName,
+    *,
+    python_runtime: OverheadPythonRuntimeDict,
+) -> OverheadEnvironmentDict:
+    """Return the Python runtime and dependency builds used by this capture."""
+    environment = OverheadEnvironmentDict(
+        python=python_runtime,
+        numpy=_dependency_build_fingerprint("numpy").to_receipt(),
+        array_api_compat=_dependency_build_fingerprint("array-api-compat").to_receipt(),
+        opt_einsum=_dependency_build_fingerprint("opt_einsum").to_receipt(),
+    )
+    if backend == "torch":
+        environment["torch"] = _dependency_build_fingerprint("torch").to_receipt()
+    return environment
+
+
+def _require_stable_environment(
+    expected: OverheadEnvironmentDict,
+    *,
+    backend: BackendName,
+) -> None:
+    current = _environment_metadata(
+        backend,
+        python_runtime=_python_runtime_metadata(),
+    )
+    if current != expected:
+        raise RuntimeError("runtime environment changed during overhead measurement")
+
+
 def _to_markdown(
     *,
     result: tuple[ScenarioResult, ...],
     backend: BackendName,
 ) -> str:
+    dependencies = _dependency_versions(backend)
+    host = _host_metadata()
     lines = [
         "# Overhead Decomposition (einf)",
         "",
@@ -1021,7 +1906,7 @@ def _to_markdown(
         "## Repro",
         "",
         "```bash",
-        "python -m benchmarks.profile.overhead_breakdown \\",
+        "PYTHONHASHSEED=0 python -m benchmarks.profile.overhead_breakdown \\",
         f"  --backend {backend} \\",
         "  --receipt artifacts/bench/raw/overhead-breakdown.json",
         "```",
@@ -1029,11 +1914,13 @@ def _to_markdown(
         "## Environment",
         "",
         f"- Backend: `{backend}`",
+        f"- Host: `{host['system']} {host['release']} {host['machine']}`",
+        f"- CPU: `{host['cpu_model']}` ({host['logical_cpu_count']} logical CPUs)",
         f"- Python: `{platform.python_version()}`",
-        f"- NumPy: `{version_or_missing('numpy')}`",
-        f"- torch: `{version_or_missing('torch')}`",
-        f"- einops: `{version_or_missing('einops')}`",
-        f"- einx: `{version_or_missing('einx')}`",
+        f"- NumPy: `{dependencies['numpy']}`",
+        f"- array-api-compat: `{dependencies['array_api_compat']}`",
+        f"- opt_einsum: `{dependencies['opt_einsum']}`",
+        *([f"- torch: `{dependencies['torch']}`"] if backend == "torch" else []),
         "",
         "## Results",
         "",
@@ -1077,10 +1964,36 @@ def main() -> int:
         default=None,
         help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
+    parser.add_argument(
+        "--expect-einf-source-root",
+        type=Path,
+        default=None,
+        help="Fail unless the imported einf package belongs to this checkout root.",
+    )
     args = parser.parse_args()
     backend: BackendName = args.backend
-    if backend == "torch" and torch is None:
-        raise RuntimeError("torch backend selected but torch is not installed")
+    if backend == "torch":
+        _require_torch_backend()
+    if args.expect_einf_source_root is not None:
+        require_einf_source_root(args.expect_einf_source_root)
+    resolved_stage_targets = _resolved_stage_target_names()
+    receipt_harness_source: str | None = None
+    receipt_subject_source: dict[str, str | bool | None] | None = None
+    receipt_execution_resources: ExecutionResourcesFingerprint | None = None
+    receipt_python_runtime: OverheadPythonRuntimeDict | None = None
+    receipt_environment: OverheadEnvironmentDict | None = None
+    if args.receipt is not None:
+        receipt_harness_source = _harness_source_sha256()
+        receipt_subject_source = _subject_source_metadata()
+        receipt_execution_resources = _execution_resources_fingerprint(
+            backend,
+            cpu_allocation=_cpu_allocation_fingerprint(),
+        )
+        receipt_python_runtime = _python_runtime_metadata()
+        receipt_environment = _environment_metadata(
+            backend,
+            python_runtime=receipt_python_runtime,
+        )
 
     scenario_specs = (
         ("fixed-medium", "fixed", "medium"),
@@ -1099,12 +2012,41 @@ def main() -> int:
         for offset, (scenario, mode, scale) in enumerate(scenario_specs)
     )
 
-    receipt_payload = _to_json(results, backend=backend)
     markdown = _to_markdown(
         result=results,
         backend=backend,
     )
     if args.receipt is not None:
+        if (
+            receipt_harness_source is None
+            or receipt_subject_source is None
+            or receipt_execution_resources is None
+            or receipt_python_runtime is None
+            or receipt_environment is None
+        ):
+            raise RuntimeError("receipt experiment identity was not captured")
+        subject_content_sha256 = receipt_subject_source["content_sha256"]
+        if not isinstance(subject_content_sha256, str):
+            raise RuntimeError("receipt subject content digest is unavailable")
+        _require_stable_receipt_sources(
+            harness_source_sha256=receipt_harness_source,
+            subject_content_sha256=subject_content_sha256,
+        )
+        _require_stable_execution_resources(
+            receipt_execution_resources,
+            backend=backend,
+        )
+        _require_stable_environment(receipt_environment, backend=backend)
+        receipt_payload = _to_json(
+            results,
+            backend=backend,
+            seed=args.seed,
+            resolved_stage_targets=resolved_stage_targets,
+            harness_source_sha256=receipt_harness_source,
+            subject_source=receipt_subject_source,
+            execution_resources=receipt_execution_resources.to_receipt(),
+            environment=receipt_environment,
+        )
         publish_receipt(args.receipt, receipt_payload)
     print(markdown)
     if args.receipt is not None:

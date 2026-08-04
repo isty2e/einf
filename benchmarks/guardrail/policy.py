@@ -10,8 +10,77 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
+from uuid import UUID
+
+from .experiment import (
+    DependencyBuildFingerprint,
+    ExecutionResourcesFingerprint,
+    ExperimentFingerprint,
+)
+from .receipt import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadEnvironmentDict,
+    OverheadExecutionResourcesDict,
+    OverheadExecutionTargetDict,
+    OverheadHostDict,
+    OverheadPythonRuntimeDict,
+    OverheadSourceDict,
+)
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
+
+
+def _required_string(
+    mapping: Mapping[str, object],
+    *,
+    name: str,
+    context: str,
+) -> str:
+    """Return one required non-empty string field."""
+    value = mapping.get(name)
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"{context}: {name} must be a non-empty string")
+    return value
+
+
+def _required_integer(
+    mapping: Mapping[str, object],
+    *,
+    name: str,
+    context: str,
+) -> int:
+    """Return one required integer field, excluding booleans."""
+    value = mapping.get(name)
+    if type(value) is not int:
+        raise TypeError(f"{context}: {name} must be an integer")
+    return value
+
+
+def _required_mapping(
+    mapping: Mapping[str, object],
+    *,
+    name: str,
+    context: str,
+) -> Mapping[str, object]:
+    """Return one required object field."""
+    value = mapping.get(name)
+    if not isinstance(value, dict):
+        raise TypeError(f"{context}: {name} must be an object")
+    return value
+
+
+def _required_sha256(
+    mapping: Mapping[str, object],
+    *,
+    name: str,
+    context: str,
+) -> str:
+    value = _required_string(mapping, name=name, context=context)
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(f"{context}: {name} must be lowercase SHA-256")
+    return value
 
 
 def _positive_finite_latency(
@@ -76,18 +145,22 @@ class OverheadScenarioDict(TypedDict):
 class OverheadMetaDict(TypedDict):
     """Top-level metadata section in overhead raw JSON."""
 
-    backend: str
-    python: str
-    numpy: str
-    torch: str
-    einops: str
-    einx: str
+    capture_id: str
+    harness_source_sha256: str
+    subject_source: OverheadSourceDict
+    execution_target: OverheadExecutionTargetDict
+    host: OverheadHostDict
+    execution_resources: OverheadExecutionResourcesDict
+    environment: OverheadEnvironmentDict
+    seed: int
     stages: list[str]
+    resolved_stage_targets: dict[str, list[str]]
 
 
 class OverheadReportDict(TypedDict):
     """Top-level overhead raw JSON payload."""
 
+    schema_version: int
     meta: OverheadMetaDict
     scenarios: list[OverheadScenarioDict]
 
@@ -188,6 +261,18 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     if not isinstance(loaded, dict):
         raise TypeError(f"invalid overhead report at {path}: expected object root")
 
+    context = f"invalid overhead report at {path}"
+    schema_version = _required_integer(
+        loaded,
+        name="schema_version",
+        context=context,
+    )
+    if schema_version != OVERHEAD_REPORT_SCHEMA_VERSION:
+        raise ValueError(
+            f"{context}: unsupported schema_version {schema_version}; "
+            f"expected {OVERHEAD_REPORT_SCHEMA_VERSION}"
+        )
+
     meta_raw = loaded.get("meta")
     scenarios_raw = loaded.get("scenarios")
     if not isinstance(meta_raw, dict):
@@ -195,22 +280,298 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     if not isinstance(scenarios_raw, list):
         raise TypeError(f"invalid overhead report at {path}: missing list scenarios")
 
+    capture_id = _required_string(meta_raw, name="capture_id", context=context)
+    try:
+        parsed_capture_id = UUID(capture_id)
+    except ValueError as error:
+        raise ValueError(f"{context}: capture_id must be a UUID") from error
+    if str(parsed_capture_id) != capture_id:
+        raise ValueError(f"{context}: capture_id must use canonical UUID form")
+
+    harness_source_sha256 = _required_sha256(
+        meta_raw,
+        name="harness_source_sha256",
+        context=context,
+    )
+
+    source_raw = _required_mapping(
+        meta_raw,
+        name="subject_source",
+        context=context,
+    )
+    source_kind = _required_string(
+        source_raw,
+        name="kind",
+        context=f"{context}: meta.subject_source",
+    )
+    if source_kind not in ("git_checkout", "installed_distribution"):
+        raise ValueError(f"{context}: unsupported subject source kind {source_kind!r}")
+    distribution_version = _required_string(
+        source_raw,
+        name="distribution_version",
+        context=f"{context}: meta.subject_source",
+    )
+    if "git_revision" not in source_raw or "git_dirty" not in source_raw:
+        raise TypeError(f"{context}: subject git state fields are required")
+    git_revision_raw = source_raw.get("git_revision")
+    if git_revision_raw is not None and (
+        not isinstance(git_revision_raw, str) or not git_revision_raw
+    ):
+        raise TypeError(f"{context}: subject git_revision must be string or null")
+    git_dirty_raw = source_raw.get("git_dirty")
+    if git_dirty_raw is not None and type(git_dirty_raw) is not bool:
+        raise TypeError(f"{context}: subject git_dirty must be boolean or null")
+    if source_kind == "git_checkout" and (
+        git_revision_raw is None or git_dirty_raw is None
+    ):
+        raise ValueError(
+            f"{context}: git checkout source requires revision and dirty state"
+        )
+    if source_kind == "installed_distribution" and (
+        git_revision_raw is not None or git_dirty_raw is not None
+    ):
+        raise ValueError(
+            f"{context}: installed distribution source cannot include git state"
+        )
+    content_sha256 = _required_sha256(
+        source_raw,
+        name="content_sha256",
+        context=f"{context}: meta.subject_source",
+    )
+
+    target_raw = _required_mapping(
+        meta_raw,
+        name="execution_target",
+        context=context,
+    )
+    backend = _required_string(
+        target_raw,
+        name="backend",
+        context=f"{context}: meta.execution_target",
+    )
+    if backend not in ("numpy", "torch"):
+        raise ValueError(f"{context}: unsupported execution backend {backend!r}")
+    execution_target = OverheadExecutionTargetDict(
+        backend=backend,
+        requested_device=_required_string(
+            target_raw,
+            name="requested_device",
+            context=f"{context}: meta.execution_target",
+        ),
+        resolved_device=_required_string(
+            target_raw,
+            name="resolved_device",
+            context=f"{context}: meta.execution_target",
+        ),
+    )
+
+    host_raw = _required_mapping(meta_raw, name="host", context=context)
+    logical_cpu_count = _required_integer(
+        host_raw,
+        name="logical_cpu_count",
+        context=f"{context}: meta.host",
+    )
+    if logical_cpu_count < 1:
+        raise ValueError(f"{context}: host logical_cpu_count must be positive")
+    host = OverheadHostDict(
+        system=_required_string(
+            host_raw,
+            name="system",
+            context=f"{context}: meta.host",
+        ),
+        release=_required_string(
+            host_raw,
+            name="release",
+            context=f"{context}: meta.host",
+        ),
+        machine=_required_string(
+            host_raw,
+            name="machine",
+            context=f"{context}: meta.host",
+        ),
+        cpu_model=_required_string(
+            host_raw,
+            name="cpu_model",
+            context=f"{context}: meta.host",
+        ),
+        logical_cpu_count=logical_cpu_count,
+    )
+
+    resources_raw = _required_mapping(
+        meta_raw,
+        name="execution_resources",
+        context=context,
+    )
+    execution_resources = ExecutionResourcesFingerprint.from_mapping(
+        resources_raw,
+        backend=backend,
+        context=f"{context}: meta.execution_resources",
+    ).to_receipt()
+
+    environment_raw = _required_mapping(
+        meta_raw,
+        name="environment",
+        context=context,
+    )
+    python_raw = _required_mapping(
+        environment_raw,
+        name="python",
+        context=f"{context}: meta.environment",
+    )
+    python_context = f"{context}: meta.environment.python"
+    nullable_python_fields = ("cache_tag", "py_debug")
+    missing_python_fields = tuple(
+        field for field in nullable_python_fields if field not in python_raw
+    )
+    if missing_python_fields:
+        raise TypeError(
+            f"{python_context} missing required fields: "
+            + ", ".join(missing_python_fields)
+        )
+    cache_tag = python_raw.get("cache_tag")
+    if cache_tag is not None and (not isinstance(cache_tag, str) or not cache_tag):
+        raise TypeError(f"{python_context}: cache_tag must be string or null")
+    abi_flags = python_raw.get("abi_flags")
+    if not isinstance(abi_flags, str):
+        raise TypeError(f"{python_context}: abi_flags must be a string")
+    optimize = _required_integer(
+        python_raw,
+        name="optimize",
+        context=python_context,
+    )
+    debug = _required_integer(
+        python_raw,
+        name="debug",
+        context=python_context,
+    )
+    if optimize not in (0, 1, 2):
+        raise ValueError(f"{python_context}: optimize must be 0, 1, or 2")
+    if debug not in (0, 1):
+        raise ValueError(f"{python_context}: debug must be 0 or 1")
+    py_debug = python_raw.get("py_debug")
+    if py_debug is not None and type(py_debug) is not bool:
+        raise TypeError(f"{python_context}: py_debug must be boolean or null")
+    hash_seed = _required_integer(
+        python_raw,
+        name="hash_seed",
+        context=python_context,
+    )
+    if not 0 <= hash_seed <= 4_294_967_295:
+        raise ValueError(f"{python_context}: hash_seed is outside the valid range")
+    hash_witness_raw = python_raw.get("hash_witness")
+    if (
+        not isinstance(hash_witness_raw, list)
+        or len(hash_witness_raw) != 2
+        or not all(type(value) is int for value in hash_witness_raw)
+    ):
+        raise TypeError(f"{python_context}: hash_witness must contain two integers")
+    python_runtime = OverheadPythonRuntimeDict(
+        implementation_name=_required_string(
+            python_raw,
+            name="implementation_name",
+            context=python_context,
+        ),
+        implementation_version=_required_string(
+            python_raw,
+            name="implementation_version",
+            context=python_context,
+        ),
+        language_version=_required_string(
+            python_raw,
+            name="language_version",
+            context=python_context,
+        ),
+        build=_required_string(
+            python_raw,
+            name="build",
+            context=python_context,
+        ),
+        cache_tag=cache_tag,
+        abi_flags=abi_flags,
+        optimize=optimize,
+        debug=debug,
+        py_debug=py_debug,
+        hash_seed=hash_seed,
+        hash_witness=(hash_witness_raw[0], hash_witness_raw[1]),
+    )
+    environment = OverheadEnvironmentDict(
+        python=python_runtime,
+        numpy=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("numpy"),
+            context=f"{context}: meta.environment.numpy",
+        ).to_receipt(),
+        array_api_compat=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("array_api_compat"),
+            context=f"{context}: meta.environment.array_api_compat",
+        ).to_receipt(),
+        opt_einsum=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("opt_einsum"),
+            context=f"{context}: meta.environment.opt_einsum",
+        ).to_receipt(),
+    )
+    if backend == "numpy":
+        if "torch" in environment_raw:
+            raise ValueError(f"{context}: NumPy environment cannot include torch")
+    else:
+        environment["torch"] = DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("torch"),
+            context=f"{context}: meta.environment.torch",
+        ).to_receipt()
+
+    seed = _required_integer(meta_raw, name="seed", context=context)
     stages_raw = meta_raw.get("stages")
     if not isinstance(stages_raw, list) or not all(
-        isinstance(stage_name, str) for stage_name in stages_raw
+        isinstance(stage_name, str) and stage_name for stage_name in stages_raw
     ):
         raise TypeError(
             f"invalid overhead report at {path}: meta.stages must be list[str]"
         )
+    if len(set(stages_raw)) != len(stages_raw):
+        raise ValueError(f"{context}: meta.stages must be unique")
+
+    resolved_targets_raw = _required_mapping(
+        meta_raw,
+        name="resolved_stage_targets",
+        context=context,
+    )
+    expected_instrumented_stages = set(stages_raw) - {"__call__"}
+    if set(resolved_targets_raw) != expected_instrumented_stages:
+        raise ValueError(
+            f"{context}: resolved_stage_targets must cover every instrumented stage"
+        )
+    resolved_stage_targets: dict[str, list[str]] = {}
+    for stage, targets_raw in resolved_targets_raw.items():
+        if (
+            not isinstance(stage, str)
+            or not isinstance(targets_raw, list)
+            or not all(isinstance(target, str) and target for target in targets_raw)
+        ):
+            raise TypeError(
+                f"{context}: resolved_stage_targets must map stages to list[str]"
+            )
+        if not targets_raw or len(set(targets_raw)) != len(targets_raw):
+            raise ValueError(
+                f"{context}: resolved targets for stage {stage!r} must be non-empty and unique"
+            )
+        resolved_stage_targets[stage] = list(targets_raw)
 
     meta: OverheadMetaDict = {
-        "backend": str(meta_raw.get("backend", "")),
-        "python": str(meta_raw.get("python", "")),
-        "numpy": str(meta_raw.get("numpy", "")),
-        "torch": str(meta_raw.get("torch", "")),
-        "einops": str(meta_raw.get("einops", "")),
-        "einx": str(meta_raw.get("einx", "")),
-        "stages": [str(stage_name) for stage_name in stages_raw],
+        "capture_id": capture_id,
+        "harness_source_sha256": harness_source_sha256,
+        "subject_source": OverheadSourceDict(
+            kind=source_kind,
+            distribution_version=distribution_version,
+            git_revision=git_revision_raw,
+            git_dirty=git_dirty_raw,
+            content_sha256=content_sha256,
+        ),
+        "execution_target": execution_target,
+        "host": host,
+        "execution_resources": execution_resources,
+        "environment": environment,
+        "seed": seed,
+        "stages": list(stages_raw),
+        "resolved_stage_targets": resolved_stage_targets,
     }
 
     scenarios: list[OverheadScenarioDict] = []
@@ -220,9 +581,13 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
             raise TypeError(
                 f"invalid overhead report at {path}: each scenario must be object"
             )
-        scenario_name = str(scenario_raw.get("scenario", ""))
-        mode = str(scenario_raw.get("mode", ""))
-        scale = str(scenario_raw.get("scale", ""))
+        scenario_name = _required_string(
+            scenario_raw,
+            name="scenario",
+            context=context,
+        )
+        mode = _required_string(scenario_raw, name="mode", context=context)
+        scale = _required_string(scenario_raw, name="scale", context=context)
         cases_raw = scenario_raw.get("cases")
         if not isinstance(cases_raw, list):
             raise TypeError(
@@ -235,7 +600,7 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
                 raise TypeError(
                     f"invalid overhead report at {path}: each case must be object"
                 )
-            case_name = str(case_raw.get("name", ""))
+            case_name = _required_string(case_raw, name="name", context=context)
             case_key = (scenario_name, mode, scale, case_name)
             if case_key in seen_case_keys:
                 raise ValueError(f"duplicate overhead case key: {case_key!r}")
@@ -261,10 +626,21 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
                     )
                 stage_ms[stage_name] = float(stage_value)
 
+            loops = _required_integer(
+                case_raw,
+                name="loops",
+                context=case_context,
+            )
+            if loops < 1:
+                raise ValueError(f"{case_context}: loops must be positive")
             case = OverheadCaseDict(
                 name=case_name,
-                call_repr=str(case_raw.get("call_repr", "")),
-                loops=int(case_raw.get("loops", 0)),
+                call_repr=_required_string(
+                    case_raw,
+                    name="call_repr",
+                    context=case_context,
+                ),
+                loops=loops,
                 unpatched_call_ms=_required_latency_metric(
                     case_raw,
                     metric_name="unpatched_call_ms",
@@ -288,7 +664,112 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         )
         scenarios.append(scenario)
 
-    return OverheadReportDict(meta=meta, scenarios=scenarios)
+    return OverheadReportDict(
+        schema_version=schema_version,
+        meta=meta,
+        scenarios=scenarios,
+    )
+
+
+def _experiment_fingerprint(
+    report: OverheadReportDict,
+    *,
+    metric: MetricName,
+) -> ExperimentFingerprint:
+    """Build the canonical identity used for one metric comparison."""
+    meta = report["meta"]
+    return ExperimentFingerprint.from_normalized(
+        schema_version=report["schema_version"],
+        harness_source_sha256=meta["harness_source_sha256"],
+        execution_target=meta["execution_target"],
+        host=meta["host"],
+        execution_resources=meta["execution_resources"],
+        environment=meta["environment"],
+        seed=meta["seed"],
+        case_configurations=_case_configurations(report),
+        stages=meta["stages"],
+        resolved_stage_targets=meta["resolved_stage_targets"],
+        include_instrumentation=metric == "instrumented_call_ms",
+    )
+
+
+def _case_configurations(
+    report: OverheadReportDict,
+) -> dict[tuple[str, str, str, str], tuple[str, int]]:
+    """Return configuration for each comparable case identity."""
+    return {
+        (
+            scenario["scenario"],
+            scenario["mode"],
+            scenario["scale"],
+            case["name"],
+        ): (case["call_repr"], case["loops"])
+        for scenario in report["scenarios"]
+        for case in scenario["cases"]
+    }
+
+
+def _subject_source_identity(
+    report: OverheadReportDict,
+) -> tuple[str, str]:
+    source = report["meta"]["subject_source"]
+    return (
+        source["kind"],
+        source["content_sha256"],
+    )
+
+
+def _require_compatible_experiments(
+    reports: tuple[OverheadReportDict, ...],
+    *,
+    metric: MetricName,
+) -> None:
+    if not reports:
+        return
+    capture_ids = [report["meta"]["capture_id"] for report in reports]
+    if len(set(capture_ids)) != len(capture_ids):
+        raise ValueError("overhead reports must come from distinct captures")
+    fingerprints = tuple(
+        _experiment_fingerprint(report, metric=metric) for report in reports
+    )
+    mismatches = ExperimentFingerprint.mismatched_axes(fingerprints)
+    if mismatches:
+        raise ValueError(
+            "overhead reports are not comparable: mismatched experiment axes: "
+            + ", ".join(mismatches)
+        )
+
+
+def _require_stable_trial_sources(
+    report_pairs: tuple[tuple[OverheadReportDict, OverheadReportDict], ...],
+) -> None:
+    if not report_pairs:
+        return
+    expected_baseline = _subject_source_identity(report_pairs[0][0])
+    expected_candidate = _subject_source_identity(report_pairs[0][1])
+    for baseline, candidate in report_pairs[1:]:
+        if _subject_source_identity(baseline) != expected_baseline:
+            raise ValueError("baseline trial reports use different subject sources")
+        if _subject_source_identity(candidate) != expected_candidate:
+            raise ValueError("candidate trial reports use different subject sources")
+
+
+def _require_stable_trial_case_configurations(
+    report_pairs: tuple[tuple[OverheadReportDict, OverheadReportDict], ...],
+) -> None:
+    if not report_pairs:
+        return
+    expected_baseline = _case_configurations(report_pairs[0][0])
+    expected_candidate = _case_configurations(report_pairs[0][1])
+    if not expected_baseline:
+        raise ValueError("baseline trial reports must contain at least one case")
+    for baseline, candidate in report_pairs[1:]:
+        if _case_configurations(baseline) != expected_baseline:
+            raise ValueError("baseline trial reports use different case configurations")
+        if _case_configurations(candidate) != expected_candidate:
+            raise ValueError(
+                "candidate trial reports use different case configurations"
+            )
 
 
 def collect_case_metrics(
@@ -334,6 +815,9 @@ def compare_overhead_reports(
     fail_on_missing_cases: bool,
 ) -> tuple[list[RegressionFinding], list[tuple[str, str, str, str]]]:
     """Compare baseline/candidate overhead reports and return regressions."""
+    if not _case_configurations(baseline):
+        raise ValueError("baseline overhead report must contain at least one case")
+    _require_compatible_experiments((baseline, candidate), metric=metric)
     baseline_metrics = collect_case_metrics(baseline)
     candidate_metrics = collect_case_metrics(candidate)
     missing_keys: list[tuple[str, str, str, str]] = []
@@ -379,6 +863,13 @@ def compare_overhead_report_trials(
         raise ValueError("min_regression_count must be >= 1")
     if min_regression_count > len(report_pairs):
         raise ValueError("min_regression_count cannot exceed report pair count")
+
+    _require_compatible_experiments(
+        tuple(report for report_pair in report_pairs for report in report_pair),
+        metric=metric,
+    )
+    _require_stable_trial_sources(report_pairs)
+    _require_stable_trial_case_configurations(report_pairs)
 
     findings_by_key: dict[tuple[str, str, str, str], list[RegressionFinding]] = {}
     missing_keys: set[tuple[str, str, str, str]] = set()
@@ -474,6 +965,7 @@ def render_trial_findings(
 
 
 __all__ = [
+    "OVERHEAD_REPORT_SCHEMA_VERSION",
     "CaseMetric",
     "MetricName",
     "OverheadReportDict",

@@ -37,13 +37,15 @@ from benchmarks.harness.receipt import (
     timing_summary_payload,
     validation_coverage_payload,
 )
-from benchmarks.shared import (
-    as_single_array,
+from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import (
     available_libraries,
-    einf_source_metadata,
+    einf_source_receipt_metadata,
+    require_einf_source_root,
+    require_stable_einf_source_content,
     version_or_missing,
 )
-from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.outputs import as_single_array
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:
@@ -472,9 +474,10 @@ def _receipt_payload(
     case_results: list[DynamicCaseResult],
     workload_comparisons: Mapping[str, DynamicWorkloadComparison],
     backend: BackendSpec,
+    einf_source: dict[str, str | bool | None],
 ) -> dict[str, object]:
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "benchmark": "einf-vs-einops-einx-dynamic",
         "environment": {
             "python": platform.python_version(),
@@ -484,7 +487,7 @@ def _receipt_payload(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": einf_source_metadata(),
+            "einf": einf_source,
         },
         "execution_target": execution_target_payload(backend),
         "measurement_contract": synchronized_measurement_contract_payload(),
@@ -639,7 +642,19 @@ def main() -> int:
         default=None,
         help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
+    parser.add_argument(
+        "--expect-einf-source-root",
+        type=Path,
+        default=None,
+        help="Fail unless the imported einf package belongs to this checkout root.",
+    )
     args = parser.parse_args()
+
+    if args.expect_einf_source_root is not None:
+        require_einf_source_root(args.expect_einf_source_root)
+    receipt_einf_source = (
+        einf_source_receipt_metadata() if args.receipt is not None else None
+    )
 
     if args.batches < 1:
         raise ValueError(f"batches must be >= 1, got {args.batches}")
@@ -757,6 +772,12 @@ def main() -> int:
         workload_comparisons=workload_comparisons,
     )
     if args.receipt is not None:
+        if receipt_einf_source is None:
+            raise RuntimeError("receipt source identity was not captured")
+        content_sha256 = receipt_einf_source["content_sha256"]
+        if not isinstance(content_sha256, str):
+            raise RuntimeError("receipt source content digest is unavailable")
+        require_stable_einf_source_content(content_sha256)
         publish_receipt(
             args.receipt,
             _receipt_payload(
@@ -765,6 +786,7 @@ def main() -> int:
                 case_results=case_results,
                 workload_comparisons=workload_comparisons,
                 backend=backend,
+                einf_source=receipt_einf_source,
             ),
         )
     print(report)

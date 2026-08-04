@@ -19,8 +19,8 @@ from benchmarks.profile.overhead_breakdown import (
     _fixed_sizes,
     _touch_output,
 )
-from benchmarks.shared import version_or_missing
 from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import version_or_missing
 
 SortName = Literal["cumtime", "tottime", "ncalls"]
 

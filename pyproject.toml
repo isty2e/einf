@@ -26,6 +26,7 @@ dev = [
   "numpy>=1.26",
   "pytest>=8.0",
   "ruff==0.16.0",
+  "threadpoolctl>=3.5",
   "ty>=0.0.64",
 ]
 analysis = [

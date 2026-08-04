@@ -136,40 +136,40 @@ When the migration is complete, keep using the same `BENCH_DIR`,
 Run the overhead profile in both execution orders. This keeps the current
 single-report guardrail available for diagnostics, but the taxonomy migration
 gate uses repeated-trial comparison so one order-biased report does not decide
-the ticket.
+the ticket. Both subjects must use the profiler from the candidate checkout;
+only the editable `einf` source changes between captures. The source-root check
+fails before timing if another editable installation wins import resolution.
+
+```bash
+capture_overhead() {
+  subject_root=$1
+  artifact_stem=$2
+
+  PYTHONHASHSEED=0 uv run --isolated --no-project \
+    --with numpy \
+    --with threadpoolctl \
+    --with torch \
+    --with-editable "$subject_root" \
+    python -m benchmarks.profile.overhead_breakdown \
+      --backend torch \
+      --expect-einf-source-root "$subject_root" \
+      --receipt "$REPO_ROOT/$BENCH_DIR/raw/${artifact_stem}.json" \
+      > "$REPO_ROOT/$BENCH_DIR/${artifact_stem}.md"
+}
+```
 
 Order A, baseline first:
 
 ```bash
-(
-  cd "$BASE_WORKTREE"
-  python -m benchmarks.profile.overhead_breakdown \
-    --backend torch \
-    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-a-torch.json" \
-    > "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-a-torch.md"
-)
-
-python -m benchmarks.profile.overhead_breakdown \
-  --backend torch \
-  --receipt "$BENCH_DIR/raw/candidate-overhead-order-a-torch.json" \
-  > "$BENCH_DIR/candidate-overhead-order-a-torch.md"
+capture_overhead "$BASE_WORKTREE" baseline-overhead-order-a-torch
+capture_overhead "$REPO_ROOT" candidate-overhead-order-a-torch
 ```
 
 Order B, candidate first:
 
 ```bash
-python -m benchmarks.profile.overhead_breakdown \
-  --backend torch \
-  --receipt "$BENCH_DIR/raw/candidate-overhead-order-b-torch.json" \
-  > "$BENCH_DIR/candidate-overhead-order-b-torch.md"
-
-(
-  cd "$BASE_WORKTREE"
-  python -m benchmarks.profile.overhead_breakdown \
-    --backend torch \
-    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-overhead-order-b-torch.json" \
-    > "$REPO_ROOT/$BENCH_DIR/baseline-overhead-order-b-torch.md"
-)
+capture_overhead "$REPO_ROOT" candidate-overhead-order-b-torch
+capture_overhead "$BASE_WORKTREE" baseline-overhead-order-b-torch
 ```
 
 Expected overhead artifacts:
@@ -187,58 +187,60 @@ Expected overhead artifacts:
 
 Capture baseline and candidate library comparison reports. These reports are
 library-facing timing evidence, not the primary current-vs-baseline overhead
-guardrail.
+guardrail. Run the current compare harness for both subjects, as above, so a
+worktree changes only the imported `einf` implementation.
 
 ```bash
-(
-  cd "$BASE_WORKTREE"
-  python -m benchmarks.compare.einf_einops_einx \
-    --backend torch \
-    --device cpu \
-    --scale large \
-    --rounds 6 \
-    --warmup 4 \
-    --repeats 5 \
-    --iterations 60 \
-    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-fixed-large-torch.json" \
-    > "$REPO_ROOT/$BENCH_DIR/baseline-fixed-large-torch.md"
-)
+capture_fixed_compare() {
+  subject_root=$1
+  artifact_stem=$2
 
-python -m benchmarks.compare.einf_einops_einx \
-  --backend torch \
-  --device cpu \
-  --scale large \
-  --rounds 6 \
-  --warmup 4 \
-  --repeats 5 \
-  --iterations 60 \
-  --receipt "$BENCH_DIR/raw/candidate-fixed-large-torch.json" \
-  > "$BENCH_DIR/candidate-fixed-large-torch.md"
+  uv run --isolated --no-project \
+    --with numpy \
+    --with torch \
+    --with einops \
+    --with einx \
+    --with-editable "$subject_root" \
+    python -m benchmarks.compare.einf_einops_einx \
+      --backend torch \
+      --device cpu \
+      --expect-einf-source-root "$subject_root" \
+      --scale large \
+      --rounds 6 \
+      --warmup 4 \
+      --repeats 5 \
+      --iterations 60 \
+      --receipt "$REPO_ROOT/$BENCH_DIR/raw/${artifact_stem}.json" \
+      > "$REPO_ROOT/$BENCH_DIR/${artifact_stem}.md"
+}
 
-(
-  cd "$BASE_WORKTREE"
-  python -m benchmarks.compare.einf_einops_einx_dynamic \
-    --backend torch \
-    --device cpu \
-    --scale large \
-    --batches 64 \
-    --warmup-batches 8 \
-    --repeats 6 \
-    --rounds 3 \
-    --receipt "$REPO_ROOT/$BENCH_DIR/raw/baseline-dynamic-large-torch.json" \
-    > "$REPO_ROOT/$BENCH_DIR/baseline-dynamic-large-torch.md"
-)
+capture_dynamic_compare() {
+  subject_root=$1
+  artifact_stem=$2
 
-python -m benchmarks.compare.einf_einops_einx_dynamic \
-  --backend torch \
-  --device cpu \
-  --scale large \
-  --batches 64 \
-  --warmup-batches 8 \
-  --repeats 6 \
-  --rounds 3 \
-  --receipt "$BENCH_DIR/raw/candidate-dynamic-large-torch.json" \
-  > "$BENCH_DIR/candidate-dynamic-large-torch.md"
+  uv run --isolated --no-project \
+    --with numpy \
+    --with torch \
+    --with einops \
+    --with einx \
+    --with-editable "$subject_root" \
+    python -m benchmarks.compare.einf_einops_einx_dynamic \
+      --backend torch \
+      --device cpu \
+      --expect-einf-source-root "$subject_root" \
+      --scale large \
+      --batches 64 \
+      --warmup-batches 8 \
+      --repeats 6 \
+      --rounds 3 \
+      --receipt "$REPO_ROOT/$BENCH_DIR/raw/${artifact_stem}.json" \
+      > "$REPO_ROOT/$BENCH_DIR/${artifact_stem}.md"
+}
+
+capture_fixed_compare "$BASE_WORKTREE" baseline-fixed-large-torch
+capture_fixed_compare "$REPO_ROOT" candidate-fixed-large-torch
+capture_dynamic_compare "$BASE_WORKTREE" baseline-dynamic-large-torch
+capture_dynamic_compare "$REPO_ROOT" candidate-dynamic-large-torch
 ```
 
 Expected compare artifacts:
@@ -434,11 +436,12 @@ reject smaller configurations rather than emit a degenerate interval.
 Pass `--receipt report.json` to the comparison, layout-audit, overhead, and
 warm-call-tree commands described on this page. The JSON receipt is the
 canonical artifact; Markdown is a stdout projection for reading or redirection.
-Fixed and dynamic receipts use schema v6 and keep the same single `steady`
+Fixed and dynamic receipts use schema v7 and keep the same single `steady`
 measurement phase. Each receipt includes:
 
 - environment and benchmark configuration; `environment.einf` identifies the
-  imported source as a Git checkout or installed distribution,
+  imported source as a Git checkout or installed distribution and fingerprints
+  the package source files,
 - requested and resolved execution devices,
 - the synchronized-completion timed-region contract,
 - case identities and execution forms,
@@ -456,7 +459,7 @@ call's own return value was checked immediately after its timer stopped.
 Ratios use integer `numerator` and `denominator` fields rather than rounded
 decimals.
 
-Expression-parity receipts use schema v5. They share the source-provenance
+Expression-parity receipts use schema v6. They share the source-provenance
 contract used by the fixed and dynamic scripts, but keep their
 strategy-specific result shape.
 
@@ -535,7 +538,7 @@ Keep the JSON receipt when the result may need re-analysis. It records the
 schedule and estimand, per-round summaries, every call's round, batch, repeat,
 strategy, order, and latency identity, and the paired estimates. The Markdown
 report is meant for interpretation; it does not replace the receipt evidence.
-Expression receipt schema v5 also records structured environment metadata, the
+Expression receipt schema v6 also records structured environment metadata, the
 requested and resolved device, the shared synchronized-completion contract, and
 the exact measured executions covered by validation.
 
@@ -584,7 +587,7 @@ Use `benchmarks/profile/overhead_breakdown.py` to decompose internal `einf` over
 Example:
 
 ```bash
-python -m benchmarks.profile.overhead_breakdown \
+PYTHONHASHSEED=0 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
   --receipt artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json \
   > artifacts/bench/2026-02-15-overhead-breakdown-torch.md
@@ -638,6 +641,40 @@ python -m benchmarks.profile.lsp_latency \
 ## Guardrail Checks
 
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
+
+The guardrail compares latencies only when both receipts match on the recorded
+experiment axes. Both metrics require the same profiler, kernel release, host
+CPU, benchmark-task affinity, niceness, child-to-root cgroup CPU controls,
+backend thread settings, backend and device, Python runtime, workload seed, and
+case configuration. Dependency identity includes both the installed version and
+a digest of its `RECORD` manifest, so same-version local rebuilds do not compare
+as the same build. The profiler also verifies that each imported package belongs
+to the distribution whose manifest it hashes. Receipt capture therefore requires
+a concrete, `RECORD`-bearing installation; shadowed imports and editable layouts
+that cannot prove this ownership are rejected. The resource fingerprint records
+every configured
+`OMP_`, `KMP_`, `GOMP_`, `MKL_`, `OPENBLAS_`, `BLIS_`, `VECLIB_`, and `GOTO_`
+environment variable.
+
+Where the platform exposes scheduler inspection, receipt capture requires the
+default `SCHED_OTHER` policy. The profiler checks the recorded CPU allocation,
+runtime environment, and backend thread settings before and after each run. It
+also rejects unclassified `cpu.*` cgroup controls. Resolved instrumentation
+targets are compared only for `instrumented_call_ms`, since they do not affect
+the unpatched timing pass.
+
+This is a compatibility check over recorded evidence, not proof that every
+machine condition is identical. Task-level fields describe the Python thread
+that submits the timed calls. Per-task utilization clamps available only through
+`sched_getattr`, native worker scheduler state, and runtime policies changed
+through library APIs are not inspected. Run baseline and candidate captures in
+the same controlled host session when those conditions could differ.
+
+The measured `einf` source is a separate axis. Baseline and candidate contents
+may differ, but repeated trials must keep each side on identical package content
+and case coverage. Every trial must come from a distinct capture. Schema v7
+receipts are not comparable with older receipts, so capture both sides with the
+current profiler.
 
 Example:
 

@@ -19,8 +19,8 @@ from benchmarks.harness import (
 )
 from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.types import Array, TorchTensor
-from benchmarks.shared import version_or_missing
 from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import version_or_missing
 from einf import ax, axes, einop
 
 try:
