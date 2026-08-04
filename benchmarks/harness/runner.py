@@ -152,8 +152,9 @@ class BenchmarkRunner:
     ) -> None:
         """Warm available runners on one shared prepared batch."""
         for library_name in order:
-            output = runners[library_name](batch)
-            self.backend.synchronize()
+            with self.backend.preserve_input_batch(batch):
+                output = runners[library_name](batch)
+                self.backend.synchronize()
             self.backend.validate_output_target(output)
 
     def _measure_coordinate(

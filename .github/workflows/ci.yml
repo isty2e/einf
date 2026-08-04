@@ -105,3 +105,8 @@ jobs:
           tests/integration/test_array_api_rearrange_execution.py
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py
+      - name: Test PyTorch benchmark input integrity
+        run: >-
+          pytest
+          tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_in_place_input_mutation
+          tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_mutation_without_real_torch
