@@ -39,9 +39,10 @@ from threadpoolctl import threadpool_info
 
 from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadCgroupCpuHierarchyDict,
+    OverheadCgroupCpuLevelDict,
     OverheadCpuAllocationDict,
     OverheadCpuBandwidthLimitDict,
-    OverheadCpuWeightHierarchyDict,
     OverheadEnvironmentDict,
     OverheadExecutionResourcesDict,
     OverheadNativeThreadPoolDict,
@@ -1382,7 +1383,7 @@ def _cgroup_cpu_weight(
     weight = _required_control_integer(
         raw_weight,
         name=control_name,
-        minimum=0 if version == 2 else 2,
+        minimum=1 if version == 2 else 2,
     )
     maximum = 10_000 if version == 2 else 262_144
     if weight > maximum:
@@ -1390,13 +1391,10 @@ def _cgroup_cpu_weight(
     return weight
 
 
-def _cgroup_cpu_controls() -> tuple[
-    list[OverheadCpuBandwidthLimitDict],
-    OverheadCpuWeightHierarchyDict | None,
-]:
-    """Return CPU bandwidth and hierarchical weight controls for this process."""
+def _cgroup_cpu_controls() -> OverheadCgroupCpuHierarchyDict | None:
+    """Return hierarchical CPU controls for this process."""
     if platform.system() != "Linux":
-        return [], None
+        return None
     try:
         membership_text = _CGROUP_MEMBERSHIP_PATH.read_text()
         mountinfo_text = _CGROUP_MOUNTINFO_PATH.read_text()
@@ -1404,7 +1402,7 @@ def _cgroup_cpu_controls() -> tuple[
         raise RuntimeError("cannot inspect process cgroup CPU allocation") from error
     membership = _cgroup_cpu_membership(membership_text)
     if membership is None:
-        return [], None
+        return None
     version, cgroup_path = membership
     mounts = _cgroup_cpu_mounts(mountinfo_text, version=version)
     if not mounts:
@@ -1417,8 +1415,7 @@ def _cgroup_cpu_controls() -> tuple[
     if directory != hierarchy_root and hierarchy_root not in directory.parents:
         raise RuntimeError("resolved CPU cgroup escapes its visible hierarchy")
 
-    limits: set[tuple[int, int, int]] = set()
-    weights: list[int] = []
+    levels: list[OverheadCgroupCpuLevelDict] = []
     current = directory
     while True:
         limit = (
@@ -1426,40 +1423,27 @@ def _cgroup_cpu_controls() -> tuple[
             if version == 2
             else _v1_cpu_bandwidth_limit(current)
         )
-        if limit is not None:
-            limits.add((limit["quota_us"], limit["period_us"], limit["burst_us"]))
         weight = _cgroup_cpu_weight(current, version=version)
-        if weight is not None:
-            weights.append(weight)
+        levels.append(
+            OverheadCgroupCpuLevelDict(
+                bandwidth_limit=limit,
+                weight=weight,
+            )
+        )
         if current == hierarchy_root:
             break
         current = current.parent
 
-    bandwidth_limits = [
-        OverheadCpuBandwidthLimitDict(
-            quota_us=quota_us,
-            period_us=period_us,
-            burst_us=burst_us,
-        )
-        for quota_us, period_us, burst_us in sorted(limits)
-    ]
-    weight_hierarchy = (
-        OverheadCpuWeightHierarchyDict(
-            version=version,
-            child_to_root=weights,
-        )
-        if weights
-        else None
+    return OverheadCgroupCpuHierarchyDict(
+        version=version,
+        child_to_root=levels,
     )
-    return bandwidth_limits, weight_hierarchy
 
 
 def _cpu_allocation_metadata() -> OverheadCpuAllocationDict:
-    bandwidth_limits, weight_hierarchy = _cgroup_cpu_controls()
     return OverheadCpuAllocationDict(
         process_cpu_affinity=_process_cpu_affinity(),
-        cgroup_cpu_bandwidth_limits=bandwidth_limits,
-        cgroup_cpu_weight_hierarchy=weight_hierarchy,
+        cgroup_cpu_hierarchy=_cgroup_cpu_controls(),
     )
 
 

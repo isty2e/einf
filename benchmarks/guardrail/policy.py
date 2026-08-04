@@ -13,7 +13,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
-OVERHEAD_REPORT_SCHEMA_VERSION = 5
+OVERHEAD_REPORT_SCHEMA_VERSION = 6
 
 
 def _required_string(
@@ -209,19 +209,25 @@ class OverheadCpuBandwidthLimitDict(TypedDict):
     burst_us: int
 
 
-class OverheadCpuWeightHierarchyDict(TypedDict):
-    """Cgroup CPU weights from the process cgroup toward the visible root."""
+class OverheadCgroupCpuLevelDict(TypedDict):
+    """CPU controls at one visible cgroup level."""
+
+    bandwidth_limit: OverheadCpuBandwidthLimitDict | None
+    weight: int | None
+
+
+class OverheadCgroupCpuHierarchyDict(TypedDict):
+    """CPU controls from the process cgroup toward the visible root."""
 
     version: int
-    child_to_root: list[int]
+    child_to_root: list[OverheadCgroupCpuLevelDict]
 
 
 class OverheadCpuAllocationDict(TypedDict):
     """CPU scheduling capacity assigned to the benchmark process."""
 
     process_cpu_affinity: list[int] | None
-    cgroup_cpu_bandwidth_limits: list[OverheadCpuBandwidthLimitDict]
-    cgroup_cpu_weight_hierarchy: OverheadCpuWeightHierarchyDict | None
+    cgroup_cpu_hierarchy: OverheadCgroupCpuHierarchyDict | None
 
 
 class OverheadExecutionResourcesDict(TypedDict):
@@ -509,85 +515,94 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     else:
         process_cpu_affinity = list(affinity_raw)
 
-    bandwidth_limits_raw = allocation_raw.get("cgroup_cpu_bandwidth_limits")
-    if not isinstance(bandwidth_limits_raw, list):
-        raise TypeError(f"{context}: cgroup CPU bandwidth limits must be a list")
-    bandwidth_limits: list[OverheadCpuBandwidthLimitDict] = []
-    seen_bandwidth_limits: set[tuple[int, int, int]] = set()
-    for index, limit_raw in enumerate(bandwidth_limits_raw):
-        limit_context = f"{context}: cgroup CPU bandwidth limit {index}"
-        if not isinstance(limit_raw, dict):
-            raise TypeError(f"{limit_context} must be an object")
-        quota_us = _required_integer(
-            limit_raw,
-            name="quota_us",
-            context=limit_context,
-        )
-        period_us = _required_integer(
-            limit_raw,
-            name="period_us",
-            context=limit_context,
-        )
-        burst_us = _required_integer(
-            limit_raw,
-            name="burst_us",
-            context=limit_context,
-        )
-        if quota_us < 1 or period_us < 1 or burst_us < 0:
-            raise ValueError(
-                f"{limit_context}: quota and period must be positive and burst non-negative"
-            )
-        identity = (quota_us, period_us, burst_us)
-        if identity in seen_bandwidth_limits:
-            raise ValueError(f"{context}: cgroup CPU bandwidth limits must be unique")
-        seen_bandwidth_limits.add(identity)
-        bandwidth_limits.append(
-            OverheadCpuBandwidthLimitDict(
-                quota_us=quota_us,
-                period_us=period_us,
-                burst_us=burst_us,
-            )
-        )
-    bandwidth_limits.sort(
-        key=lambda limit: (
-            limit["quota_us"],
-            limit["period_us"],
-            limit["burst_us"],
-        )
-    )
-
-    weight_hierarchy_raw = allocation_raw.get("cgroup_cpu_weight_hierarchy")
-    if weight_hierarchy_raw is None:
-        weight_hierarchy = None
-    elif not isinstance(weight_hierarchy_raw, dict):
-        raise TypeError(
-            f"{context}: cgroup CPU weight hierarchy must be object or null"
-        )
+    if "cgroup_cpu_hierarchy" not in allocation_raw:
+        raise TypeError(f"{context}: cgroup CPU hierarchy is required")
+    hierarchy_raw = allocation_raw.get("cgroup_cpu_hierarchy")
+    if hierarchy_raw is None:
+        cgroup_cpu_hierarchy = None
+    elif not isinstance(hierarchy_raw, dict):
+        raise TypeError(f"{context}: cgroup CPU hierarchy must be object or null")
     else:
-        weight_context = f"{context}: cgroup CPU weight hierarchy"
+        hierarchy_context = f"{context}: cgroup CPU hierarchy"
         cgroup_version = _required_integer(
-            weight_hierarchy_raw,
+            hierarchy_raw,
             name="version",
-            context=weight_context,
+            context=hierarchy_context,
         )
         if cgroup_version not in (1, 2):
-            raise ValueError(f"{weight_context}: version must be 1 or 2")
-        weights_raw = weight_hierarchy_raw.get("child_to_root")
+            raise ValueError(f"{hierarchy_context}: version must be 1 or 2")
+        levels_raw = hierarchy_raw.get("child_to_root")
+        if not isinstance(levels_raw, list):
+            raise TypeError(f"{hierarchy_context}: child_to_root must be a list")
+        if not levels_raw:
+            raise ValueError(f"{hierarchy_context}: child_to_root must not be empty")
+
         minimum_weight, maximum_weight = (
-            (2, 262_144) if cgroup_version == 1 else (0, 10_000)
+            (2, 262_144) if cgroup_version == 1 else (1, 10_000)
         )
-        if not isinstance(weights_raw, list) or not all(
-            type(weight) is int and minimum_weight <= weight <= maximum_weight
-            for weight in weights_raw
-        ):
-            raise TypeError(
-                f"{weight_context}: child_to_root must be a list of valid weights"
+        levels: list[OverheadCgroupCpuLevelDict] = []
+        for index, level_raw in enumerate(levels_raw):
+            level_context = f"{hierarchy_context}: child_to_root[{index}]"
+            if not isinstance(level_raw, dict):
+                raise TypeError(f"{level_context} must be an object")
+            if "bandwidth_limit" not in level_raw:
+                raise TypeError(f"{level_context}: bandwidth_limit is required")
+            if "weight" not in level_raw:
+                raise TypeError(f"{level_context}: weight is required")
+
+            limit_raw = level_raw.get("bandwidth_limit")
+            if limit_raw is None:
+                bandwidth_limit = None
+            elif not isinstance(limit_raw, dict):
+                raise TypeError(
+                    f"{level_context}: bandwidth_limit must be object or null"
+                )
+            else:
+                quota_us = _required_integer(
+                    limit_raw,
+                    name="quota_us",
+                    context=level_context,
+                )
+                period_us = _required_integer(
+                    limit_raw,
+                    name="period_us",
+                    context=level_context,
+                )
+                burst_us = _required_integer(
+                    limit_raw,
+                    name="burst_us",
+                    context=level_context,
+                )
+                if quota_us < 1 or period_us < 1 or burst_us < 0:
+                    raise ValueError(
+                        f"{level_context}: quota and period must be positive "
+                        "and burst non-negative"
+                    )
+                bandwidth_limit = OverheadCpuBandwidthLimitDict(
+                    quota_us=quota_us,
+                    period_us=period_us,
+                    burst_us=burst_us,
+                )
+
+            weight_raw = level_raw.get("weight")
+            if weight_raw is None:
+                weight = None
+            elif type(weight_raw) is not int or not (
+                minimum_weight <= weight_raw <= maximum_weight
+            ):
+                raise TypeError(f"{level_context}: weight is invalid")
+            else:
+                weight = weight_raw
+            levels.append(
+                OverheadCgroupCpuLevelDict(
+                    bandwidth_limit=bandwidth_limit,
+                    weight=weight,
+                )
             )
-        if not weights_raw:
-            raise ValueError(f"{weight_context}: child_to_root must not be empty")
-        weight_hierarchy = OverheadCpuWeightHierarchyDict(
+
+        cgroup_cpu_hierarchy = OverheadCgroupCpuHierarchyDict(
             version=cgroup_version,
-            child_to_root=list(weights_raw),
+            child_to_root=levels,
         )
 
     native_threadpools_raw = resources_raw.get("native_threadpools")
@@ -659,8 +674,7 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     execution_resources = OverheadExecutionResourcesDict(
         cpu_allocation=OverheadCpuAllocationDict(
             process_cpu_affinity=process_cpu_affinity,
-            cgroup_cpu_bandwidth_limits=bandwidth_limits,
-            cgroup_cpu_weight_hierarchy=weight_hierarchy,
+            cgroup_cpu_hierarchy=cgroup_cpu_hierarchy,
         ),
         native_threadpools=native_threadpools,
     )
@@ -983,20 +997,26 @@ def _experiment_axes(
                 if allocation["process_cpu_affinity"] is None
                 else tuple(allocation["process_cpu_affinity"])
             ),
-            tuple(
-                (
-                    limit["quota_us"],
-                    limit["period_us"],
-                    limit["burst_us"],
-                )
-                for limit in allocation["cgroup_cpu_bandwidth_limits"]
-            ),
             (
                 None
-                if allocation["cgroup_cpu_weight_hierarchy"] is None
+                if allocation["cgroup_cpu_hierarchy"] is None
                 else (
-                    allocation["cgroup_cpu_weight_hierarchy"]["version"],
-                    tuple(allocation["cgroup_cpu_weight_hierarchy"]["child_to_root"]),
+                    allocation["cgroup_cpu_hierarchy"]["version"],
+                    tuple(
+                        (
+                            (
+                                None
+                                if level["bandwidth_limit"] is None
+                                else (
+                                    level["bandwidth_limit"]["quota_us"],
+                                    level["bandwidth_limit"]["period_us"],
+                                    level["bandwidth_limit"]["burst_us"],
+                                )
+                            ),
+                            level["weight"],
+                        )
+                        for level in allocation["cgroup_cpu_hierarchy"]["child_to_root"]
+                    ),
                 )
             ),
             tuple(

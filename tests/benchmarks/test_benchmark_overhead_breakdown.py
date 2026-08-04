@@ -33,8 +33,7 @@ def _execution_resources() -> OverheadExecutionResourcesDict:
     return {
         "cpu_allocation": {
             "process_cpu_affinity": None,
-            "cgroup_cpu_bandwidth_limits": [],
-            "cgroup_cpu_weight_hierarchy": None,
+            "cgroup_cpu_hierarchy": None,
         },
         "native_threadpools": [
             {
@@ -243,8 +242,7 @@ def test_execution_resources_capture_affinity_and_effective_threads(
 
     cpu_allocation = OverheadCpuAllocationDict(
         process_cpu_affinity=[1, 3],
-        cgroup_cpu_bandwidth_limits=[],
-        cgroup_cpu_weight_hierarchy=None,
+        cgroup_cpu_hierarchy=None,
     )
     resources = overhead_breakdown._execution_resources_metadata(
         "torch",
@@ -267,7 +265,7 @@ def test_execution_resources_capture_affinity_and_effective_threads(
     assert "torch_threads" not in numpy_resources
 
 
-def test_cgroup_v2_controls_include_ancestor_quota_and_ordered_weights(
+def test_cgroup_v2_controls_preserve_child_to_root_levels(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -284,7 +282,7 @@ def test_cgroup_v2_controls_include_ancestor_quota_and_ordered_weights(
     for directory, cpu_max, burst, weight in (
         (mount_point, "max 100000", "0", None),
         (mount_point / "parent", "200000 100000", "10000", "100"),
-        (child, "max 50000", "0", "100"),
+        (child, "200000 100000", "10000", "100"),
     ):
         directory.mkdir(exist_ok=True)
         (directory / "cpu.max").write_text(cpu_max)
@@ -304,10 +302,28 @@ def test_cgroup_v2_controls_include_ancestor_quota_and_ordered_weights(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_controls() == (
-        [{"quota_us": 200_000, "period_us": 100_000, "burst_us": 10_000}],
-        {"version": 2, "child_to_root": [100, 100]},
-    )
+    assert overhead_breakdown._cgroup_cpu_controls() == {
+        "version": 2,
+        "child_to_root": [
+            {
+                "bandwidth_limit": {
+                    "quota_us": 200_000,
+                    "period_us": 100_000,
+                    "burst_us": 10_000,
+                },
+                "weight": 100,
+            },
+            {
+                "bandwidth_limit": {
+                    "quota_us": 200_000,
+                    "period_us": 100_000,
+                    "burst_us": 10_000,
+                },
+                "weight": 100,
+            },
+            {"bandwidth_limit": None, "weight": None},
+        ],
+    }
 
 
 def test_cgroup_v1_controls_resolve_namespaced_mount_root(
@@ -339,10 +355,19 @@ def test_cgroup_v1_controls_resolve_namespaced_mount_root(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_controls() == (
-        [{"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}],
-        {"version": 1, "child_to_root": [1024]},
-    )
+    assert overhead_breakdown._cgroup_cpu_controls() == {
+        "version": 1,
+        "child_to_root": [
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 1024,
+            }
+        ],
+    }
 
 
 def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
@@ -377,7 +402,8 @@ def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
 
 def test_cgroup_cpu_weight_enforces_controller_range(tmp_path: Path) -> None:
     (tmp_path / "cpu.weight").write_text("0")
-    assert overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2) == 0
+    with pytest.raises(RuntimeError, match="below 1"):
+        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2)
 
     (tmp_path / "cpu.weight").write_text("10001")
     with pytest.raises(RuntimeError, match="above 10000"):
@@ -393,9 +419,12 @@ def test_receipt_rejects_execution_resource_drift(
 ) -> None:
     expected = _execution_resources()
     changed = _execution_resources()
-    changed["cpu_allocation"]["cgroup_cpu_weight_hierarchy"] = {
+    changed["cpu_allocation"]["cgroup_cpu_hierarchy"] = {
         "version": 2,
-        "child_to_root": [50, 100],
+        "child_to_root": [
+            {"bandwidth_limit": None, "weight": 50},
+            {"bandwidth_limit": None, "weight": 100},
+        ],
     }
     monkeypatch.setattr(
         overhead_breakdown,

@@ -13,6 +13,7 @@ import benchmarks.guardrail.check_overhead_trials as check_overhead_trials_modul
 from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
     MetricName,
+    OverheadCgroupCpuHierarchyDict,
     OverheadReportDict,
     RegressionFinding,
     collect_case_metrics,
@@ -66,8 +67,7 @@ def _report(
             "execution_resources": {
                 "cpu_allocation": {
                     "process_cpu_affinity": None,
-                    "cgroup_cpu_bandwidth_limits": [],
-                    "cgroup_cpu_weight_hierarchy": None,
+                    "cgroup_cpu_hierarchy": None,
                 },
                 "native_threadpools": [
                     {
@@ -533,19 +533,42 @@ def test_load_overhead_report_requires_execution_resources(tmp_path: Path) -> No
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
-def test_load_overhead_report_preserves_cgroup_weight_hierarchy(
+def test_load_overhead_report_preserves_cgroup_control_hierarchy(
     tmp_path: Path,
 ) -> None:
     report = _report(call_ms=1.0)
-    report["meta"]["execution_resources"]["cpu_allocation"][
-        "cgroup_cpu_weight_hierarchy"
-    ] = {"version": 2, "child_to_root": [25, 100, 100]}
+    hierarchy = OverheadCgroupCpuHierarchyDict(
+        version=2,
+        child_to_root=[
+            {"bandwidth_limit": None, "weight": 25},
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+            },
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+            },
+        ],
+    )
+    report["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"] = (
+        hierarchy
+    )
 
     loaded = load_overhead_report(_write_report(tmp_path, report=report))
 
-    assert loaded["meta"]["execution_resources"]["cpu_allocation"][
-        "cgroup_cpu_weight_hierarchy"
-    ] == {"version": 2, "child_to_root": [25, 100, 100]}
+    assert (
+        loaded["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"]
+        == hierarchy
+    )
 
 
 @pytest.mark.parametrize(
@@ -556,7 +579,7 @@ def test_load_overhead_report_preserves_cgroup_weight_hierarchy(
                 "meta",
                 "execution_resources",
                 "cpu_allocation",
-                "cgroup_cpu_weight_hierarchy",
+                "cgroup_cpu_hierarchy",
                 "child_to_root",
             ),
             [],
@@ -567,11 +590,27 @@ def test_load_overhead_report_preserves_cgroup_weight_hierarchy(
                 "meta",
                 "execution_resources",
                 "cpu_allocation",
-                "cgroup_cpu_weight_hierarchy",
+                "cgroup_cpu_hierarchy",
                 "child_to_root",
+                0,
+                "weight",
             ),
-            [10_001],
-            "list of valid weights",
+            10_001,
+            "weight is invalid",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_hierarchy",
+                "child_to_root",
+                0,
+                "bandwidth_limit",
+                "quota_us",
+            ),
+            0,
+            "quota and period must be positive",
         ),
         (
             ("meta", "environment", "python", "hash_seed"),
@@ -597,9 +636,19 @@ def test_load_overhead_report_rejects_invalid_runtime_fingerprint(
     message: str,
 ) -> None:
     report = _report(call_ms=1.0)
-    report["meta"]["execution_resources"]["cpu_allocation"][
-        "cgroup_cpu_weight_hierarchy"
-    ] = {"version": 2, "child_to_root": [100]}
+    report["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"] = {
+        "version": 2,
+        "child_to_root": [
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+            }
+        ],
+    }
     _replace_nested_value(report, path=path, value=value)
 
     with pytest.raises((TypeError, ValueError), match=message):
@@ -615,6 +664,25 @@ def test_load_overhead_report_rejects_unsupported_schema(tmp_path: Path) -> None
         ValueError,
         match=f"unsupported schema_version {unsupported_version}",
     ):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+@pytest.mark.parametrize("field_name", ("bandwidth_limit", "weight"))
+def test_load_overhead_report_requires_each_cgroup_level_field(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    report = _report(call_ms=1.0)
+    hierarchy = OverheadCgroupCpuHierarchyDict(
+        version=2,
+        child_to_root=[{"bandwidth_limit": None, "weight": 100}],
+    )
+    report["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"] = (
+        hierarchy
+    )
+    del cast(dict[str, object], hierarchy["child_to_root"][0])[field_name]
+
+    with pytest.raises(TypeError, match=f"{field_name} is required"):
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
@@ -991,19 +1059,15 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
                 "meta",
                 "execution_resources",
                 "cpu_allocation",
-                "cgroup_cpu_bandwidth_limits",
+                "cgroup_cpu_hierarchy",
             ),
-            [{"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}],
-            "execution_resources",
-        ),
-        (
-            (
-                "meta",
-                "execution_resources",
-                "cpu_allocation",
-                "cgroup_cpu_weight_hierarchy",
-            ),
-            {"version": 2, "child_to_root": [50, 100]},
+            {
+                "version": 2,
+                "child_to_root": [
+                    {"bandwidth_limit": None, "weight": 50},
+                    {"bandwidth_limit": None, "weight": 100},
+                ],
+            },
             "execution_resources",
         ),
         (
@@ -1059,6 +1123,58 @@ def test_compare_overhead_reports_rejects_incompatible_experiments_before_metric
     )
 
     with pytest.raises(ValueError, match=expected_axis):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+def test_compare_overhead_reports_preserves_cgroup_quota_positions() -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
+    baseline["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_hierarchy"
+    ] = {
+        "version": 2,
+        "child_to_root": [
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+            },
+            {"bandwidth_limit": None, "weight": 100},
+        ],
+    }
+    candidate["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_hierarchy"
+    ] = {
+        "version": 2,
+        "child_to_root": [
+            {"bandwidth_limit": None, "weight": 100},
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+            },
+        ],
+    }
+    _set_metric(
+        baseline,
+        metric_name="instrumented_call_ms",
+        value=float("nan"),
+    )
+
+    with pytest.raises(ValueError, match="execution_resources"):
         compare_overhead_reports(
             baseline=baseline,
             candidate=candidate,
