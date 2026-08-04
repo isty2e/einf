@@ -13,7 +13,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
-OVERHEAD_REPORT_SCHEMA_VERSION = 3
+OVERHEAD_REPORT_SCHEMA_VERSION = 4
 
 
 def _required_string(
@@ -160,6 +160,7 @@ class OverheadHostDict(TypedDict):
     """Host hardware identity required for CPU latency comparison."""
 
     system: str
+    release: str
     machine: str
     cpu_model: str
     logical_cpu_count: int
@@ -184,10 +185,25 @@ class OverheadTorchThreadsDict(TypedDict):
     inter_op: int
 
 
+class OverheadCpuBandwidthLimitDict(TypedDict):
+    """One finite cgroup CPU bandwidth constraint."""
+
+    quota_us: int
+    period_us: int
+    burst_us: int
+
+
+class OverheadCpuAllocationDict(TypedDict):
+    """CPU scheduling capacity assigned to the benchmark process."""
+
+    process_cpu_affinity: list[int] | None
+    cgroup_cpu_bandwidth_limits: list[OverheadCpuBandwidthLimitDict]
+
+
 class OverheadExecutionResourcesDict(TypedDict):
     """Process-level CPU allocation and effective backend thread settings."""
 
-    process_cpu_affinity: list[int] | None
+    cpu_allocation: OverheadCpuAllocationDict
     native_threadpools: list[OverheadNativeThreadPoolDict]
     torch_threads: NotRequired[OverheadTorchThreadsDict]
 
@@ -427,6 +443,11 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
             name="system",
             context=f"{context}: meta.host",
         ),
+        release=_required_string(
+            host_raw,
+            name="release",
+            context=f"{context}: meta.host",
+        ),
         machine=_required_string(
             host_raw,
             name="machine",
@@ -445,7 +466,12 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         name="execution_resources",
         context=context,
     )
-    affinity_raw = resources_raw.get("process_cpu_affinity")
+    allocation_raw = _required_mapping(
+        resources_raw,
+        name="cpu_allocation",
+        context=f"{context}: meta.execution_resources",
+    )
+    affinity_raw = allocation_raw.get("process_cpu_affinity")
     if affinity_raw is None:
         process_cpu_affinity = None
     elif not isinstance(affinity_raw, list) or not all(
@@ -458,6 +484,53 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         )
     else:
         process_cpu_affinity = list(affinity_raw)
+
+    bandwidth_limits_raw = allocation_raw.get("cgroup_cpu_bandwidth_limits")
+    if not isinstance(bandwidth_limits_raw, list):
+        raise TypeError(f"{context}: cgroup CPU bandwidth limits must be a list")
+    bandwidth_limits: list[OverheadCpuBandwidthLimitDict] = []
+    seen_bandwidth_limits: set[tuple[int, int, int]] = set()
+    for index, limit_raw in enumerate(bandwidth_limits_raw):
+        limit_context = f"{context}: cgroup CPU bandwidth limit {index}"
+        if not isinstance(limit_raw, dict):
+            raise TypeError(f"{limit_context} must be an object")
+        quota_us = _required_integer(
+            limit_raw,
+            name="quota_us",
+            context=limit_context,
+        )
+        period_us = _required_integer(
+            limit_raw,
+            name="period_us",
+            context=limit_context,
+        )
+        burst_us = _required_integer(
+            limit_raw,
+            name="burst_us",
+            context=limit_context,
+        )
+        if quota_us < 1 or period_us < 1 or burst_us < 0:
+            raise ValueError(
+                f"{limit_context}: quota and period must be positive and burst non-negative"
+            )
+        identity = (quota_us, period_us, burst_us)
+        if identity in seen_bandwidth_limits:
+            raise ValueError(f"{context}: cgroup CPU bandwidth limits must be unique")
+        seen_bandwidth_limits.add(identity)
+        bandwidth_limits.append(
+            OverheadCpuBandwidthLimitDict(
+                quota_us=quota_us,
+                period_us=period_us,
+                burst_us=burst_us,
+            )
+        )
+    bandwidth_limits.sort(
+        key=lambda limit: (
+            limit["quota_us"],
+            limit["period_us"],
+            limit["burst_us"],
+        )
+    )
 
     native_threadpools_raw = resources_raw.get("native_threadpools")
     if not isinstance(native_threadpools_raw, list):
@@ -526,7 +599,10 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     )
 
     execution_resources = OverheadExecutionResourcesDict(
-        process_cpu_affinity=process_cpu_affinity,
+        cpu_allocation=OverheadCpuAllocationDict(
+            process_cpu_affinity=process_cpu_affinity,
+            cgroup_cpu_bandwidth_limits=bandwidth_limits,
+        ),
         native_threadpools=native_threadpools,
     )
     if backend == "torch":
@@ -583,7 +659,10 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
             context=f"{context}: meta.environment",
         ),
     )
-    if backend == "torch":
+    if backend == "numpy":
+        if "torch" in environment_raw:
+            raise ValueError(f"{context}: NumPy environment cannot include torch")
+    else:
         environment["torch"] = _required_string(
             environment_raw,
             name="torch",
@@ -754,6 +833,7 @@ def _experiment_axes(
     environment = meta["environment"]
     host = meta["host"]
     resources = meta["execution_resources"]
+    allocation = resources["cpu_allocation"]
     torch_threads = resources.get("torch_threads")
     axes: dict[str, object] = {
         "schema": report["schema_version"],
@@ -765,6 +845,7 @@ def _experiment_axes(
         ),
         "host": (
             host["system"],
+            host["release"],
             host["machine"],
             host["cpu_model"],
             host["logical_cpu_count"],
@@ -772,8 +853,16 @@ def _experiment_axes(
         "execution_resources": (
             (
                 None
-                if resources["process_cpu_affinity"] is None
-                else tuple(resources["process_cpu_affinity"])
+                if allocation["process_cpu_affinity"] is None
+                else tuple(allocation["process_cpu_affinity"])
+            ),
+            tuple(
+                (
+                    limit["quota_us"],
+                    limit["period_us"],
+                    limit["burst_us"],
+                )
+                for limit in allocation["cgroup_cpu_bandwidth_limits"]
             ),
             tuple(
                 (

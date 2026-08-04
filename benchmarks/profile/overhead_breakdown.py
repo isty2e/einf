@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar, cast
 from unittest.mock import patch
 from uuid import uuid4
@@ -38,6 +38,8 @@ from threadpoolctl import threadpool_info
 
 from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadCpuAllocationDict,
+    OverheadCpuBandwidthLimitDict,
     OverheadExecutionResourcesDict,
     OverheadNativeThreadPoolDict,
     OverheadTorchThreadsDict,
@@ -58,7 +60,11 @@ except ImportError:
 
 Array = NDArray[np.float32]
 BackendName = Literal["numpy", "torch"]
+_CgroupVersion = Literal[1, 2]
 _TensorFamily = TypeVar("_TensorFamily", bound=TensorLike)
+
+_CGROUP_MEMBERSHIP_PATH = Path("/proc/self/cgroup")
+_CGROUP_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 
 Tensor = TensorLike
 TensorBatch = tuple[Tensor, ...]
@@ -201,6 +207,12 @@ class OverheadCase:
     call_repr: str
     build_invoke: Callable[[], Callable[[], TensorOutput]]
     loops: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CgroupMount:
+    root: PurePosixPath
+    mount_point: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -1105,10 +1117,17 @@ def _host_metadata() -> dict[str, str | int]:
     logical_cpu_count = os.cpu_count()
     if logical_cpu_count is None:
         raise RuntimeError("cannot determine logical CPU count")
+    system = platform.system()
+    release = platform.release()
+    machine = platform.machine()
+    cpu_model = _cpu_model()
+    if not system or not release or not machine or cpu_model == "unknown":
+        raise RuntimeError("cannot determine complete host CPU identity")
     return {
-        "system": platform.system(),
-        "machine": platform.machine(),
-        "cpu_model": _cpu_model(),
+        "system": system,
+        "release": release,
+        "machine": machine,
+        "cpu_model": cpu_model,
         "logical_cpu_count": logical_cpu_count,
     }
 
@@ -1122,16 +1141,293 @@ def _process_cpu_affinity() -> list[int] | None:
         return None
     try:
         affinity = sorted(get_affinity(0))
-    except OSError:
-        return None
+    except OSError as error:
+        raise RuntimeError("cannot determine process CPU affinity") from error
     if not affinity:
         raise RuntimeError("process CPU affinity is empty")
     return affinity
 
 
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode the escapes permitted in procfs mountinfo path fields."""
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _cgroup_cpu_membership(text: str) -> tuple[_CgroupVersion, PurePosixPath] | None:
+    """Return the process membership for the controller governing CPU bandwidth."""
+    unified_membership: PurePosixPath | None = None
+    for raw_line in text.splitlines():
+        if not raw_line:
+            continue
+        hierarchy, separator, remainder = raw_line.partition(":")
+        controllers, second_separator, raw_path = remainder.partition(":")
+        if not separator or not second_separator:
+            raise RuntimeError("cannot parse /proc/self/cgroup")
+        membership = PurePosixPath(raw_path)
+        if not membership.is_absolute():
+            raise RuntimeError("cgroup membership path must be absolute")
+        if "cpu" in controllers.split(","):
+            return 1, membership
+        if hierarchy == "0" and not controllers:
+            unified_membership = membership
+    if unified_membership is None:
+        return None
+    return 2, unified_membership
+
+
+def _cgroup_cpu_mounts(
+    text: str,
+    *,
+    version: _CgroupVersion,
+) -> tuple[_CgroupMount, ...]:
+    """Return cgroup mounts that can expose the selected CPU controller."""
+    mounts: list[_CgroupMount] = []
+    for raw_line in text.splitlines():
+        before_separator, separator, after_separator = raw_line.partition(" - ")
+        if not separator:
+            continue
+        mount_fields = before_separator.split()
+        filesystem_fields = after_separator.split()
+        if len(mount_fields) < 6 or len(filesystem_fields) < 3:
+            raise RuntimeError("cannot parse /proc/self/mountinfo")
+        filesystem_type = filesystem_fields[0]
+        if version == 2:
+            if filesystem_type != "cgroup2":
+                continue
+        else:
+            mount_options = set(mount_fields[5].split(","))
+            super_options = set(filesystem_fields[2].split(","))
+            if filesystem_type != "cgroup" or "cpu" not in (
+                mount_options | super_options
+            ):
+                continue
+
+        root = PurePosixPath(_decode_mountinfo_path(mount_fields[3]))
+        mount_point = Path(_decode_mountinfo_path(mount_fields[4]))
+        if not root.is_absolute() or not mount_point.is_absolute():
+            raise RuntimeError("cgroup mount paths must be absolute")
+        mounts.append(
+            _CgroupMount(
+                root=root,
+                mount_point=mount_point,
+            )
+        )
+    return tuple(sorted(mounts, key=lambda mount: len(mount.root.parts), reverse=True))
+
+
+def _candidate_cgroup_directories(
+    *,
+    membership: PurePosixPath,
+    mount: _CgroupMount,
+) -> tuple[Path, ...]:
+    """Return host- and cgroup-namespace interpretations of one membership."""
+    candidates: list[Path] = []
+    try:
+        relative_membership = membership.relative_to(mount.root)
+    except ValueError:
+        pass
+    else:
+        candidates.append(mount.mount_point.joinpath(*relative_membership.parts))
+
+    namespace_relative = mount.mount_point.joinpath(*membership.parts[1:])
+    if namespace_relative not in candidates:
+        candidates.append(namespace_relative)
+    return tuple(candidates)
+
+
+def _resolve_cgroup_directory(
+    *,
+    version: _CgroupVersion,
+    membership: PurePosixPath,
+    mounts: tuple[_CgroupMount, ...],
+) -> tuple[Path, Path]:
+    """Resolve the process cgroup directory and visible hierarchy root."""
+    control_name = "cpu.max" if version == 2 else "cpu.cfs_quota_us"
+    existing_candidates: list[tuple[Path, Path]] = []
+    for mount in mounts:
+        for candidate in _candidate_cgroup_directories(
+            membership=membership,
+            mount=mount,
+        ):
+            if not candidate.is_dir():
+                continue
+            resolved = (candidate, mount.mount_point)
+            if (candidate / control_name).is_file():
+                return resolved
+            existing_candidates.append(resolved)
+    if existing_candidates:
+        return existing_candidates[0]
+    raise RuntimeError("cannot resolve the process CPU cgroup directory")
+
+
+def _read_optional_control(path: Path) -> str | None:
+    try:
+        value = path.read_text().strip()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RuntimeError(f"cannot read cgroup CPU control {path.name}") from error
+    if not value:
+        raise RuntimeError(f"cgroup CPU control {path.name} is empty")
+    return value
+
+
+def _required_control_integer(
+    value: str,
+    *,
+    name: str,
+    minimum: int,
+) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"cgroup CPU control {name} is not an integer") from error
+    if parsed < minimum:
+        raise RuntimeError(f"cgroup CPU control {name} is below {minimum}")
+    return parsed
+
+
+def _v2_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | None:
+    raw_max = _read_optional_control(directory / "cpu.max")
+    if raw_max is None:
+        return None
+    max_fields = raw_max.split()
+    if len(max_fields) != 2:
+        raise RuntimeError("cgroup v2 cpu.max must contain quota and period")
+    quota_field, period_field = max_fields
+    period_us = _required_control_integer(
+        period_field,
+        name="cpu.max period",
+        minimum=1,
+    )
+    raw_burst = _read_optional_control(directory / "cpu.max.burst")
+    burst_us = (
+        0
+        if raw_burst is None
+        else _required_control_integer(raw_burst, name="cpu.max.burst", minimum=0)
+    )
+    if quota_field == "max":
+        return None
+    return OverheadCpuBandwidthLimitDict(
+        quota_us=_required_control_integer(
+            quota_field,
+            name="cpu.max quota",
+            minimum=1,
+        ),
+        period_us=period_us,
+        burst_us=burst_us,
+    )
+
+
+def _v1_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | None:
+    raw_quota = _read_optional_control(directory / "cpu.cfs_quota_us")
+    raw_period = _read_optional_control(directory / "cpu.cfs_period_us")
+    if raw_quota is None and raw_period is None:
+        return None
+    if raw_quota is None or raw_period is None:
+        raise RuntimeError("cgroup v1 CPU quota and period must both be available")
+    quota_us = _required_control_integer(
+        raw_quota,
+        name="cpu.cfs_quota_us",
+        minimum=-1,
+    )
+    period_us = _required_control_integer(
+        raw_period,
+        name="cpu.cfs_period_us",
+        minimum=1,
+    )
+    raw_burst = _read_optional_control(directory / "cpu.cfs_burst_us")
+    burst_us = (
+        0
+        if raw_burst is None
+        else _required_control_integer(
+            raw_burst,
+            name="cpu.cfs_burst_us",
+            minimum=0,
+        )
+    )
+    if quota_us == -1:
+        return None
+    if quota_us == 0:
+        raise RuntimeError("cgroup v1 CPU quota must be positive or -1")
+    return OverheadCpuBandwidthLimitDict(
+        quota_us=quota_us,
+        period_us=period_us,
+        burst_us=burst_us,
+    )
+
+
+def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
+    """Return every finite CPU bandwidth constraint visible to this process."""
+    if platform.system() != "Linux":
+        return []
+    try:
+        membership_text = _CGROUP_MEMBERSHIP_PATH.read_text()
+        mountinfo_text = _CGROUP_MOUNTINFO_PATH.read_text()
+    except OSError as error:
+        raise RuntimeError("cannot inspect process cgroup CPU allocation") from error
+    membership = _cgroup_cpu_membership(membership_text)
+    if membership is None:
+        return []
+    version, cgroup_path = membership
+    mounts = _cgroup_cpu_mounts(mountinfo_text, version=version)
+    if not mounts:
+        raise RuntimeError("cannot locate the process CPU cgroup mount")
+    directory, hierarchy_root = _resolve_cgroup_directory(
+        version=version,
+        membership=cgroup_path,
+        mounts=mounts,
+    )
+    if directory != hierarchy_root and hierarchy_root not in directory.parents:
+        raise RuntimeError("resolved CPU cgroup escapes its visible hierarchy")
+
+    limits: set[tuple[int, int, int]] = set()
+    current = directory
+    while True:
+        limit = (
+            _v2_cpu_bandwidth_limit(current)
+            if version == 2
+            else _v1_cpu_bandwidth_limit(current)
+        )
+        if limit is not None:
+            limits.add((limit["quota_us"], limit["period_us"], limit["burst_us"]))
+        if current == hierarchy_root:
+            break
+        current = current.parent
+
+    return [
+        OverheadCpuBandwidthLimitDict(
+            quota_us=quota_us,
+            period_us=period_us,
+            burst_us=burst_us,
+        )
+        for quota_us, period_us, burst_us in sorted(limits)
+    ]
+
+
+def _cpu_allocation_metadata() -> OverheadCpuAllocationDict:
+    return OverheadCpuAllocationDict(
+        process_cpu_affinity=_process_cpu_affinity(),
+        cgroup_cpu_bandwidth_limits=_cgroup_cpu_bandwidth_limits(),
+    )
+
+
+def _require_stable_cpu_allocation(expected: OverheadCpuAllocationDict) -> None:
+    if _cpu_allocation_metadata() != expected:
+        raise RuntimeError("CPU allocation changed during overhead measurement")
+
+
 def _native_threadpool_metadata(
     backend: BackendName,
 ) -> list[OverheadNativeThreadPoolDict]:
+    if backend == "torch":
+        return []
+
     threadpools: list[OverheadNativeThreadPoolDict] = []
     for index, raw_threadpool in enumerate(threadpool_info()):
         context = f"native thread pool {index}"
@@ -1141,7 +1437,7 @@ def _native_threadpool_metadata(
             if not isinstance(value, str) or not value:
                 raise RuntimeError(f"{context} has no valid {field_name}")
             required_strings[field_name] = value
-        if backend == "numpy" and required_strings["user_api"] != "blas":
+        if required_strings["user_api"] != "blas":
             continue
         num_threads = raw_threadpool.get("num_threads")
         if type(num_threads) is not int or num_threads < 1:
@@ -1180,9 +1476,11 @@ def _native_threadpool_metadata(
 
 def _execution_resources_metadata(
     backend: BackendName,
+    *,
+    cpu_allocation: OverheadCpuAllocationDict,
 ) -> OverheadExecutionResourcesDict:
     resources = OverheadExecutionResourcesDict(
-        process_cpu_affinity=_process_cpu_affinity(),
+        cpu_allocation=cpu_allocation,
         native_threadpools=_native_threadpool_metadata(backend),
     )
     if backend == "torch":
@@ -1249,7 +1547,7 @@ def _to_markdown(
         "## Environment",
         "",
         f"- Backend: `{backend}`",
-        f"- Host: `{host['system']} {host['machine']}`",
+        f"- Host: `{host['system']} {host['release']} {host['machine']}`",
         f"- CPU: `{host['cpu_model']}` ({host['logical_cpu_count']} logical CPUs)",
         f"- Python: `{environment['python']}`",
         f"- NumPy: `{environment['numpy']}`",
@@ -1314,9 +1612,11 @@ def main() -> int:
     resolved_stage_targets = _resolved_stage_target_names()
     receipt_harness_source: str | None = None
     receipt_subject_source: dict[str, str | bool | None] | None = None
+    receipt_cpu_allocation: OverheadCpuAllocationDict | None = None
     if args.receipt is not None:
         receipt_harness_source = _harness_source_sha256()
         receipt_subject_source = _subject_source_metadata()
+        receipt_cpu_allocation = _cpu_allocation_metadata()
 
     scenario_specs = (
         ("fixed-medium", "fixed", "medium"),
@@ -1340,7 +1640,11 @@ def main() -> int:
         backend=backend,
     )
     if args.receipt is not None:
-        if receipt_harness_source is None or receipt_subject_source is None:
+        if (
+            receipt_harness_source is None
+            or receipt_subject_source is None
+            or receipt_cpu_allocation is None
+        ):
             raise RuntimeError("receipt source identity was not captured")
         subject_content_sha256 = receipt_subject_source["content_sha256"]
         if not isinstance(subject_content_sha256, str):
@@ -1349,7 +1653,11 @@ def main() -> int:
             harness_source_sha256=receipt_harness_source,
             subject_content_sha256=subject_content_sha256,
         )
-        receipt_execution_resources = _execution_resources_metadata(backend)
+        _require_stable_cpu_allocation(receipt_cpu_allocation)
+        receipt_execution_resources = _execution_resources_metadata(
+            backend,
+            cpu_allocation=receipt_cpu_allocation,
+        )
         receipt_payload = _to_json(
             results,
             backend=backend,

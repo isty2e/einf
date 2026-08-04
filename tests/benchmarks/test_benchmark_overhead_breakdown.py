@@ -6,6 +6,7 @@ import pytest
 
 from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadCpuAllocationDict,
     OverheadExecutionResourcesDict,
     load_overhead_report,
 )
@@ -28,7 +29,10 @@ def _resolved_targets() -> dict[str, tuple[str, ...]]:
 
 def _execution_resources() -> OverheadExecutionResourcesDict:
     return {
-        "process_cpu_affinity": None,
+        "cpu_allocation": {
+            "process_cpu_affinity": None,
+            "cgroup_cpu_bandwidth_limits": [],
+        },
         "native_threadpools": [
             {
                 "user_api": "blas",
@@ -159,19 +163,171 @@ def test_execution_resources_capture_affinity_and_effective_threads(
 
     monkeypatch.setattr(overhead_breakdown, "torch", Torch)
 
-    resources = overhead_breakdown._execution_resources_metadata("torch")
-    numpy_resources = overhead_breakdown._execution_resources_metadata("numpy")
+    cpu_allocation = OverheadCpuAllocationDict(
+        process_cpu_affinity=[1, 3],
+        cgroup_cpu_bandwidth_limits=[],
+    )
+    resources = overhead_breakdown._execution_resources_metadata(
+        "torch",
+        cpu_allocation=cpu_allocation,
+    )
+    numpy_resources = overhead_breakdown._execution_resources_metadata(
+        "numpy",
+        cpu_allocation=cpu_allocation,
+    )
 
-    assert resources["process_cpu_affinity"] == [1, 3]
-    assert [pool["user_api"] for pool in resources["native_threadpools"]] == [
-        "blas",
-        "openmp",
-    ]
+    assert resources["cpu_allocation"]["process_cpu_affinity"] == [1, 3]
+    assert resources["native_threadpools"] == []
     assert resources.get("torch_threads") == {"intra_op": 4, "inter_op": 2}
     assert [pool["user_api"] for pool in numpy_resources["native_threadpools"]] == [
         "blas"
     ]
     assert "torch_threads" not in numpy_resources
+
+
+def test_cgroup_v2_cpu_bandwidth_includes_finite_ancestor_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    membership_path = tmp_path / "self.cgroup"
+    membership_path.write_text("0::/parent/child\n")
+    mount_point = tmp_path / "cgroup2"
+    child = mount_point / "parent" / "child"
+    child.mkdir(parents=True)
+    mountinfo_path = tmp_path / "mountinfo"
+    mountinfo_path.write_text(
+        f"36 25 0:32 / {mount_point} rw,nosuid,nodev,noexec,relatime - "
+        "cgroup2 cgroup rw\n"
+    )
+    for directory, cpu_max, burst in (
+        (mount_point, "max 100000", "0"),
+        (mount_point / "parent", "200000 100000", "10000"),
+        (child, "max 50000", "0"),
+    ):
+        directory.mkdir(exist_ok=True)
+        (directory / "cpu.max").write_text(cpu_max)
+        (directory / "cpu.max.burst").write_text(burst)
+
+    monkeypatch.setattr(overhead_breakdown.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MEMBERSHIP_PATH",
+        membership_path,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MOUNTINFO_PATH",
+        mountinfo_path,
+    )
+
+    assert overhead_breakdown._cgroup_cpu_bandwidth_limits() == [
+        {"quota_us": 200_000, "period_us": 100_000, "burst_us": 10_000}
+    ]
+
+
+def test_cgroup_v1_cpu_bandwidth_resolves_namespaced_mount_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    membership_path = tmp_path / "self.cgroup"
+    membership_path.write_text("2:cpu,cpuacct:/\n")
+    mount_point = tmp_path / "cpu"
+    mount_point.mkdir()
+    (mount_point / "cpu.cfs_quota_us").write_text("50000")
+    (mount_point / "cpu.cfs_period_us").write_text("100000")
+    mountinfo_path = tmp_path / "mountinfo"
+    mountinfo_path.write_text(
+        f"36 25 0:32 /docker/container {mount_point} rw,relatime - "
+        "cgroup cgroup rw,cpu,cpuacct\n"
+    )
+
+    monkeypatch.setattr(overhead_breakdown.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MEMBERSHIP_PATH",
+        membership_path,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MOUNTINFO_PATH",
+        mountinfo_path,
+    )
+
+    assert overhead_breakdown._cgroup_cpu_bandwidth_limits() == [
+        {"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}
+    ]
+
+
+def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    membership_path = tmp_path / "self.cgroup"
+    membership_path.write_text("0::/\n")
+    mount_point = tmp_path / "cgroup2"
+    mount_point.mkdir()
+    (mount_point / "cpu.max").write_text("invalid")
+    mountinfo_path = tmp_path / "mountinfo"
+    mountinfo_path.write_text(
+        f"36 25 0:32 / {mount_point} rw,relatime - cgroup2 cgroup rw\n"
+    )
+
+    monkeypatch.setattr(overhead_breakdown.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MEMBERSHIP_PATH",
+        membership_path,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_CGROUP_MOUNTINFO_PATH",
+        mountinfo_path,
+    )
+
+    with pytest.raises(RuntimeError, match="cpu.max must contain quota and period"):
+        overhead_breakdown._cgroup_cpu_bandwidth_limits()
+
+
+def test_receipt_rejects_cpu_allocation_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = OverheadCpuAllocationDict(
+        process_cpu_affinity=[0, 1],
+        cgroup_cpu_bandwidth_limits=[
+            {"quota_us": 200_000, "period_us": 100_000, "burst_us": 0}
+        ],
+    )
+    changed = OverheadCpuAllocationDict(
+        process_cpu_affinity=[0, 1],
+        cgroup_cpu_bandwidth_limits=[
+            {"quota_us": 100_000, "period_us": 100_000, "burst_us": 0}
+        ],
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_cpu_allocation_metadata",
+        lambda: changed,
+    )
+
+    with pytest.raises(RuntimeError, match="CPU allocation changed"):
+        overhead_breakdown._require_stable_cpu_allocation(expected)
+
+
+def test_affinity_read_failure_is_not_treated_as_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_affinity(_pid: int) -> set[int]:
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getaffinity",
+        fail_affinity,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot determine process CPU affinity"):
+        overhead_breakdown._process_cpu_affinity()
 
 
 def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
@@ -259,6 +415,7 @@ def test_guardrail_loader_accepts_residual_field(tmp_path: Path) -> None:
             },
             "host": {
                 "system": "Darwin",
+                "release": "25.5.0",
                 "machine": "arm64",
                 "cpu_model": "Apple M1 Pro",
                 "logical_cpu_count": 10,

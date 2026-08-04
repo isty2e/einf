@@ -58,12 +58,16 @@ def _report(
             },
             "host": {
                 "system": "Darwin",
+                "release": "25.5.0",
                 "machine": "arm64",
                 "cpu_model": "Apple M1 Pro",
                 "logical_cpu_count": 10,
             },
             "execution_resources": {
-                "process_cpu_affinity": None,
+                "cpu_allocation": {
+                    "process_cpu_affinity": None,
+                    "cgroup_cpu_bandwidth_limits": [],
+                },
                 "native_threadpools": [
                     {
                         "user_api": "blas",
@@ -887,8 +891,23 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
         ),
         (("meta", "host", "cpu_model"), "Apple M4 Max", "host"),
         (
-            ("meta", "execution_resources", "process_cpu_affinity"),
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "process_cpu_affinity",
+            ),
             [0],
+            "execution_resources",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_bandwidth_limits",
+            ),
+            [{"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}],
             "execution_resources",
         ),
         (

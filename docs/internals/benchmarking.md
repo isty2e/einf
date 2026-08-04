@@ -643,15 +643,19 @@ python -m benchmarks.profile.lsp_latency \
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
 
 The guardrail compares latencies only when both receipts describe the same
-experiment. Both metrics require the same profiler, host CPU, process affinity,
-effective native and Torch thread counts, backend and device, relevant
-dependency versions, seed, and shared case configuration. Resolved
-instrumentation targets are compared only for `instrumented_call_ms`; they do
-not affect the unpatched timing pass. The measured `einf` source remains a
-separate axis: baseline and candidate contents may differ, while repeated trials
-must keep each side on identical package contents and case coverage. Every trial
-must also come from a distinct capture. Receipts from the previous schema cannot
-be compared; capture both sides with the same current profiler.
+recorded experiment. Both metrics require the same profiler, kernel release,
+host CPU, process affinity, cgroup CPU bandwidth limits, backend-specific thread
+settings, backend and device, relevant dependency versions, seed, and case
+configuration. CPU allocation is checked before and after each profiled run; if
+it changes, the profiler does not publish a receipt. Resolved instrumentation
+targets are compared only for `instrumented_call_ms`, since they do not affect
+the unpatched timing pass.
+
+The measured `einf` source is a separate axis. Baseline and candidate contents
+may differ, but repeated trials must keep each side on identical package content
+and case coverage. Every trial must come from a distinct capture. Schema v4
+receipts are not comparable with older receipts, so capture both sides with the
+current profiler.
 
 Example:
 
