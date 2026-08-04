@@ -1,19 +1,23 @@
 import json
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 import pytest
 
 import benchmarks.guardrail.check_overhead as check_overhead_module
 import benchmarks.guardrail.check_overhead_trials as check_overhead_trials_module
+import benchmarks.guardrail.policy as overhead_policy
+from benchmarks.guardrail.experiment import (
+    DependencyBuildFingerprint,
+    DependencyBuildsFingerprint,
+)
 from benchmarks.guardrail.policy import (
-    OVERHEAD_REPORT_SCHEMA_VERSION,
     MetricName,
-    OverheadCgroupCpuHierarchyDict,
     OverheadReportDict,
     RegressionFinding,
     collect_case_metrics,
@@ -23,9 +27,27 @@ from benchmarks.guardrail.policy import (
     render_findings,
     render_trial_findings,
 )
+from benchmarks.guardrail.receipt import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadCgroupV2CpuHierarchyDict,
+    OverheadCgroupV2CpuLevelDict,
+    OverheadCpuUtilizationClampDict,
+    OverheadDependencyBuildDict,
+)
 
 _ALIAS_ERROR = "baseline and candidate reports must use different files"
 _TRIAL_ALIAS_ERROR = "trial reports must use distinct files"
+
+
+def _dependency_build(
+    version: str,
+    *,
+    digest_character: str,
+) -> OverheadDependencyBuildDict:
+    return OverheadDependencyBuildDict(
+        version=version,
+        record_sha256=digest_character * 64,
+    )
 
 
 def _report(
@@ -67,8 +89,14 @@ def _report(
             "execution_resources": {
                 "cpu_allocation": {
                     "process_cpu_affinity": None,
+                    "process_scheduling": {
+                        "scheduler_policy": None,
+                        "scheduler_priority": None,
+                        "nice_value": 0,
+                    },
                     "cgroup_cpu_hierarchy": None,
                 },
+                "native_runtime_environment": {},
                 "native_threadpools": [
                     {
                         "user_api": "blas",
@@ -95,9 +123,12 @@ def _report(
                     "hash_seed": 0,
                     "hash_witness": (123, 456),
                 },
-                "numpy": "1.26",
-                "array_api_compat": "1.12",
-                "opt_einsum": "3.4",
+                "numpy": _dependency_build("1.26", digest_character="1"),
+                "array_api_compat": _dependency_build(
+                    "1.12",
+                    digest_character="2",
+                ),
+                "opt_einsum": _dependency_build("3.4", digest_character="3"),
             },
             "seed": seed,
             "stages": stages,
@@ -187,6 +218,28 @@ def _replace_nested_value(
         if not isinstance(current, dict):
             raise TypeError("test path expected an object")
         cast(dict[str, object], current)[final_part] = value
+
+
+def _delete_nested_field(
+    report: OverheadReportDict,
+    *,
+    path: tuple[str | int, ...],
+) -> None:
+    current: object = report
+    for part in path[:-1]:
+        if isinstance(part, int):
+            if not isinstance(current, list):
+                raise TypeError("test path expected a list")
+            current = cast(list[object], current)[part]
+        else:
+            if not isinstance(current, dict):
+                raise TypeError("test path expected an object")
+            current = cast(dict[str, object], current)[part]
+
+    final_part = path[-1]
+    if not isinstance(final_part, str) or not isinstance(current, dict):
+        raise TypeError("test path must end at an object field")
+    del cast(dict[str, object], current)[final_part]
 
 
 def _assert_single_guardrail_rejects_alias(
@@ -533,21 +586,153 @@ def test_load_overhead_report_requires_execution_resources(tmp_path: Path) -> No
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "process_cpu_affinity",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "process_scheduling",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "process_scheduling",
+            "scheduler_policy",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "process_scheduling",
+            "scheduler_priority",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "process_scheduling",
+            "nice_value",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "cpu_allocation",
+            "cgroup_cpu_hierarchy",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "native_runtime_environment",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "native_threadpools",
+            0,
+            "version",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "native_threadpools",
+            0,
+            "threading_layer",
+        ),
+        (
+            "meta",
+            "execution_resources",
+            "native_threadpools",
+            0,
+            "architecture",
+        ),
+        ("meta", "subject_source", "git_revision"),
+        ("meta", "subject_source", "git_dirty"),
+        ("meta", "environment", "python", "cache_tag"),
+        ("meta", "environment", "python", "py_debug"),
+        ("meta", "environment", "numpy", "version"),
+        ("meta", "environment", "numpy", "record_sha256"),
+    ),
+)
+def test_load_overhead_report_requires_present_schema_fields(
+    tmp_path: Path,
+    path: tuple[str | int, ...],
+) -> None:
+    report = _report(call_ms=1.0)
+    _delete_nested_field(report, path=path)
+
+    with pytest.raises(TypeError, match="required"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+@pytest.mark.parametrize(
+    ("scheduler_policy", "scheduler_priority"),
+    ((None, 0), ("SCHED_OTHER", None)),
+)
+def test_load_overhead_report_rejects_partial_scheduler_state(
+    tmp_path: Path,
+    scheduler_policy: Literal["SCHED_OTHER"] | None,
+    scheduler_priority: int | None,
+) -> None:
+    report = _report(call_ms=1.0)
+    process_scheduling = report["meta"]["execution_resources"]["cpu_allocation"][
+        "process_scheduling"
+    ]
+    process_scheduling["scheduler_policy"] = scheduler_policy
+    process_scheduling["scheduler_priority"] = scheduler_priority
+
+    with pytest.raises(
+        ValueError,
+        match="scheduler policy and priority must be available together",
+    ):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_load_overhead_report_rejects_invalid_dependency_build_digest(
+    tmp_path: Path,
+) -> None:
+    report = _report(call_ms=1.0)
+    report["meta"]["environment"]["numpy"]["record_sha256"] = "invalid"
+
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+def test_load_overhead_report_rejects_unknown_native_runtime_variable(
+    tmp_path: Path,
+) -> None:
+    report = _report(call_ms=1.0)
+    report["meta"]["execution_resources"]["native_runtime_environment"] = {
+        "UNRELATED_SETTING": "value"
+    }
+
+    with pytest.raises(ValueError, match="unsupported native runtime variable"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
 def test_load_overhead_report_preserves_cgroup_control_hierarchy(
     tmp_path: Path,
 ) -> None:
     report = _report(call_ms=1.0)
-    hierarchy = OverheadCgroupCpuHierarchyDict(
+    hierarchy = OverheadCgroupV2CpuHierarchyDict(
         version=2,
         child_to_root=[
-            {"bandwidth_limit": None, "weight": 25},
             {
-                "bandwidth_limit": {
-                    "quota_us": 50_000,
-                    "period_us": 100_000,
-                    "burst_us": 0,
+                "bandwidth_limit": None,
+                "weight": 0,
+                "idle": True,
+                "utilization_clamp": {
+                    "minimum_percent": "12.5",
+                    "maximum_percent": "max",
                 },
-                "weight": 100,
             },
             {
                 "bandwidth_limit": {
@@ -556,6 +741,21 @@ def test_load_overhead_report_preserves_cgroup_control_hierarchy(
                     "burst_us": 0,
                 },
                 "weight": 100,
+                "idle": False,
+                "utilization_clamp": {
+                    "minimum_percent": "0",
+                    "maximum_percent": "100",
+                },
+            },
+            {
+                "bandwidth_limit": {
+                    "quota_us": 50_000,
+                    "period_us": 100_000,
+                    "burst_us": 0,
+                },
+                "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
             },
         ],
     )
@@ -583,7 +783,7 @@ def test_load_overhead_report_preserves_cgroup_control_hierarchy(
                 "child_to_root",
             ),
             [],
-            "must not be empty",
+            "must contain at least one level",
         ),
         (
             (
@@ -596,7 +796,7 @@ def test_load_overhead_report_preserves_cgroup_control_hierarchy(
                 "weight",
             ),
             10_001,
-            "weight is invalid",
+            "between 1 and 10000",
         ),
         (
             (
@@ -611,6 +811,20 @@ def test_load_overhead_report_preserves_cgroup_control_hierarchy(
             ),
             0,
             "quota and period must be positive",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_hierarchy",
+                "child_to_root",
+                0,
+                "bandwidth_limit",
+                "burst_us",
+            ),
+            50_001,
+            "burst cannot exceed quota",
         ),
         (
             ("meta", "environment", "python", "hash_seed"),
@@ -646,6 +860,8 @@ def test_load_overhead_report_rejects_invalid_runtime_fingerprint(
                     "burst_us": 0,
                 },
                 "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
             }
         ],
     }
@@ -667,22 +883,71 @@ def test_load_overhead_report_rejects_unsupported_schema(tmp_path: Path) -> None
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
-@pytest.mark.parametrize("field_name", ("bandwidth_limit", "weight"))
+@pytest.mark.parametrize(
+    "field_name",
+    ("bandwidth_limit", "weight", "idle", "utilization_clamp"),
+)
 def test_load_overhead_report_requires_each_cgroup_level_field(
     tmp_path: Path,
     field_name: str,
 ) -> None:
     report = _report(call_ms=1.0)
-    hierarchy = OverheadCgroupCpuHierarchyDict(
+    hierarchy = OverheadCgroupV2CpuHierarchyDict(
         version=2,
-        child_to_root=[{"bandwidth_limit": None, "weight": 100}],
+        child_to_root=[
+            {
+                "bandwidth_limit": None,
+                "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
+            }
+        ],
     )
     report["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"] = (
         hierarchy
     )
     del cast(dict[str, object], hierarchy["child_to_root"][0])[field_name]
 
-    with pytest.raises(TypeError, match=f"{field_name} is required"):
+    with pytest.raises(TypeError, match=f"missing required fields: {field_name}"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+@pytest.mark.parametrize(
+    ("weight", "idle", "clamp", "message"),
+    (
+        (100, True, None, "idle cgroup v2 levels must report cpu.weight 0"),
+        (0, False, None, "non-idle cgroup v2 cpu.weight"),
+        (
+            100,
+            False,
+            {"minimum_percent": "80", "maximum_percent": "20"},
+            "cpu.uclamp.min cannot exceed cpu.uclamp.max",
+        ),
+    ),
+)
+def test_load_overhead_report_rejects_inconsistent_cgroup_v2_state(
+    tmp_path: Path,
+    weight: int,
+    idle: bool,
+    clamp: OverheadCpuUtilizationClampDict | None,
+    message: str,
+) -> None:
+    report = _report(call_ms=1.0)
+    report["meta"]["execution_resources"]["cpu_allocation"]["cgroup_cpu_hierarchy"] = (
+        OverheadCgroupV2CpuHierarchyDict(
+            version=2,
+            child_to_root=[
+                OverheadCgroupV2CpuLevelDict(
+                    bandwidth_limit=None,
+                    weight=weight,
+                    idle=idle,
+                    utilization_clamp=clamp,
+                )
+            ],
+        )
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
@@ -1059,13 +1324,34 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
                 "meta",
                 "execution_resources",
                 "cpu_allocation",
+                "process_scheduling",
+                "nice_value",
+            ),
+            19,
+            "execution_resources",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
                 "cgroup_cpu_hierarchy",
             ),
             {
                 "version": 2,
                 "child_to_root": [
-                    {"bandwidth_limit": None, "weight": 50},
-                    {"bandwidth_limit": None, "weight": 100},
+                    {
+                        "bandwidth_limit": None,
+                        "weight": 50,
+                        "idle": False,
+                        "utilization_clamp": None,
+                    },
+                    {
+                        "bandwidth_limit": None,
+                        "weight": 100,
+                        "idle": False,
+                        "utilization_clamp": None,
+                    },
                 ],
             },
             "execution_resources",
@@ -1081,7 +1367,22 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
             1,
             "execution_resources",
         ),
-        (("meta", "environment", "numpy"), "2.0", "environment"),
+        (("meta", "environment", "numpy", "version"), "2.0", "environment"),
+        (
+            ("meta", "environment", "numpy", "record_sha256"),
+            "f" * 64,
+            "environment",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "native_runtime_environment",
+                "OMP_DYNAMIC",
+            ),
+            "TRUE",
+            "execution_resources",
+        ),
         (
             ("meta", "environment", "python", "cache_tag"),
             "cpython-312",
@@ -1116,6 +1417,15 @@ def test_compare_overhead_reports_rejects_incompatible_experiments_before_metric
     candidate = deepcopy(baseline)
     candidate["meta"]["capture_id"] = str(uuid4())
     _replace_nested_value(candidate, path=path, value=value)
+    if path == ("meta", "execution_target", "backend"):
+        candidate["meta"]["environment"]["torch"] = _dependency_build(
+            "2.6",
+            digest_character="4",
+        )
+        candidate["meta"]["execution_resources"]["torch_threads"] = {
+            "intra_op": 8,
+            "inter_op": 2,
+        }
     _set_metric(
         baseline,
         metric_name="instrumented_call_ms",
@@ -1130,6 +1440,43 @@ def test_compare_overhead_reports_rejects_incompatible_experiments_before_metric
             max_regression_ratio=0.10,
             fail_on_missing_cases=True,
         )
+
+
+def test_experiment_fingerprint_compares_cases_absent_from_first_receipt() -> None:
+    first = _report(call_ms=1.0)
+    second = _report(call_ms=1.0)
+    third = _report(call_ms=1.0)
+    second_case = second["scenarios"][0]["cases"][0]
+    third_case = third["scenarios"][0]["cases"][0]
+    second_case["name"] = "later_case"
+    third_case["name"] = "later_case"
+    third_case["loops"] = second_case["loops"] + 1
+
+    with pytest.raises(ValueError, match="configuration"):
+        overhead_policy._require_compatible_experiments(
+            (first, second, third),
+            metric="instrumented_call_ms",
+        )
+
+
+def test_experiment_fingerprint_rejects_torch_build_for_numpy_backend() -> None:
+    fingerprint = overhead_policy._experiment_fingerprint(
+        _report(call_ms=1.0),
+        metric="unpatched_call_ms",
+    )
+    builds = fingerprint.dependency_builds
+    mismatched_builds = DependencyBuildsFingerprint(
+        numpy=builds.numpy,
+        array_api_compat=builds.array_api_compat,
+        opt_einsum=builds.opt_einsum,
+        torch=DependencyBuildFingerprint(
+            version="2.6",
+            record_sha256="4" * 64,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="presence must match"):
+        replace(fingerprint, dependency_builds=mismatched_builds)
 
 
 def test_compare_overhead_reports_preserves_cgroup_quota_positions() -> None:
@@ -1148,8 +1495,15 @@ def test_compare_overhead_reports_preserves_cgroup_quota_positions() -> None:
                     "burst_us": 0,
                 },
                 "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
             },
-            {"bandwidth_limit": None, "weight": 100},
+            {
+                "bandwidth_limit": None,
+                "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
+            },
         ],
     }
     candidate["meta"]["execution_resources"]["cpu_allocation"][
@@ -1157,7 +1511,12 @@ def test_compare_overhead_reports_preserves_cgroup_quota_positions() -> None:
     ] = {
         "version": 2,
         "child_to_root": [
-            {"bandwidth_limit": None, "weight": 100},
+            {
+                "bandwidth_limit": None,
+                "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
+            },
             {
                 "bandwidth_limit": {
                     "quota_us": 50_000,
@@ -1165,9 +1524,72 @@ def test_compare_overhead_reports_preserves_cgroup_quota_positions() -> None:
                     "burst_us": 0,
                 },
                 "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
             },
         ],
     }
+    _set_metric(
+        baseline,
+        metric_name="instrumented_call_ms",
+        value=float("nan"),
+    )
+
+    with pytest.raises(ValueError, match="execution_resources"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "candidate_level",
+    (
+        {
+            "bandwidth_limit": None,
+            "weight": 0,
+            "idle": True,
+            "utilization_clamp": None,
+        },
+        {
+            "bandwidth_limit": None,
+            "weight": 100,
+            "idle": False,
+            "utilization_clamp": {
+                "minimum_percent": "25",
+                "maximum_percent": "max",
+            },
+        },
+    ),
+)
+def test_compare_overhead_reports_rejects_cgroup_scheduler_control_changes(
+    candidate_level: OverheadCgroupV2CpuLevelDict,
+) -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
+    baseline["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_hierarchy"
+    ] = {
+        "version": 2,
+        "child_to_root": [
+            {
+                "bandwidth_limit": None,
+                "weight": 100,
+                "idle": False,
+                "utilization_clamp": None,
+            }
+        ],
+    }
+    candidate["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_hierarchy"
+    ] = OverheadCgroupV2CpuHierarchyDict(
+        version=2,
+        child_to_root=[candidate_level],
+    )
     _set_metric(
         baseline,
         metric_name="instrumented_call_ms",
@@ -1208,7 +1630,10 @@ def test_torch_comparison_rejects_effective_thread_count_changes() -> None:
     candidate["meta"]["capture_id"] = str(uuid4())
     for report in (baseline, candidate):
         report["meta"]["execution_target"]["backend"] = "torch"
-        report["meta"]["environment"]["torch"] = "2.6"
+        report["meta"]["environment"]["torch"] = _dependency_build(
+            "2.6",
+            digest_character="4",
+        )
         report["meta"]["execution_resources"]["torch_threads"] = {
             "intra_op": 8,
             "inter_op": 2,
@@ -1235,7 +1660,10 @@ def test_torch_comparison_rejects_native_runtime_changes() -> None:
     candidate["meta"]["capture_id"] = str(uuid4())
     for report in (baseline, candidate):
         report["meta"]["execution_target"]["backend"] = "torch"
-        report["meta"]["environment"]["torch"] = "2.6"
+        report["meta"]["environment"]["torch"] = _dependency_build(
+            "2.6",
+            digest_character="4",
+        )
         report["meta"]["execution_resources"]["torch_threads"] = {
             "intra_op": 8,
             "inter_op": 2,

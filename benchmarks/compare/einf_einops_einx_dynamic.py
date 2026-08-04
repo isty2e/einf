@@ -37,15 +37,15 @@ from benchmarks.harness.receipt import (
     timing_summary_payload,
     validation_coverage_payload,
 )
-from benchmarks.shared import (
-    as_single_array,
+from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import (
     available_libraries,
     einf_source_receipt_metadata,
     require_einf_source_root,
     require_stable_einf_source_content,
     version_or_missing,
 )
-from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.outputs import as_single_array
 from einf import ax, axes, contract, einop, rearrange, reduce, repeat
 
 try:

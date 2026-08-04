@@ -12,8 +12,22 @@ from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
+from .experiment import (
+    DependencyBuildFingerprint,
+    ExecutionResourcesFingerprint,
+    ExperimentFingerprint,
+)
+from .receipt import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadEnvironmentDict,
+    OverheadExecutionResourcesDict,
+    OverheadExecutionTargetDict,
+    OverheadHostDict,
+    OverheadPythonRuntimeDict,
+    OverheadSourceDict,
+)
+
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
-OVERHEAD_REPORT_SCHEMA_VERSION = 6
 
 
 def _required_string(
@@ -126,116 +140,6 @@ class OverheadScenarioDict(TypedDict):
     mode: str
     scale: str
     cases: list[OverheadCaseDict]
-
-
-class OverheadSourceDict(TypedDict):
-    """Source identity of the measured einf subject."""
-
-    kind: str
-    distribution_version: str
-    git_revision: str | None
-    git_dirty: bool | None
-    content_sha256: str
-
-
-class OverheadExecutionTargetDict(TypedDict):
-    """Resolved backend and device used for one overhead capture."""
-
-    backend: str
-    requested_device: str
-    resolved_device: str
-
-
-class OverheadPythonRuntimeDict(TypedDict):
-    """Python implementation and process settings affecting measured overhead."""
-
-    implementation_name: str
-    implementation_version: str
-    language_version: str
-    build: str
-    cache_tag: str | None
-    abi_flags: str
-    optimize: int
-    debug: int
-    py_debug: bool | None
-    hash_seed: int
-    hash_witness: tuple[int, int]
-
-
-class OverheadEnvironmentDict(TypedDict):
-    """Runtime and dependency versions that can affect overhead measurements."""
-
-    python: OverheadPythonRuntimeDict
-    numpy: str
-    array_api_compat: str
-    opt_einsum: str
-    torch: NotRequired[str]
-
-
-class OverheadHostDict(TypedDict):
-    """Host hardware identity required for CPU latency comparison."""
-
-    system: str
-    release: str
-    machine: str
-    cpu_model: str
-    logical_cpu_count: int
-
-
-class OverheadNativeThreadPoolDict(TypedDict):
-    """One effective native thread pool visible to the benchmark process."""
-
-    user_api: str
-    internal_api: str
-    prefix: str
-    num_threads: int
-    version: str | None
-    threading_layer: str | None
-    architecture: str | None
-
-
-class OverheadTorchThreadsDict(TypedDict):
-    """Effective PyTorch thread counts for one capture."""
-
-    intra_op: int
-    inter_op: int
-
-
-class OverheadCpuBandwidthLimitDict(TypedDict):
-    """One finite cgroup CPU bandwidth constraint."""
-
-    quota_us: int
-    period_us: int
-    burst_us: int
-
-
-class OverheadCgroupCpuLevelDict(TypedDict):
-    """CPU controls at one visible cgroup level."""
-
-    bandwidth_limit: OverheadCpuBandwidthLimitDict | None
-    weight: int | None
-
-
-class OverheadCgroupCpuHierarchyDict(TypedDict):
-    """CPU controls from the process cgroup toward the visible root."""
-
-    version: int
-    child_to_root: list[OverheadCgroupCpuLevelDict]
-
-
-class OverheadCpuAllocationDict(TypedDict):
-    """CPU scheduling capacity assigned to the benchmark process."""
-
-    process_cpu_affinity: list[int] | None
-    cgroup_cpu_hierarchy: OverheadCgroupCpuHierarchyDict | None
-
-
-class OverheadExecutionResourcesDict(TypedDict):
-    """Process-level CPU allocation and effective backend thread settings."""
-
-    cpu_allocation: OverheadCpuAllocationDict
-    native_threadpools: list[OverheadNativeThreadPoolDict]
-    torch_threads: NotRequired[OverheadTorchThreadsDict]
 
 
 class OverheadMetaDict(TypedDict):
@@ -407,6 +311,8 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         name="distribution_version",
         context=f"{context}: meta.subject_source",
     )
+    if "git_revision" not in source_raw or "git_dirty" not in source_raw:
+        raise TypeError(f"{context}: subject git state fields are required")
     git_revision_raw = source_raw.get("git_revision")
     if git_revision_raw is not None and (
         not isinstance(git_revision_raw, str) or not git_revision_raw
@@ -496,214 +402,11 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         name="execution_resources",
         context=context,
     )
-    allocation_raw = _required_mapping(
+    execution_resources = ExecutionResourcesFingerprint.from_mapping(
         resources_raw,
-        name="cpu_allocation",
+        backend=backend,
         context=f"{context}: meta.execution_resources",
-    )
-    affinity_raw = allocation_raw.get("process_cpu_affinity")
-    if affinity_raw is None:
-        process_cpu_affinity = None
-    elif not isinstance(affinity_raw, list) or not all(
-        type(cpu_index) is int and cpu_index >= 0 for cpu_index in affinity_raw
-    ):
-        raise TypeError(f"{context}: process_cpu_affinity must be list[int] or null")
-    elif not affinity_raw or affinity_raw != sorted(set(affinity_raw)):
-        raise ValueError(
-            f"{context}: process_cpu_affinity must be non-empty, sorted, and unique"
-        )
-    else:
-        process_cpu_affinity = list(affinity_raw)
-
-    if "cgroup_cpu_hierarchy" not in allocation_raw:
-        raise TypeError(f"{context}: cgroup CPU hierarchy is required")
-    hierarchy_raw = allocation_raw.get("cgroup_cpu_hierarchy")
-    if hierarchy_raw is None:
-        cgroup_cpu_hierarchy = None
-    elif not isinstance(hierarchy_raw, dict):
-        raise TypeError(f"{context}: cgroup CPU hierarchy must be object or null")
-    else:
-        hierarchy_context = f"{context}: cgroup CPU hierarchy"
-        cgroup_version = _required_integer(
-            hierarchy_raw,
-            name="version",
-            context=hierarchy_context,
-        )
-        if cgroup_version not in (1, 2):
-            raise ValueError(f"{hierarchy_context}: version must be 1 or 2")
-        levels_raw = hierarchy_raw.get("child_to_root")
-        if not isinstance(levels_raw, list):
-            raise TypeError(f"{hierarchy_context}: child_to_root must be a list")
-        if not levels_raw:
-            raise ValueError(f"{hierarchy_context}: child_to_root must not be empty")
-
-        minimum_weight, maximum_weight = (
-            (2, 262_144) if cgroup_version == 1 else (1, 10_000)
-        )
-        levels: list[OverheadCgroupCpuLevelDict] = []
-        for index, level_raw in enumerate(levels_raw):
-            level_context = f"{hierarchy_context}: child_to_root[{index}]"
-            if not isinstance(level_raw, dict):
-                raise TypeError(f"{level_context} must be an object")
-            if "bandwidth_limit" not in level_raw:
-                raise TypeError(f"{level_context}: bandwidth_limit is required")
-            if "weight" not in level_raw:
-                raise TypeError(f"{level_context}: weight is required")
-
-            limit_raw = level_raw.get("bandwidth_limit")
-            if limit_raw is None:
-                bandwidth_limit = None
-            elif not isinstance(limit_raw, dict):
-                raise TypeError(
-                    f"{level_context}: bandwidth_limit must be object or null"
-                )
-            else:
-                quota_us = _required_integer(
-                    limit_raw,
-                    name="quota_us",
-                    context=level_context,
-                )
-                period_us = _required_integer(
-                    limit_raw,
-                    name="period_us",
-                    context=level_context,
-                )
-                burst_us = _required_integer(
-                    limit_raw,
-                    name="burst_us",
-                    context=level_context,
-                )
-                if quota_us < 1 or period_us < 1 or burst_us < 0:
-                    raise ValueError(
-                        f"{level_context}: quota and period must be positive "
-                        "and burst non-negative"
-                    )
-                bandwidth_limit = OverheadCpuBandwidthLimitDict(
-                    quota_us=quota_us,
-                    period_us=period_us,
-                    burst_us=burst_us,
-                )
-
-            weight_raw = level_raw.get("weight")
-            if weight_raw is None:
-                weight = None
-            elif type(weight_raw) is not int or not (
-                minimum_weight <= weight_raw <= maximum_weight
-            ):
-                raise TypeError(f"{level_context}: weight is invalid")
-            else:
-                weight = weight_raw
-            levels.append(
-                OverheadCgroupCpuLevelDict(
-                    bandwidth_limit=bandwidth_limit,
-                    weight=weight,
-                )
-            )
-
-        cgroup_cpu_hierarchy = OverheadCgroupCpuHierarchyDict(
-            version=cgroup_version,
-            child_to_root=levels,
-        )
-
-    native_threadpools_raw = resources_raw.get("native_threadpools")
-    if not isinstance(native_threadpools_raw, list):
-        raise TypeError(f"{context}: native_threadpools must be a list")
-    native_threadpools: list[OverheadNativeThreadPoolDict] = []
-    for index, threadpool_raw in enumerate(native_threadpools_raw):
-        threadpool_context = f"{context}: native_threadpools[{index}]"
-        if not isinstance(threadpool_raw, dict):
-            raise TypeError(f"{threadpool_context} must be an object")
-        identity = (
-            _required_string(
-                threadpool_raw,
-                name="user_api",
-                context=threadpool_context,
-            ),
-            _required_string(
-                threadpool_raw,
-                name="internal_api",
-                context=threadpool_context,
-            ),
-            _required_string(
-                threadpool_raw,
-                name="prefix",
-                context=threadpool_context,
-            ),
-        )
-        num_threads = _required_integer(
-            threadpool_raw,
-            name="num_threads",
-            context=threadpool_context,
-        )
-        if num_threads < 1:
-            raise ValueError(f"{threadpool_context}: num_threads must be positive")
-
-        optional_values: dict[str, str | None] = {}
-        for field_name in ("version", "threading_layer", "architecture"):
-            field_value = threadpool_raw.get(field_name)
-            if field_value is not None and (
-                not isinstance(field_value, str) or not field_value
-            ):
-                raise TypeError(
-                    f"{threadpool_context}: {field_name} must be string or null"
-                )
-            optional_values[field_name] = field_value
-        native_threadpools.append(
-            OverheadNativeThreadPoolDict(
-                user_api=identity[0],
-                internal_api=identity[1],
-                prefix=identity[2],
-                num_threads=num_threads,
-                version=optional_values["version"],
-                threading_layer=optional_values["threading_layer"],
-                architecture=optional_values["architecture"],
-            )
-        )
-    native_threadpools.sort(
-        key=lambda threadpool: (
-            threadpool["user_api"],
-            threadpool["internal_api"],
-            threadpool["prefix"],
-            threadpool["version"] or "",
-            threadpool["threading_layer"] or "",
-            threadpool["architecture"] or "",
-            threadpool["num_threads"],
-        )
-    )
-
-    execution_resources = OverheadExecutionResourcesDict(
-        cpu_allocation=OverheadCpuAllocationDict(
-            process_cpu_affinity=process_cpu_affinity,
-            cgroup_cpu_hierarchy=cgroup_cpu_hierarchy,
-        ),
-        native_threadpools=native_threadpools,
-    )
-    if backend == "torch":
-        torch_threads_raw = _required_mapping(
-            resources_raw,
-            name="torch_threads",
-            context=context,
-        )
-        intra_op = _required_integer(
-            torch_threads_raw,
-            name="intra_op",
-            context=f"{context}: meta.execution_resources.torch_threads",
-        )
-        inter_op = _required_integer(
-            torch_threads_raw,
-            name="inter_op",
-            context=f"{context}: meta.execution_resources.torch_threads",
-        )
-        if intra_op < 1 or inter_op < 1:
-            raise ValueError(f"{context}: torch thread counts must be positive")
-        execution_resources["torch_threads"] = OverheadTorchThreadsDict(
-            intra_op=intra_op,
-            inter_op=inter_op,
-        )
-    elif "torch_threads" in resources_raw:
-        raise ValueError(
-            f"{context}: NumPy execution resources cannot include torch_threads"
-        )
+    ).to_receipt()
 
     environment_raw = _required_mapping(
         meta_raw,
@@ -716,6 +419,15 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         context=f"{context}: meta.environment",
     )
     python_context = f"{context}: meta.environment.python"
+    nullable_python_fields = ("cache_tag", "py_debug")
+    missing_python_fields = tuple(
+        field for field in nullable_python_fields if field not in python_raw
+    )
+    if missing_python_fields:
+        raise TypeError(
+            f"{python_context} missing required fields: "
+            + ", ".join(missing_python_fields)
+        )
     cache_tag = python_raw.get("cache_tag")
     if cache_tag is not None and (not isinstance(cache_tag, str) or not cache_tag):
         raise TypeError(f"{python_context}: cache_tag must be string or null")
@@ -784,31 +496,27 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     )
     environment = OverheadEnvironmentDict(
         python=python_runtime,
-        numpy=_required_string(
-            environment_raw,
-            name="numpy",
-            context=f"{context}: meta.environment",
-        ),
-        array_api_compat=_required_string(
-            environment_raw,
-            name="array_api_compat",
-            context=f"{context}: meta.environment",
-        ),
-        opt_einsum=_required_string(
-            environment_raw,
-            name="opt_einsum",
-            context=f"{context}: meta.environment",
-        ),
+        numpy=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("numpy"),
+            context=f"{context}: meta.environment.numpy",
+        ).to_receipt(),
+        array_api_compat=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("array_api_compat"),
+            context=f"{context}: meta.environment.array_api_compat",
+        ).to_receipt(),
+        opt_einsum=DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("opt_einsum"),
+            context=f"{context}: meta.environment.opt_einsum",
+        ).to_receipt(),
     )
     if backend == "numpy":
         if "torch" in environment_raw:
             raise ValueError(f"{context}: NumPy environment cannot include torch")
     else:
-        environment["torch"] = _required_string(
-            environment_raw,
-            name="torch",
-            context=f"{context}: meta.environment",
-        )
+        environment["torch"] = DependencyBuildFingerprint.from_mapping(
+            environment_raw.get("torch"),
+            context=f"{context}: meta.environment.torch",
+        ).to_receipt()
 
     seed = _required_integer(meta_raw, name="seed", context=context)
     stages_raw = meta_raw.get("stages")
@@ -963,98 +671,26 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     )
 
 
-def _experiment_axes(
+def _experiment_fingerprint(
     report: OverheadReportDict,
     *,
     metric: MetricName,
-) -> dict[str, object]:
-    """Return controlled report-wide conditions in diagnostic order."""
+) -> ExperimentFingerprint:
+    """Build the canonical identity used for one metric comparison."""
     meta = report["meta"]
-    target = meta["execution_target"]
-    environment = meta["environment"]
-    host = meta["host"]
-    resources = meta["execution_resources"]
-    allocation = resources["cpu_allocation"]
-    torch_threads = resources.get("torch_threads")
-    axes: dict[str, object] = {
-        "schema": report["schema_version"],
-        "harness_source": meta["harness_source_sha256"],
-        "execution_target": (
-            target["backend"],
-            target["requested_device"],
-            target["resolved_device"],
-        ),
-        "host": (
-            host["system"],
-            host["release"],
-            host["machine"],
-            host["cpu_model"],
-            host["logical_cpu_count"],
-        ),
-        "execution_resources": (
-            (
-                None
-                if allocation["process_cpu_affinity"] is None
-                else tuple(allocation["process_cpu_affinity"])
-            ),
-            (
-                None
-                if allocation["cgroup_cpu_hierarchy"] is None
-                else (
-                    allocation["cgroup_cpu_hierarchy"]["version"],
-                    tuple(
-                        (
-                            (
-                                None
-                                if level["bandwidth_limit"] is None
-                                else (
-                                    level["bandwidth_limit"]["quota_us"],
-                                    level["bandwidth_limit"]["period_us"],
-                                    level["bandwidth_limit"]["burst_us"],
-                                )
-                            ),
-                            level["weight"],
-                        )
-                        for level in allocation["cgroup_cpu_hierarchy"]["child_to_root"]
-                    ),
-                )
-            ),
-            tuple(
-                (
-                    threadpool["user_api"],
-                    threadpool["internal_api"],
-                    threadpool["prefix"],
-                    threadpool["num_threads"],
-                    threadpool["version"],
-                    threadpool["threading_layer"],
-                    threadpool["architecture"],
-                )
-                for threadpool in resources["native_threadpools"]
-            ),
-            (
-                None
-                if torch_threads is None
-                else (torch_threads["intra_op"], torch_threads["inter_op"])
-            ),
-        ),
-        "environment": (
-            tuple(sorted(environment["python"].items())),
-            environment["numpy"],
-            environment["array_api_compat"],
-            environment["opt_einsum"],
-            environment.get("torch"),
-        ),
-        "configuration": meta["seed"],
-    }
-    if metric == "instrumented_call_ms":
-        axes["instrumentation"] = (
-            tuple(meta["stages"]),
-            tuple(
-                (stage, tuple(targets))
-                for stage, targets in sorted(meta["resolved_stage_targets"].items())
-            ),
-        )
-    return axes
+    return ExperimentFingerprint.from_normalized(
+        schema_version=report["schema_version"],
+        harness_source_sha256=meta["harness_source_sha256"],
+        execution_target=meta["execution_target"],
+        host=meta["host"],
+        execution_resources=meta["execution_resources"],
+        environment=meta["environment"],
+        seed=meta["seed"],
+        case_configurations=_case_configurations(report),
+        stages=meta["stages"],
+        resolved_stage_targets=meta["resolved_stage_targets"],
+        include_instrumentation=metric == "instrumented_call_ms",
+    )
 
 
 def _case_configurations(
@@ -1090,27 +726,17 @@ def _require_compatible_experiments(
 ) -> None:
     if not reports:
         return
-    expected_axes = _experiment_axes(reports[0], metric=metric)
-    known_case_configurations: dict[tuple[str, str, str, str], tuple[str, int]] = {}
-    mismatches: set[str] = set()
     capture_ids = [report["meta"]["capture_id"] for report in reports]
     if len(set(capture_ids)) != len(capture_ids):
         raise ValueError("overhead reports must come from distinct captures")
-    for report in reports:
-        axes = _experiment_axes(report, metric=metric)
-        mismatches.update(
-            axis for axis, expected in expected_axes.items() if axes[axis] != expected
-        )
-        case_configurations = _case_configurations(report)
-        for key, configuration in case_configurations.items():
-            existing = known_case_configurations.setdefault(key, configuration)
-            if existing != configuration:
-                mismatches.add("configuration")
+    fingerprints = tuple(
+        _experiment_fingerprint(report, metric=metric) for report in reports
+    )
+    mismatches = ExperimentFingerprint.mismatched_axes(fingerprints)
     if mismatches:
-        ordered = tuple(axis for axis in expected_axes if axis in mismatches)
         raise ValueError(
             "overhead reports are not comparable: mismatched experiment axes: "
-            + ", ".join(ordered)
+            + ", ".join(mismatches)
         )
 
 

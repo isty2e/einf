@@ -642,20 +642,37 @@ python -m benchmarks.profile.lsp_latency \
 
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
 
-The guardrail compares latencies only when both receipts describe the same
-recorded experiment. Both metrics require the same profiler, kernel release,
-host CPU, process affinity, cgroup CPU bandwidth and weight hierarchy,
-backend-specific thread settings, backend and device, Python implementation and
-build settings, dependency versions, fixed `PYTHONHASHSEED`, workload seed, and
-case configuration. CPU allocation and Python runtime settings are checked
-before and after each profiled run, as are backend thread settings. If any
-recorded execution resource or runtime setting changes, the profiler does not
-publish a receipt. Resolved instrumentation targets are compared only for
-`instrumented_call_ms`, since they do not affect the unpatched timing pass.
+The guardrail compares latencies only when both receipts match on the recorded
+experiment axes. Both metrics require the same profiler, kernel release, host
+CPU, benchmark-task affinity, niceness, child-to-root cgroup CPU controls,
+backend thread settings, backend and device, Python runtime, workload seed, and
+case configuration. Dependency identity includes both the installed version and
+a digest of its `RECORD` manifest, so same-version local rebuilds do not compare
+as the same build. The profiler also verifies that each imported package belongs
+to the distribution whose manifest it hashes. Receipt capture therefore requires
+a concrete, `RECORD`-bearing installation; shadowed imports and editable layouts
+that cannot prove this ownership are rejected. The resource fingerprint records
+every configured
+`OMP_`, `KMP_`, `GOMP_`, `MKL_`, `OPENBLAS_`, `BLIS_`, `VECLIB_`, and `GOTO_`
+environment variable.
+
+Where the platform exposes scheduler inspection, receipt capture requires the
+default `SCHED_OTHER` policy. The profiler checks the recorded CPU allocation,
+runtime environment, and backend thread settings before and after each run. It
+also rejects unclassified `cpu.*` cgroup controls. Resolved instrumentation
+targets are compared only for `instrumented_call_ms`, since they do not affect
+the unpatched timing pass.
+
+This is a compatibility check over recorded evidence, not proof that every
+machine condition is identical. Task-level fields describe the Python thread
+that submits the timed calls. Per-task utilization clamps available only through
+`sched_getattr`, native worker scheduler state, and runtime policies changed
+through library APIs are not inspected. Run baseline and candidate captures in
+the same controlled host session when those conditions could differ.
 
 The measured `einf` source is a separate axis. Baseline and candidate contents
 may differ, but repeated trials must keep each side on identical package content
-and case coverage. Every trial must come from a distinct capture. Schema v5
+and case coverage. Every trial must come from a distinct capture. Schema v7
 receipts are not comparable with older receipts, so capture both sides with the
 current profiler.
 

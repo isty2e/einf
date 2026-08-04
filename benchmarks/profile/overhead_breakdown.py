@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from importlib.metadata import Distribution, PackageNotFoundError, distribution
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar, cast
 from unittest.mock import patch
@@ -37,39 +38,95 @@ import numpy as np
 from numpy.typing import NDArray
 from threadpoolctl import threadpool_info
 
-from benchmarks.guardrail.policy import (
+from benchmarks.guardrail.experiment import (
+    CgroupCpuHierarchyFingerprint,
+    CgroupV1CpuLevel,
+    CgroupV2CpuLevel,
+    CpuAllocationFingerprint,
+    CpuBandwidthLimit,
+    CpuUtilizationClamp,
+    DependencyBuildFingerprint,
+    ExecutionResourcesFingerprint,
+    NativeRuntimeEnvironmentFingerprint,
+    NativeThreadPoolFingerprint,
+    ProcessSchedulingFingerprint,
+)
+from benchmarks.guardrail.receipt import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
-    OverheadCgroupCpuHierarchyDict,
-    OverheadCgroupCpuLevelDict,
-    OverheadCpuAllocationDict,
-    OverheadCpuBandwidthLimitDict,
+    BackendName,
     OverheadEnvironmentDict,
     OverheadExecutionResourcesDict,
-    OverheadNativeThreadPoolDict,
     OverheadPythonRuntimeDict,
-    OverheadTorchThreadsDict,
 )
-from benchmarks.shared import (
+from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import (
     einf_source_receipt_metadata,
     require_einf_source_root,
     require_stable_einf_source_content,
     version_or_missing,
 )
-from benchmarks.shared.artifacts import publish_receipt
 from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repeat
 
-try:
-    import torch
-except ImportError:
-    torch = None
+torch: Any = None
+
+_DEPENDENCY_IMPORT_NAMES = {
+    "array-api-compat": "array_api_compat",
+    "numpy": "numpy",
+    "opt_einsum": "opt_einsum",
+    "torch": "torch",
+}
 
 Array = NDArray[np.float32]
-BackendName = Literal["numpy", "torch"]
 _CgroupVersion = Literal[1, 2]
 _TensorFamily = TypeVar("_TensorFamily", bound=TensorLike)
 
 _CGROUP_MEMBERSHIP_PATH = Path("/proc/self/cgroup")
 _CGROUP_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+_CGROUP_V1_FINGERPRINTED_CPU_CONTROLS = frozenset(
+    {
+        "cpu.cfs_burst_us",
+        "cpu.cfs_period_us",
+        "cpu.cfs_quota_us",
+        "cpu.shares",
+    }
+)
+_CGROUP_V1_CLASSIFIED_CPU_CONTROLS = _CGROUP_V1_FINGERPRINTED_CPU_CONTROLS | {
+    # Runtime/statistics files do not configure fair-scheduler benchmark tasks.
+    "cpu.rt_period_us",
+    "cpu.rt_runtime_us",
+    "cpu.stat",
+}
+_CGROUP_V2_FINGERPRINTED_CPU_CONTROLS = frozenset(
+    {
+        "cpu.idle",
+        "cpu.max",
+        "cpu.max.burst",
+        "cpu.uclamp.max",
+        "cpu.uclamp.min",
+        "cpu.weight",
+    }
+)
+_CGROUP_V2_CLASSIFIED_CPU_CONTROLS = _CGROUP_V2_FINGERPRINTED_CPU_CONTROLS | {
+    # These are observations or alternate projections of fingerprinted controls.
+    "cpu.pressure",
+    "cpu.stat",
+    "cpu.stat.local",
+    "cpu.weight.nice",
+}
+
+
+def _require_torch_backend() -> Any:
+    global torch
+    if torch is not None:
+        return torch
+    try:
+        torch = importlib.import_module("torch")
+    except (ImportError, OSError) as error:
+        raise RuntimeError(
+            "torch backend selected but torch cannot be imported"
+        ) from error
+    return torch
+
 
 Tensor = TensorLike
 TensorBatch = tuple[Tensor, ...]
@@ -284,9 +341,8 @@ def _to_backend_tensor(
     """Convert deterministic numpy-generated data to selected backend tensors."""
     if backend == "numpy":
         return array
-    if torch is None:
-        raise RuntimeError("torch backend selected without torch installed")
-    return torch.from_numpy(np.ascontiguousarray(array))
+    torch_backend = _require_torch_backend()
+    return torch_backend.from_numpy(np.ascontiguousarray(array))
 
 
 def _touch_tensor(
@@ -303,11 +359,12 @@ def _touch_tensor(
         return
 
     if torch is not None and isinstance(tensor, torch.Tensor):
-        if tensor.numel() > 0:
-            if tensor.ndim == 0:
-                _ = float(tensor.item())
+        torch_tensor = cast(Any, tensor)
+        if torch_tensor.numel() > 0:
+            if torch_tensor.ndim == 0:
+                _ = float(torch_tensor.item())
             else:
-                _ = float(tensor[(0,) * tensor.ndim].item())
+                _ = float(torch_tensor[(0,) * torch_tensor.ndim].item())
         return
 
     raise TypeError(f"unsupported tensor type: {type(tensor)!r}")
@@ -1018,7 +1075,7 @@ def _to_json(
     harness_source_sha256: str,
     subject_source: dict[str, str | bool | None],
     execution_resources: OverheadExecutionResourcesDict,
-    python_runtime: OverheadPythonRuntimeDict,
+    environment: OverheadEnvironmentDict,
 ) -> dict[str, object]:
     return {
         "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
@@ -1033,10 +1090,7 @@ def _to_json(
             },
             "host": _host_metadata(),
             "execution_resources": execution_resources,
-            "environment": _environment_metadata(
-                backend,
-                python_runtime=python_runtime,
-            ),
+            "environment": environment,
             "seed": seed,
             "stages": list(STAGES),
             "resolved_stage_targets": {
@@ -1155,6 +1209,66 @@ def _process_cpu_affinity() -> list[int] | None:
     if not affinity:
         raise RuntimeError("process CPU affinity is empty")
     return affinity
+
+
+def _process_scheduling_fingerprint() -> ProcessSchedulingFingerprint:
+    get_scheduler = cast(
+        Callable[[int], int] | None,
+        getattr(os, "sched_getscheduler", None),
+    )
+    get_scheduler_parameters = cast(
+        Callable[[int], object] | None,
+        getattr(os, "sched_getparam", None),
+    )
+    if (get_scheduler is None) != (get_scheduler_parameters is None):
+        raise RuntimeError("process scheduler inspection support is incomplete")
+
+    scheduler_policy: Literal["SCHED_OTHER"] | None = None
+    scheduler_priority: int | None = None
+    if get_scheduler is not None and get_scheduler_parameters is not None:
+        try:
+            observed_scheduler_policy = get_scheduler(0)
+            parameters = get_scheduler_parameters(0)
+        except OSError as error:
+            raise RuntimeError("cannot determine process scheduler state") from error
+        scheduler_priority = getattr(parameters, "sched_priority", None)
+        if (
+            type(observed_scheduler_policy) is not int
+            or type(scheduler_priority) is not int
+        ):
+            raise RuntimeError("process scheduler state is invalid")
+        default_policy = getattr(os, "SCHED_OTHER", None)
+        if type(default_policy) is not int:
+            raise RuntimeError("default process scheduler policy is unavailable")
+        if observed_scheduler_policy != default_policy:
+            raise RuntimeError(
+                "receipt capture requires the default SCHED_OTHER policy"
+            )
+        scheduler_policy = "SCHED_OTHER"
+
+    get_priority = cast(
+        Callable[[int, int], int] | None,
+        getattr(os, "getpriority", None),
+    )
+    priority_scope = getattr(os, "PRIO_PROCESS", None)
+    if (get_priority is None) != (priority_scope is None):
+        raise RuntimeError("process niceness inspection support is incomplete")
+    nice_value: int | None = None
+    if get_priority is not None:
+        if type(priority_scope) is not int:
+            raise RuntimeError("process niceness scope is invalid")
+        try:
+            nice_value = get_priority(priority_scope, 0)
+        except OSError as error:
+            raise RuntimeError("cannot determine process niceness") from error
+        if type(nice_value) is not int:
+            raise RuntimeError("process niceness is invalid")
+
+    return ProcessSchedulingFingerprint(
+        scheduler_policy=scheduler_policy,
+        scheduler_priority=scheduler_priority,
+        nice_value=nice_value,
+    )
 
 
 def _decode_mountinfo_path(value: str) -> str:
@@ -1301,7 +1415,7 @@ def _required_control_integer(
     return parsed
 
 
-def _v2_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | None:
+def _v2_cpu_bandwidth_limit(directory: Path) -> CpuBandwidthLimit | None:
     raw_max = _read_optional_control(directory / "cpu.max")
     if raw_max is None:
         return None
@@ -1322,7 +1436,7 @@ def _v2_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | 
     )
     if quota_field == "max":
         return None
-    return OverheadCpuBandwidthLimitDict(
+    return CpuBandwidthLimit(
         quota_us=_required_control_integer(
             quota_field,
             name="cpu.max quota",
@@ -1333,7 +1447,7 @@ def _v2_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | 
     )
 
 
-def _v1_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | None:
+def _v1_cpu_bandwidth_limit(directory: Path) -> CpuBandwidthLimit | None:
     raw_quota = _read_optional_control(directory / "cpu.cfs_quota_us")
     raw_period = _read_optional_control(directory / "cpu.cfs_period_us")
     if raw_quota is None and raw_period is None:
@@ -1364,34 +1478,84 @@ def _v1_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | 
         return None
     if quota_us == 0:
         raise RuntimeError("cgroup v1 CPU quota must be positive or -1")
-    return OverheadCpuBandwidthLimitDict(
+    return CpuBandwidthLimit(
         quota_us=quota_us,
         period_us=period_us,
         burst_us=burst_us,
     )
 
 
-def _cgroup_cpu_weight(
+def _bounded_optional_control_integer(
     directory: Path,
     *,
-    version: _CgroupVersion,
+    control_name: str,
+    minimum: int,
+    maximum: int,
 ) -> int | None:
-    control_name = "cpu.weight" if version == 2 else "cpu.shares"
     raw_weight = _read_optional_control(directory / control_name)
     if raw_weight is None:
         return None
     weight = _required_control_integer(
         raw_weight,
         name=control_name,
-        minimum=1 if version == 2 else 2,
+        minimum=minimum,
     )
-    maximum = 10_000 if version == 2 else 262_144
     if weight > maximum:
         raise RuntimeError(f"cgroup CPU control {control_name} is above {maximum}")
     return weight
 
 
-def _cgroup_cpu_controls() -> OverheadCgroupCpuHierarchyDict | None:
+def _v2_cpu_idle(directory: Path) -> bool | None:
+    raw_idle = _read_optional_control(directory / "cpu.idle")
+    if raw_idle is None:
+        return None
+    if raw_idle not in ("0", "1"):
+        raise RuntimeError("cgroup v2 cpu.idle must be 0 or 1")
+    return raw_idle == "1"
+
+
+def _v2_cpu_utilization_clamp(directory: Path) -> CpuUtilizationClamp | None:
+    minimum = _read_optional_control(directory / "cpu.uclamp.min")
+    maximum = _read_optional_control(directory / "cpu.uclamp.max")
+    if minimum is None and maximum is None:
+        return None
+    if minimum is None or maximum is None:
+        raise RuntimeError(
+            "cgroup v2 utilization clamp controls must both be available"
+        )
+    try:
+        return CpuUtilizationClamp(
+            minimum_percent=minimum,
+            maximum_percent=maximum,
+        )
+    except ValueError as error:
+        raise RuntimeError("cgroup v2 utilization clamp is invalid") from error
+
+
+def _reject_unknown_cgroup_cpu_controls(
+    directory: Path,
+    *,
+    version: _CgroupVersion,
+) -> None:
+    known_controls = (
+        _CGROUP_V1_CLASSIFIED_CPU_CONTROLS
+        if version == 1
+        else _CGROUP_V2_CLASSIFIED_CPU_CONTROLS
+    )
+    try:
+        observed_controls = {
+            entry.name for entry in directory.iterdir() if entry.name.startswith("cpu.")
+        }
+    except OSError as error:
+        raise RuntimeError("cannot enumerate cgroup CPU controls") from error
+    unknown_controls = sorted(observed_controls - known_controls)
+    if unknown_controls:
+        raise RuntimeError(
+            "unclassified cgroup CPU controls: " + ", ".join(unknown_controls)
+        )
+
+
+def _cgroup_cpu_controls() -> CgroupCpuHierarchyFingerprint | None:
     """Return hierarchical CPU controls for this process."""
     if platform.system() != "Linux":
         return None
@@ -1415,42 +1579,59 @@ def _cgroup_cpu_controls() -> OverheadCgroupCpuHierarchyDict | None:
     if directory != hierarchy_root and hierarchy_root not in directory.parents:
         raise RuntimeError("resolved CPU cgroup escapes its visible hierarchy")
 
-    levels: list[OverheadCgroupCpuLevelDict] = []
+    levels: list[CgroupV1CpuLevel | CgroupV2CpuLevel] = []
     current = directory
     while True:
-        limit = (
-            _v2_cpu_bandwidth_limit(current)
-            if version == 2
-            else _v1_cpu_bandwidth_limit(current)
-        )
-        weight = _cgroup_cpu_weight(current, version=version)
-        levels.append(
-            OverheadCgroupCpuLevelDict(
-                bandwidth_limit=limit,
-                weight=weight,
+        _reject_unknown_cgroup_cpu_controls(current, version=version)
+        if version == 1:
+            levels.append(
+                CgroupV1CpuLevel(
+                    bandwidth_limit=_v1_cpu_bandwidth_limit(current),
+                    shares=_bounded_optional_control_integer(
+                        current,
+                        control_name="cpu.shares",
+                        minimum=2,
+                        maximum=262_144,
+                    ),
+                )
             )
-        )
+        else:
+            levels.append(
+                CgroupV2CpuLevel(
+                    bandwidth_limit=_v2_cpu_bandwidth_limit(current),
+                    weight=_bounded_optional_control_integer(
+                        current,
+                        control_name="cpu.weight",
+                        minimum=0,
+                        maximum=10_000,
+                    ),
+                    idle=_v2_cpu_idle(current),
+                    utilization_clamp=_v2_cpu_utilization_clamp(current),
+                )
+            )
         if current == hierarchy_root:
             break
         current = current.parent
 
-    return OverheadCgroupCpuHierarchyDict(
+    return CgroupCpuHierarchyFingerprint(
         version=version,
-        child_to_root=levels,
+        child_to_root=tuple(levels),
     )
 
 
-def _cpu_allocation_metadata() -> OverheadCpuAllocationDict:
-    return OverheadCpuAllocationDict(
-        process_cpu_affinity=_process_cpu_affinity(),
+def _cpu_allocation_fingerprint() -> CpuAllocationFingerprint:
+    affinity = _process_cpu_affinity()
+    return CpuAllocationFingerprint(
+        process_cpu_affinity=None if affinity is None else tuple(affinity),
+        process_scheduling=_process_scheduling_fingerprint(),
         cgroup_cpu_hierarchy=_cgroup_cpu_controls(),
     )
 
 
-def _native_threadpool_metadata(
+def _native_threadpool_fingerprints(
     backend: BackendName,
-) -> list[OverheadNativeThreadPoolDict]:
-    threadpools: list[OverheadNativeThreadPoolDict] = []
+) -> tuple[NativeThreadPoolFingerprint, ...]:
+    threadpools: list[NativeThreadPoolFingerprint] = []
     for index, raw_threadpool in enumerate(threadpool_info()):
         context = f"native thread pool {index}"
         required_strings: dict[str, str] = {}
@@ -1472,7 +1653,7 @@ def _native_threadpool_metadata(
                 raise RuntimeError(f"{context} has invalid {field_name}")
             optional_strings[field_name] = value
         threadpools.append(
-            OverheadNativeThreadPoolDict(
+            NativeThreadPoolFingerprint(
                 user_api=required_strings["user_api"],
                 internal_api=required_strings["internal_api"],
                 prefix=required_strings["prefix"],
@@ -1482,47 +1663,50 @@ def _native_threadpool_metadata(
                 architecture=optional_strings["architecture"],
             )
         )
-    threadpools.sort(
-        key=lambda threadpool: (
-            threadpool["user_api"],
-            threadpool["internal_api"],
-            threadpool["prefix"],
-            threadpool["version"] or "",
-            threadpool["threading_layer"] or "",
-            threadpool["architecture"] or "",
-            threadpool["num_threads"],
+    return tuple(threadpools)
+
+
+def _native_runtime_environment_fingerprint() -> NativeRuntimeEnvironmentFingerprint:
+    return NativeRuntimeEnvironmentFingerprint(
+        variables=tuple(
+            sorted(
+                (name, value)
+                for name, value in os.environ.items()
+                if NativeRuntimeEnvironmentFingerprint.recognizes(name)
+            )
         )
     )
-    return threadpools
 
 
-def _execution_resources_metadata(
+def _execution_resources_fingerprint(
     backend: BackendName,
     *,
-    cpu_allocation: OverheadCpuAllocationDict,
-) -> OverheadExecutionResourcesDict:
-    resources = OverheadExecutionResourcesDict(
-        cpu_allocation=cpu_allocation,
-        native_threadpools=_native_threadpool_metadata(backend),
-    )
+    cpu_allocation: CpuAllocationFingerprint,
+) -> ExecutionResourcesFingerprint:
+    torch_threads: tuple[int, int] | None = None
     if backend == "torch":
-        if torch is None:
-            raise RuntimeError("torch backend selected but torch is not installed")
-        resources["torch_threads"] = OverheadTorchThreadsDict(
-            intra_op=torch.get_num_threads(),
-            inter_op=torch.get_num_interop_threads(),
+        torch_backend = _require_torch_backend()
+        torch_threads = (
+            torch_backend.get_num_threads(),
+            torch_backend.get_num_interop_threads(),
         )
-    return resources
+    return ExecutionResourcesFingerprint(
+        backend=backend,
+        cpu_allocation=cpu_allocation,
+        native_runtime_environment=_native_runtime_environment_fingerprint(),
+        native_threadpools=_native_threadpool_fingerprints(backend),
+        torch_threads=torch_threads,
+    )
 
 
 def _require_stable_execution_resources(
-    expected: OverheadExecutionResourcesDict,
+    expected: ExecutionResourcesFingerprint,
     *,
     backend: BackendName,
 ) -> None:
-    current = _execution_resources_metadata(
+    current = _execution_resources_fingerprint(
         backend,
-        cpu_allocation=_cpu_allocation_metadata(),
+        cpu_allocation=_cpu_allocation_fingerprint(),
     )
     if current != expected:
         raise RuntimeError("execution resources changed during overhead measurement")
@@ -1592,13 +1776,6 @@ def _python_runtime_metadata() -> OverheadPythonRuntimeDict:
     )
 
 
-def _require_stable_python_runtime(expected: OverheadPythonRuntimeDict) -> None:
-    if _python_runtime_metadata() != expected:
-        raise RuntimeError(
-            "Python runtime settings changed during overhead measurement"
-        )
-
-
 def _dependency_versions(backend: BackendName) -> dict[str, str]:
     dependencies = {
         "numpy": version_or_missing("numpy"),
@@ -1610,22 +1787,90 @@ def _dependency_versions(backend: BackendName) -> dict[str, str]:
     return dependencies
 
 
+def _require_distribution_owns_import(
+    distribution_name: str,
+    installed_distribution: Distribution,
+) -> None:
+    module_name = _DEPENDENCY_IMPORT_NAMES.get(distribution_name)
+    if module_name is None:
+        raise ValueError(f"unsupported dependency {distribution_name!r}")
+    try:
+        imported_module = importlib.import_module(module_name)
+    except (ImportError, OSError) as error:
+        raise RuntimeError(
+            f"cannot import required dependency {distribution_name!r}"
+        ) from error
+    module_file = getattr(imported_module, "__file__", None)
+    if not isinstance(module_file, str) or not module_file:
+        raise RuntimeError(
+            f"dependency {distribution_name!r} has no concrete import origin"
+        )
+    try:
+        imported_package = Path(module_file).resolve(strict=True).parent
+        distribution_package = Path(
+            installed_distribution.locate_file(module_name)
+        ).resolve(strict=True)
+        same_package = imported_package.samefile(distribution_package)
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot verify imported dependency {distribution_name!r}"
+        ) from error
+    if not same_package:
+        raise RuntimeError(
+            f"imported dependency {distribution_name!r} does not belong to its "
+            "installed distribution"
+        )
+
+
+def _dependency_build_fingerprint(
+    distribution_name: str,
+) -> DependencyBuildFingerprint:
+    try:
+        installed_distribution = distribution(distribution_name)
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            f"cannot identify required dependency {distribution_name!r}"
+        ) from error
+    _require_distribution_owns_import(distribution_name, installed_distribution)
+    record = installed_distribution.read_text("RECORD")
+    if record is None:
+        raise RuntimeError(
+            f"dependency {distribution_name!r} has no installed RECORD manifest"
+        )
+    return DependencyBuildFingerprint(
+        version=installed_distribution.version,
+        record_sha256=hashlib.sha256(record.encode("utf-8")).hexdigest(),
+    )
+
+
 def _environment_metadata(
     backend: BackendName,
     *,
     python_runtime: OverheadPythonRuntimeDict,
 ) -> OverheadEnvironmentDict:
-    """Return the Python runtime and dependencies used by this capture."""
-    dependencies = _dependency_versions(backend)
+    """Return the Python runtime and dependency builds used by this capture."""
     environment = OverheadEnvironmentDict(
         python=python_runtime,
-        numpy=dependencies["numpy"],
-        array_api_compat=dependencies["array_api_compat"],
-        opt_einsum=dependencies["opt_einsum"],
+        numpy=_dependency_build_fingerprint("numpy").to_receipt(),
+        array_api_compat=_dependency_build_fingerprint("array-api-compat").to_receipt(),
+        opt_einsum=_dependency_build_fingerprint("opt_einsum").to_receipt(),
     )
     if backend == "torch":
-        environment["torch"] = dependencies["torch"]
+        environment["torch"] = _dependency_build_fingerprint("torch").to_receipt()
     return environment
+
+
+def _require_stable_environment(
+    expected: OverheadEnvironmentDict,
+    *,
+    backend: BackendName,
+) -> None:
+    current = _environment_metadata(
+        backend,
+        python_runtime=_python_runtime_metadata(),
+    )
+    if current != expected:
+        raise RuntimeError("runtime environment changed during overhead measurement")
 
 
 def _to_markdown(
@@ -1727,23 +1972,28 @@ def main() -> int:
     )
     args = parser.parse_args()
     backend: BackendName = args.backend
-    if backend == "torch" and torch is None:
-        raise RuntimeError("torch backend selected but torch is not installed")
+    if backend == "torch":
+        _require_torch_backend()
     if args.expect_einf_source_root is not None:
         require_einf_source_root(args.expect_einf_source_root)
     resolved_stage_targets = _resolved_stage_target_names()
     receipt_harness_source: str | None = None
     receipt_subject_source: dict[str, str | bool | None] | None = None
-    receipt_execution_resources: OverheadExecutionResourcesDict | None = None
+    receipt_execution_resources: ExecutionResourcesFingerprint | None = None
     receipt_python_runtime: OverheadPythonRuntimeDict | None = None
+    receipt_environment: OverheadEnvironmentDict | None = None
     if args.receipt is not None:
         receipt_harness_source = _harness_source_sha256()
         receipt_subject_source = _subject_source_metadata()
-        receipt_execution_resources = _execution_resources_metadata(
+        receipt_execution_resources = _execution_resources_fingerprint(
             backend,
-            cpu_allocation=_cpu_allocation_metadata(),
+            cpu_allocation=_cpu_allocation_fingerprint(),
         )
         receipt_python_runtime = _python_runtime_metadata()
+        receipt_environment = _environment_metadata(
+            backend,
+            python_runtime=receipt_python_runtime,
+        )
 
     scenario_specs = (
         ("fixed-medium", "fixed", "medium"),
@@ -1772,6 +2022,7 @@ def main() -> int:
             or receipt_subject_source is None
             or receipt_execution_resources is None
             or receipt_python_runtime is None
+            or receipt_environment is None
         ):
             raise RuntimeError("receipt experiment identity was not captured")
         subject_content_sha256 = receipt_subject_source["content_sha256"]
@@ -1785,7 +2036,7 @@ def main() -> int:
             receipt_execution_resources,
             backend=backend,
         )
-        _require_stable_python_runtime(receipt_python_runtime)
+        _require_stable_environment(receipt_environment, backend=backend)
         receipt_payload = _to_json(
             results,
             backend=backend,
@@ -1793,8 +2044,8 @@ def main() -> int:
             resolved_stage_targets=resolved_stage_targets,
             harness_source_sha256=receipt_harness_source,
             subject_source=receipt_subject_source,
-            execution_resources=receipt_execution_resources,
-            python_runtime=receipt_python_runtime,
+            execution_resources=receipt_execution_resources.to_receipt(),
+            environment=receipt_environment,
         )
         publish_receipt(args.receipt, receipt_payload)
     print(markdown)

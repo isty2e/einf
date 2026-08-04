@@ -13,7 +13,7 @@ from typing import TypeAlias
 
 from lsprotocol import types as lsp
 
-from benchmarks.shared import version_or_missing
+from benchmarks.shared.metadata import version_or_missing
 from einf.analysis.checkers import (
     CheckerExecutionPolicy,
     CheckerExecutor,

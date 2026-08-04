@@ -33,14 +33,14 @@ from benchmarks.harness.receipt import (
 )
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
-from benchmarks.shared import (
-    as_single_array,
+from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.metadata import (
     einf_source_receipt_metadata,
     require_einf_source_root,
     require_stable_einf_source_content,
     version_or_missing,
 )
-from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.outputs import as_single_array
 from einf import ax, axes, einop
 
 try:

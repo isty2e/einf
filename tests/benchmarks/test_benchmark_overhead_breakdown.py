@@ -1,16 +1,33 @@
 import json
+import subprocess
+import sys
+from importlib.metadata import Distribution
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal, cast
 
 import numpy as np
 import pytest
 
-from benchmarks.guardrail.policy import (
+from benchmarks.guardrail.experiment import (
+    CgroupCpuHierarchyFingerprint,
+    CgroupV1CpuLevel,
+    CgroupV2CpuLevel,
+    CpuAllocationFingerprint,
+    CpuBandwidthLimit,
+    CpuUtilizationClamp,
+    DependencyBuildFingerprint,
+    ExecutionResourcesFingerprint,
+    NativeRuntimeEnvironmentFingerprint,
+    ProcessSchedulingFingerprint,
+)
+from benchmarks.guardrail.policy import load_overhead_report
+from benchmarks.guardrail.receipt import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
-    OverheadCpuAllocationDict,
+    OverheadDependencyBuildDict,
+    OverheadEnvironmentDict,
     OverheadExecutionResourcesDict,
     OverheadPythonRuntimeDict,
-    load_overhead_report,
 )
 from benchmarks.profile import overhead_breakdown
 from benchmarks.profile.overhead_breakdown import (
@@ -29,12 +46,29 @@ def _resolved_targets() -> dict[str, tuple[str, ...]]:
     return {stage: (f"einf.{stage}",) for stage in STAGES if stage != "__call__"}
 
 
+def _dependency_build(
+    version: str,
+    *,
+    digest_character: str,
+) -> OverheadDependencyBuildDict:
+    return OverheadDependencyBuildDict(
+        version=version,
+        record_sha256=digest_character * 64,
+    )
+
+
 def _execution_resources() -> OverheadExecutionResourcesDict:
     return {
         "cpu_allocation": {
             "process_cpu_affinity": None,
+            "process_scheduling": {
+                "scheduler_policy": None,
+                "scheduler_priority": None,
+                "nice_value": 0,
+            },
             "cgroup_cpu_hierarchy": None,
         },
+        "native_runtime_environment": {},
         "native_threadpools": [
             {
                 "user_api": "blas",
@@ -63,6 +97,15 @@ def _python_runtime() -> OverheadPythonRuntimeDict:
         "hash_seed": 0,
         "hash_witness": (123, 456),
     }
+
+
+def _environment() -> OverheadEnvironmentDict:
+    return OverheadEnvironmentDict(
+        python=_python_runtime(),
+        numpy=_dependency_build("1.26", digest_character="1"),
+        array_api_compat=_dependency_build("1.12", digest_character="2"),
+        opt_einsum=_dependency_build("3.4", digest_character="3"),
+    )
 
 
 def test_overhead_stage_targets_resolve() -> None:
@@ -158,23 +201,44 @@ def test_receipt_requires_fixed_hash_seed_before_profiling(
             "content_sha256": "1" * 64,
         },
     )
+    cpu_allocation = CpuAllocationFingerprint(
+        process_cpu_affinity=None,
+        process_scheduling=ProcessSchedulingFingerprint(
+            scheduler_policy=None,
+            scheduler_priority=None,
+            nice_value=0,
+        ),
+        cgroup_cpu_hierarchy=None,
+    )
     monkeypatch.setattr(
         overhead_breakdown,
-        "_cpu_allocation_metadata",
-        lambda: _execution_resources()["cpu_allocation"],
+        "_cpu_allocation_fingerprint",
+        lambda: cpu_allocation,
     )
 
     def execution_resources(
         _backend: object,
         *,
-        cpu_allocation: OverheadCpuAllocationDict,
-    ) -> OverheadExecutionResourcesDict:
-        assert cpu_allocation == _execution_resources()["cpu_allocation"]
-        return _execution_resources()
+        cpu_allocation: CpuAllocationFingerprint,
+    ) -> ExecutionResourcesFingerprint:
+        assert cpu_allocation == CpuAllocationFingerprint(
+            process_cpu_affinity=None,
+            process_scheduling=ProcessSchedulingFingerprint(
+                scheduler_policy=None,
+                scheduler_priority=None,
+                nice_value=0,
+            ),
+            cgroup_cpu_hierarchy=None,
+        )
+        return ExecutionResourcesFingerprint.from_mapping(
+            _execution_resources(),
+            backend="numpy",
+            context="test resources",
+        )
 
     monkeypatch.setattr(
         overhead_breakdown,
-        "_execution_resources_metadata",
+        "_execution_resources_fingerprint",
         execution_resources,
     )
 
@@ -240,29 +304,32 @@ def test_execution_resources_capture_affinity_and_effective_threads(
 
     monkeypatch.setattr(overhead_breakdown, "torch", Torch)
 
-    cpu_allocation = OverheadCpuAllocationDict(
-        process_cpu_affinity=[1, 3],
+    cpu_allocation = CpuAllocationFingerprint(
+        process_cpu_affinity=(1, 3),
+        process_scheduling=ProcessSchedulingFingerprint(
+            scheduler_policy="SCHED_OTHER",
+            scheduler_priority=0,
+            nice_value=0,
+        ),
         cgroup_cpu_hierarchy=None,
     )
-    resources = overhead_breakdown._execution_resources_metadata(
+    resources = overhead_breakdown._execution_resources_fingerprint(
         "torch",
         cpu_allocation=cpu_allocation,
     )
-    numpy_resources = overhead_breakdown._execution_resources_metadata(
+    numpy_resources = overhead_breakdown._execution_resources_fingerprint(
         "numpy",
         cpu_allocation=cpu_allocation,
     )
 
-    assert resources["cpu_allocation"]["process_cpu_affinity"] == [1, 3]
-    assert [pool["user_api"] for pool in resources["native_threadpools"]] == [
+    assert resources.cpu_allocation.process_cpu_affinity == (1, 3)
+    assert [pool.user_api for pool in resources.native_threadpools] == [
         "blas",
         "openmp",
     ]
-    assert resources.get("torch_threads") == {"intra_op": 4, "inter_op": 2}
-    assert [pool["user_api"] for pool in numpy_resources["native_threadpools"]] == [
-        "blas"
-    ]
-    assert "torch_threads" not in numpy_resources
+    assert resources.torch_threads == (4, 2)
+    assert [pool.user_api for pool in numpy_resources.native_threadpools] == ["blas"]
+    assert numpy_resources.torch_threads is None
 
 
 def test_cgroup_v2_controls_preserve_child_to_root_levels(
@@ -279,16 +346,35 @@ def test_cgroup_v2_controls_preserve_child_to_root_levels(
         f"36 25 0:32 / {mount_point} rw,nosuid,nodev,noexec,relatime - "
         "cgroup2 cgroup rw\n"
     )
-    for directory, cpu_max, burst, weight in (
-        (mount_point, "max 100000", "0", None),
-        (mount_point / "parent", "200000 100000", "10000", "100"),
-        (child, "200000 100000", "10000", "100"),
+    for directory, cpu_max, burst, weight, idle, uclamp in (
+        (mount_point, "max 100000", "0", None, None, None),
+        (
+            mount_point / "parent",
+            "200000 100000",
+            "10000",
+            "100",
+            "0",
+            ("0", "100"),
+        ),
+        (
+            child,
+            "200000 100000",
+            "10000",
+            "0",
+            "1",
+            ("12.500", "max"),
+        ),
     ):
         directory.mkdir(exist_ok=True)
         (directory / "cpu.max").write_text(cpu_max)
         (directory / "cpu.max.burst").write_text(burst)
         if weight is not None:
             (directory / "cpu.weight").write_text(weight)
+        if idle is not None:
+            (directory / "cpu.idle").write_text(idle)
+        if uclamp is not None:
+            (directory / "cpu.uclamp.min").write_text(uclamp[0])
+            (directory / "cpu.uclamp.max").write_text(uclamp[1])
 
     monkeypatch.setattr(overhead_breakdown.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
@@ -302,28 +388,42 @@ def test_cgroup_v2_controls_preserve_child_to_root_levels(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_controls() == {
-        "version": 2,
-        "child_to_root": [
-            {
-                "bandwidth_limit": {
-                    "quota_us": 200_000,
-                    "period_us": 100_000,
-                    "burst_us": 10_000,
-                },
-                "weight": 100,
-            },
-            {
-                "bandwidth_limit": {
-                    "quota_us": 200_000,
-                    "period_us": 100_000,
-                    "burst_us": 10_000,
-                },
-                "weight": 100,
-            },
-            {"bandwidth_limit": None, "weight": None},
-        ],
-    }
+    limit = CpuBandwidthLimit(
+        quota_us=200_000,
+        period_us=100_000,
+        burst_us=10_000,
+    )
+    assert overhead_breakdown._cgroup_cpu_controls() == (
+        CgroupCpuHierarchyFingerprint(
+            version=2,
+            child_to_root=(
+                CgroupV2CpuLevel(
+                    bandwidth_limit=limit,
+                    weight=0,
+                    idle=True,
+                    utilization_clamp=CpuUtilizationClamp(
+                        minimum_percent="12.5",
+                        maximum_percent="max",
+                    ),
+                ),
+                CgroupV2CpuLevel(
+                    bandwidth_limit=limit,
+                    weight=100,
+                    idle=False,
+                    utilization_clamp=CpuUtilizationClamp(
+                        minimum_percent="0",
+                        maximum_percent="100",
+                    ),
+                ),
+                CgroupV2CpuLevel(
+                    bandwidth_limit=None,
+                    weight=None,
+                    idle=None,
+                    utilization_clamp=None,
+                ),
+            ),
+        )
+    )
 
 
 def test_cgroup_v1_controls_resolve_namespaced_mount_root(
@@ -355,19 +455,21 @@ def test_cgroup_v1_controls_resolve_namespaced_mount_root(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_controls() == {
-        "version": 1,
-        "child_to_root": [
-            {
-                "bandwidth_limit": {
-                    "quota_us": 50_000,
-                    "period_us": 100_000,
-                    "burst_us": 0,
-                },
-                "weight": 1024,
-            }
-        ],
-    }
+    assert overhead_breakdown._cgroup_cpu_controls() == (
+        CgroupCpuHierarchyFingerprint(
+            version=1,
+            child_to_root=(
+                CgroupV1CpuLevel(
+                    bandwidth_limit=CpuBandwidthLimit(
+                        quota_us=50_000,
+                        period_us=100_000,
+                        burst_us=0,
+                    ),
+                    shares=1024,
+                ),
+            ),
+        )
+    )
 
 
 def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
@@ -400,41 +502,116 @@ def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
         overhead_breakdown._cgroup_cpu_controls()
 
 
-def test_cgroup_cpu_weight_enforces_controller_range(tmp_path: Path) -> None:
+def test_cgroup_cpu_weight_and_idle_are_validated_together(tmp_path: Path) -> None:
     (tmp_path / "cpu.weight").write_text("0")
-    with pytest.raises(RuntimeError, match="below 1"):
-        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2)
+    assert (
+        overhead_breakdown._bounded_optional_control_integer(
+            tmp_path,
+            control_name="cpu.weight",
+            minimum=0,
+            maximum=10_000,
+        )
+        == 0
+    )
+    CgroupV2CpuLevel(
+        bandwidth_limit=None,
+        weight=0,
+        idle=True,
+        utilization_clamp=None,
+    )
+    with pytest.raises(ValueError, match="non-idle"):
+        CgroupV2CpuLevel(
+            bandwidth_limit=None,
+            weight=0,
+            idle=False,
+            utilization_clamp=None,
+        )
+    with pytest.raises(ValueError, match="idle cgroup"):
+        CgroupV2CpuLevel(
+            bandwidth_limit=None,
+            weight=100,
+            idle=True,
+            utilization_clamp=None,
+        )
 
     (tmp_path / "cpu.weight").write_text("10001")
     with pytest.raises(RuntimeError, match="above 10000"):
-        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2)
+        overhead_breakdown._bounded_optional_control_integer(
+            tmp_path,
+            control_name="cpu.weight",
+            minimum=0,
+            maximum=10_000,
+        )
 
     (tmp_path / "cpu.shares").write_text("1")
     with pytest.raises(RuntimeError, match="below 2"):
-        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=1)
+        overhead_breakdown._bounded_optional_control_integer(
+            tmp_path,
+            control_name="cpu.shares",
+            minimum=2,
+            maximum=262_144,
+        )
+
+
+def test_cgroup_v2_utilization_clamp_requires_both_controls(tmp_path: Path) -> None:
+    (tmp_path / "cpu.uclamp.min").write_text("10")
+
+    with pytest.raises(RuntimeError, match="must both be available"):
+        overhead_breakdown._v2_cpu_utilization_clamp(tmp_path)
+
+
+def test_cgroup_control_capture_rejects_unclassified_cpu_controls(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cpu.future_control").write_text("1")
+
+    with pytest.raises(RuntimeError, match="cpu.future_control"):
+        overhead_breakdown._reject_unknown_cgroup_cpu_controls(tmp_path, version=2)
 
 
 def test_receipt_rejects_execution_resource_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = _execution_resources()
-    changed = _execution_resources()
-    changed["cpu_allocation"]["cgroup_cpu_hierarchy"] = {
-        "version": 2,
-        "child_to_root": [
-            {"bandwidth_limit": None, "weight": 50},
-            {"bandwidth_limit": None, "weight": 100},
-        ],
-    }
-    monkeypatch.setattr(
-        overhead_breakdown,
-        "_cpu_allocation_metadata",
-        lambda: changed["cpu_allocation"],
+    expected = ExecutionResourcesFingerprint.from_mapping(
+        _execution_resources(),
+        backend="numpy",
+        context="expected resources",
+    )
+    changed = ExecutionResourcesFingerprint(
+        backend="numpy",
+        cpu_allocation=CpuAllocationFingerprint(
+            process_cpu_affinity=None,
+            process_scheduling=ProcessSchedulingFingerprint(
+                scheduler_policy=None,
+                scheduler_priority=None,
+                nice_value=0,
+            ),
+            cgroup_cpu_hierarchy=CgroupCpuHierarchyFingerprint(
+                version=2,
+                child_to_root=(
+                    CgroupV2CpuLevel(
+                        bandwidth_limit=None,
+                        weight=0,
+                        idle=True,
+                        utilization_clamp=None,
+                    ),
+                    CgroupV2CpuLevel(
+                        bandwidth_limit=None,
+                        weight=100,
+                        idle=False,
+                        utilization_clamp=None,
+                    ),
+                ),
+            ),
+        ),
+        native_runtime_environment=NativeRuntimeEnvironmentFingerprint(variables=()),
+        native_threadpools=expected.native_threadpools,
+        torch_threads=None,
     )
     monkeypatch.setattr(
         overhead_breakdown,
-        "_native_threadpool_metadata",
-        lambda _backend: changed["native_threadpools"],
+        "_execution_resources_fingerprint",
+        lambda _backend, *, cpu_allocation: changed,
     )
 
     with pytest.raises(RuntimeError, match="execution resources changed"):
@@ -459,6 +636,318 @@ def test_affinity_read_failure_is_not_treated_as_unsupported(
 
     with pytest.raises(RuntimeError, match="cannot determine process CPU affinity"):
         overhead_breakdown._process_cpu_affinity()
+
+
+def test_process_scheduling_capture_preserves_default_policy_and_niceness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getscheduler",
+        lambda _pid: 3,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "SCHED_OTHER",
+        3,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getparam",
+        lambda _pid: SimpleNamespace(sched_priority=0),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "PRIO_PROCESS",
+        0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "getpriority",
+        lambda _scope, _pid: 19,
+        raising=False,
+    )
+
+    assert overhead_breakdown._process_scheduling_fingerprint() == (
+        ProcessSchedulingFingerprint(
+            scheduler_policy="SCHED_OTHER",
+            scheduler_priority=0,
+            nice_value=19,
+        )
+    )
+
+
+def test_process_scheduling_capture_rejects_nondefault_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getscheduler",
+        lambda _pid: 6,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getparam",
+        lambda _pid: SimpleNamespace(sched_priority=0),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "SCHED_OTHER",
+        0,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="default SCHED_OTHER"):
+        overhead_breakdown._process_scheduling_fingerprint()
+
+
+def test_cpu_allocation_rejects_invalid_direct_scheduler_state() -> None:
+    with pytest.raises(TypeError, match="ProcessSchedulingFingerprint"):
+        CpuAllocationFingerprint(
+            process_cpu_affinity=None,
+            process_scheduling=cast(ProcessSchedulingFingerprint, None),
+            cgroup_cpu_hierarchy=None,
+        )
+
+
+def test_process_scheduling_rejects_nonzero_default_policy_priority() -> None:
+    with pytest.raises(ValueError, match="priority must be zero"):
+        ProcessSchedulingFingerprint(
+            scheduler_policy="SCHED_OTHER",
+            scheduler_priority=1,
+            nice_value=0,
+        )
+
+
+def test_process_scheduling_rejects_nondefault_direct_policy() -> None:
+    with pytest.raises(ValueError, match="only the SCHED_OTHER"):
+        ProcessSchedulingFingerprint(
+            scheduler_policy=cast(Literal["SCHED_OTHER"], "SCHED_BATCH"),
+            scheduler_priority=0,
+            nice_value=0,
+        )
+
+
+def test_cgroup_hierarchy_rejects_invalid_direct_version() -> None:
+    with pytest.raises(ValueError, match="version must be 1 or 2"):
+        CgroupCpuHierarchyFingerprint(
+            version=cast(Literal[1, 2], 3),
+            child_to_root=(
+                CgroupV2CpuLevel(
+                    bandwidth_limit=None,
+                    weight=100,
+                    idle=False,
+                    utilization_clamp=None,
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("failing_api", "message"),
+    (
+        ("sched_getscheduler", "cannot determine process scheduler state"),
+        ("sched_getparam", "cannot determine process scheduler state"),
+        ("getpriority", "cannot determine process niceness"),
+    ),
+)
+def test_process_scheduling_read_failure_is_not_treated_as_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_api: str,
+    message: str,
+) -> None:
+    def fail(*_arguments: object) -> int:
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getscheduler",
+        fail if failing_api == "sched_getscheduler" else lambda _pid: 0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "SCHED_OTHER",
+        0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "sched_getparam",
+        (
+            fail
+            if failing_api == "sched_getparam"
+            else lambda _pid: SimpleNamespace(sched_priority=0)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "PRIO_PROCESS",
+        0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.os,
+        "getpriority",
+        fail if failing_api == "getpriority" else lambda _scope, _pid: 0,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        overhead_breakdown._process_scheduling_fingerprint()
+
+
+def test_numpy_resource_capture_does_not_request_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_import(_name: str) -> object:
+        raise AssertionError("NumPy resource capture must not import Torch")
+
+    monkeypatch.setattr(overhead_breakdown, "torch", None)
+    monkeypatch.setattr(overhead_breakdown.importlib, "import_module", reject_import)
+    monkeypatch.setattr(overhead_breakdown, "threadpool_info", list)
+    cpu_allocation = CpuAllocationFingerprint.from_mapping(
+        _execution_resources()["cpu_allocation"],
+        context="test allocation",
+    )
+
+    resources = overhead_breakdown._execution_resources_fingerprint(
+        "numpy",
+        cpu_allocation=cpu_allocation,
+    )
+
+    assert resources.backend == "numpy"
+    assert overhead_breakdown.torch is None
+
+
+def test_numpy_profiler_import_does_not_load_torch() -> None:
+    subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import benchmarks.profile.overhead_breakdown; "
+                "raise SystemExit(int('torch' in sys.modules))"
+            ),
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_dependency_build_identity_distinguishes_same_version_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = SimpleNamespace(version="1.0", read_text=lambda _name: "first RECORD")
+    second = SimpleNamespace(version="1.0", read_text=lambda _name: "second RECORD")
+    installed = iter((first, second))
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "distribution",
+        lambda _name: next(installed),
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_require_distribution_owns_import",
+        lambda _name, _distribution: None,
+    )
+
+    first_fingerprint = overhead_breakdown._dependency_build_fingerprint("numpy")
+    second_fingerprint = overhead_breakdown._dependency_build_fingerprint("numpy")
+
+    assert first_fingerprint.version == second_fingerprint.version
+    assert first_fingerprint.record_sha256 != second_fingerprint.record_sha256
+
+
+def test_dependency_build_identity_requires_record_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = SimpleNamespace(version="1.0", read_text=lambda _name: None)
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "distribution",
+        lambda _name: installed,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_require_distribution_owns_import",
+        lambda _name, _distribution: None,
+    )
+
+    with pytest.raises(RuntimeError, match="no installed RECORD"):
+        overhead_breakdown._dependency_build_fingerprint("numpy")
+
+
+def test_dependency_build_identity_rejects_shadowed_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    installed_package = tmp_path / "installed" / "numpy"
+    imported_package = tmp_path / "shadowed" / "numpy"
+    installed_package.mkdir(parents=True)
+    imported_package.mkdir(parents=True)
+    imported_init = imported_package / "__init__.py"
+    imported_init.write_text("", encoding="utf-8")
+    installed_distribution = cast(
+        Distribution,
+        SimpleNamespace(
+            locate_file=lambda _name: installed_package,
+        ),
+    )
+    monkeypatch.setattr(
+        overhead_breakdown.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(__file__=str(imported_init)),
+    )
+
+    with pytest.raises(RuntimeError, match="does not belong"):
+        overhead_breakdown._require_distribution_owns_import(
+            "numpy",
+            installed_distribution,
+        )
+
+
+@pytest.mark.parametrize(
+    ("version", "record_sha256", "message"),
+    (
+        (cast(str, 1), "0" * 64, "version must be a non-empty string"),
+        ("1.0", cast(str, None), "RECORD identity must be a string"),
+        ("1.0", "not-a-digest", "lowercase SHA-256"),
+    ),
+)
+def test_dependency_build_rejects_invalid_direct_state(
+    version: str,
+    record_sha256: str,
+    message: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        DependencyBuildFingerprint(
+            version=version,
+            record_sha256=record_sha256,
+        )
+
+
+def test_native_runtime_environment_captures_supported_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMP_DYNAMIC", "TRUE")
+    monkeypatch.setenv("KMP_AFFINITY", "compact")
+    monkeypatch.setenv("UNRELATED_SETTING", "ignored")
+
+    fingerprint = overhead_breakdown._native_runtime_environment_fingerprint()
+
+    assert ("OMP_DYNAMIC", "TRUE") in fingerprint.variables
+    assert ("KMP_AFFINITY", "compact") in fingerprint.variables
+    assert all(name != "UNRELATED_SETTING" for name, _value in fingerprint.variables)
 
 
 @pytest.mark.parametrize(
@@ -535,20 +1024,46 @@ def test_python_runtime_metadata_records_build_abi_and_process_flags(
     assert len(runtime["hash_witness"]) == 2
 
 
-def test_receipt_rejects_python_runtime_drift(
+def test_receipt_rejects_runtime_environment_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = _python_runtime()
-    changed = _python_runtime()
-    changed["hash_seed"] = 7
+    expected = _environment()
+    changed = _environment()
+    changed["python"]["hash_seed"] = 7
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_environment_metadata",
+        lambda _backend, *, python_runtime: changed,
+    )
     monkeypatch.setattr(
         overhead_breakdown,
         "_python_runtime_metadata",
-        lambda: changed,
+        lambda: expected["python"],
     )
 
-    with pytest.raises(RuntimeError, match="runtime settings changed"):
-        overhead_breakdown._require_stable_python_runtime(expected)
+    with pytest.raises(RuntimeError, match="runtime environment changed"):
+        overhead_breakdown._require_stable_environment(expected, backend="numpy")
+
+
+def test_receipt_rejects_dependency_build_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _environment()
+    changed = _environment()
+    changed["numpy"]["record_sha256"] = "f" * 64
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_environment_metadata",
+        lambda _backend, *, python_runtime: changed,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_python_runtime_metadata",
+        lambda: expected["python"],
+    )
+
+    with pytest.raises(RuntimeError, match="runtime environment changed"):
+        overhead_breakdown._require_stable_environment(expected, backend="numpy")
 
 
 def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
@@ -597,7 +1112,7 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
             "content_sha256": "1" * 64,
         },
         execution_resources=_execution_resources(),
-        python_runtime=_python_runtime(),
+        environment=_environment(),
     )
     path = tmp_path / "report.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -644,12 +1159,7 @@ def test_guardrail_loader_accepts_residual_field(tmp_path: Path) -> None:
                 "logical_cpu_count": 10,
             },
             "execution_resources": _execution_resources(),
-            "environment": {
-                "python": _python_runtime(),
-                "numpy": "1.26",
-                "array_api_compat": "1.12",
-                "opt_einsum": "3.4",
-            },
+            "environment": _environment(),
             "seed": 20260215,
             "stages": ["__call__", "solve", "runner_resolve", "fusion", "kernel"],
             "resolved_stage_targets": {
