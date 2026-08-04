@@ -18,8 +18,10 @@ Scenarios:
 import argparse
 import hashlib
 import importlib
+import os
 import platform
 import statistics
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -28,12 +30,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from unittest.mock import patch
+from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
 
 from benchmarks.guardrail.policy import OVERHEAD_REPORT_SCHEMA_VERSION
-from benchmarks.shared import einf_source_metadata, version_or_missing
+from benchmarks.shared import (
+    einf_source_receipt_metadata,
+    require_einf_source_root,
+    require_stable_einf_source_content,
+    version_or_missing,
+)
 from benchmarks.shared.artifacts import publish_receipt
 from einf import TensorLike, ax, axes, contract, einop, rearrange, reduce, repeat
 
@@ -339,6 +347,30 @@ def _resolve_target(target: str) -> tuple[object, str, Callable[..., object]]:
         return parent, attr_name, original
 
     raise ModuleNotFoundError(f"cannot resolve patch target: {target}")
+
+
+def _resolved_stage_target_names() -> dict[str, tuple[str, ...]]:
+    """Resolve the instrumentation coverage used by this profiler process."""
+    resolved_by_stage: dict[str, tuple[str, ...]] = {}
+    for stage, targets in STAGE_TARGETS.items():
+        resolved_names: list[str] = []
+        resolved_slots: set[tuple[int, str]] = set()
+        for target in targets:
+            try:
+                parent, attr_name, _ = _resolve_target(target)
+            except (AttributeError, ModuleNotFoundError, TypeError):
+                continue
+            slot = (id(parent), attr_name)
+            if slot in resolved_slots:
+                continue
+            resolved_slots.add(slot)
+            resolved_names.append(target)
+        if not resolved_names:
+            raise RuntimeError(
+                f"no instrumentation target resolved for stage {stage!r}"
+            )
+        resolved_by_stage[stage] = tuple(resolved_names)
+    return resolved_by_stage
 
 
 def _stage_wrapper(
@@ -959,28 +991,29 @@ def _to_json(
     *,
     backend: BackendName,
     seed: int,
+    resolved_stage_targets: dict[str, tuple[str, ...]],
+    harness_source_sha256: str,
+    subject_source: dict[str, str | bool | None],
 ) -> dict[str, object]:
     return {
         "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
         "meta": {
-            "harness_source_sha256": hashlib.sha256(
-                Path(__file__).read_bytes()
-            ).hexdigest(),
-            "subject_source": einf_source_metadata(),
+            "capture_id": str(uuid4()),
+            "harness_source_sha256": harness_source_sha256,
+            "subject_source": subject_source,
             "execution_target": {
                 "backend": backend,
                 "requested_device": "cpu",
                 "resolved_device": "cpu",
             },
-            "environment": {
-                "python": platform.python_version(),
-                "numpy": version_or_missing("numpy"),
-                "torch": version_or_missing("torch"),
-                "array_api_compat": version_or_missing("array-api-compat"),
-                "opt_einsum": version_or_missing("opt_einsum"),
-            },
+            "host": _host_metadata(),
+            "environment": _environment_metadata(backend),
             "seed": seed,
             "stages": list(STAGES),
+            "resolved_stage_targets": {
+                stage: list(targets)
+                for stage, targets in resolved_stage_targets.items()
+            },
         },
         "scenarios": [
             {
@@ -1005,11 +1038,93 @@ def _to_json(
     }
 
 
+def _harness_source_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _subject_source_metadata() -> dict[str, str | bool | None]:
+    return einf_source_receipt_metadata()
+
+
+def _require_stable_receipt_sources(
+    *,
+    harness_source_sha256: str,
+    subject_content_sha256: str,
+) -> None:
+    if _harness_source_sha256() != harness_source_sha256:
+        raise RuntimeError("overhead profiler source changed during measurement")
+    require_stable_einf_source_content(subject_content_sha256)
+
+
+def _command_stdout(*command: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _cpu_model() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            _command_stdout("sysctl", "-n", "machdep.cpu.brand_string")
+            or _command_stdout("sysctl", "-n", "hw.model")
+            or platform.processor()
+            or "unknown"
+        )
+    if system == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() in {"model name", "Hardware"}:
+                    return value.strip()
+        except OSError:
+            pass
+    return os.environ.get("PROCESSOR_IDENTIFIER") or platform.processor() or "unknown"
+
+
+def _host_metadata() -> dict[str, str | int]:
+    """Return stable host facts required for CPU latency comparison."""
+    logical_cpu_count = os.cpu_count()
+    if logical_cpu_count is None:
+        raise RuntimeError("cannot determine logical CPU count")
+    return {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "cpu_model": _cpu_model(),
+        "logical_cpu_count": logical_cpu_count,
+    }
+
+
+def _environment_metadata(backend: BackendName) -> dict[str, str]:
+    """Return only dependencies used by the selected profiler backend."""
+    environment = {
+        "python": platform.python_version(),
+        "numpy": version_or_missing("numpy"),
+        "array_api_compat": version_or_missing("array-api-compat"),
+        "opt_einsum": version_or_missing("opt_einsum"),
+    }
+    if backend == "torch":
+        environment["torch"] = version_or_missing("torch")
+    return environment
+
+
 def _to_markdown(
     *,
     result: tuple[ScenarioResult, ...],
     backend: BackendName,
 ) -> str:
+    environment = _environment_metadata(backend)
+    host = _host_metadata()
     lines = [
         "# Overhead Decomposition (einf)",
         "",
@@ -1044,11 +1159,13 @@ def _to_markdown(
         "## Environment",
         "",
         f"- Backend: `{backend}`",
-        f"- Python: `{platform.python_version()}`",
-        f"- NumPy: `{version_or_missing('numpy')}`",
-        f"- torch: `{version_or_missing('torch')}`",
-        f"- einops: `{version_or_missing('einops')}`",
-        f"- einx: `{version_or_missing('einx')}`",
+        f"- Host: `{host['system']} {host['machine']}`",
+        f"- CPU: `{host['cpu_model']}` ({host['logical_cpu_count']} logical CPUs)",
+        f"- Python: `{environment['python']}`",
+        f"- NumPy: `{environment['numpy']}`",
+        f"- array-api-compat: `{environment['array_api_compat']}`",
+        f"- opt_einsum: `{environment['opt_einsum']}`",
+        *([f"- torch: `{environment['torch']}`"] if backend == "torch" else []),
         "",
         "## Results",
         "",
@@ -1092,10 +1209,24 @@ def main() -> int:
         default=None,
         help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
+    parser.add_argument(
+        "--expect-einf-source-root",
+        type=Path,
+        default=None,
+        help="Fail unless the imported einf package belongs to this checkout root.",
+    )
     args = parser.parse_args()
     backend: BackendName = args.backend
     if backend == "torch" and torch is None:
         raise RuntimeError("torch backend selected but torch is not installed")
+    if args.expect_einf_source_root is not None:
+        require_einf_source_root(args.expect_einf_source_root)
+    resolved_stage_targets = _resolved_stage_target_names()
+    receipt_harness_source: str | None = None
+    receipt_subject_source: dict[str, str | bool | None] | None = None
+    if args.receipt is not None:
+        receipt_harness_source = _harness_source_sha256()
+        receipt_subject_source = _subject_source_metadata()
 
     scenario_specs = (
         ("fixed-medium", "fixed", "medium"),
@@ -1114,12 +1245,28 @@ def main() -> int:
         for offset, (scenario, mode, scale) in enumerate(scenario_specs)
     )
 
-    receipt_payload = _to_json(results, backend=backend, seed=args.seed)
     markdown = _to_markdown(
         result=results,
         backend=backend,
     )
     if args.receipt is not None:
+        if receipt_harness_source is None or receipt_subject_source is None:
+            raise RuntimeError("receipt source identity was not captured")
+        subject_content_sha256 = receipt_subject_source["content_sha256"]
+        if not isinstance(subject_content_sha256, str):
+            raise RuntimeError("receipt subject content digest is unavailable")
+        _require_stable_receipt_sources(
+            harness_source_sha256=receipt_harness_source,
+            subject_content_sha256=subject_content_sha256,
+        )
+        receipt_payload = _to_json(
+            results,
+            backend=backend,
+            seed=args.seed,
+            resolved_stage_targets=resolved_stage_targets,
+            harness_source_sha256=receipt_harness_source,
+            subject_source=receipt_subject_source,
+        )
         publish_receipt(args.receipt, receipt_payload)
     print(markdown)
     if args.receipt is not None:

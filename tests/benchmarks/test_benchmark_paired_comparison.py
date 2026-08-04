@@ -34,6 +34,14 @@ from benchmarks.harness.receipt import validation_coverage_payload
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import LibraryName
 
+_EINF_SOURCE: dict[str, str | bool | None] = {
+    "kind": "git_checkout",
+    "distribution_version": "0.2.0",
+    "git_revision": "a" * 40,
+    "git_dirty": False,
+    "content_sha256": "1" * 64,
+}
+
 
 def _observations(
     values: tuple[tuple[int, int, int, float, float], ...],
@@ -336,9 +344,13 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         case_results=[result],
         workload_comparisons={"dynamic_case": workload_comparison},
         backend=BackendSpec(name="numpy"),
+        einf_source=_EINF_SOURCE,
     )
 
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == 7
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    assert environment["einf"] == _EINF_SOURCE
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",
@@ -497,9 +509,13 @@ def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
         sizes=sizes,
         case_results=[result],
         backend=BackendSpec(name="numpy"),
+        einf_source=_EINF_SOURCE,
     )
 
-    assert payload["schema_version"] == 6
+    assert payload["schema_version"] == 7
+    environment = payload["environment"]
+    assert isinstance(environment, dict)
+    assert environment["einf"] == _EINF_SOURCE
     assert payload["execution_target"] == {
         "backend": "numpy",
         "requested_device": "cpu",

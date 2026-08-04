@@ -1,8 +1,10 @@
 import json
 import sys
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 import pytest
 
@@ -29,32 +31,48 @@ def _report(
     *,
     call_ms: float,
     source_revision: str = "a" * 40,
+    source_content_sha256: str | None = None,
     seed: int = 20260215,
 ) -> OverheadReportDict:
+    stages = ["__call__", "solve", "runner_resolve", "fusion", "kernel"]
     return OverheadReportDict(
         schema_version=OVERHEAD_REPORT_SCHEMA_VERSION,
         meta={
+            "capture_id": str(uuid4()),
             "harness_source_sha256": "0" * 64,
             "subject_source": {
                 "kind": "git_checkout",
                 "distribution_version": "0.2.0.dev1",
                 "git_revision": source_revision,
                 "git_dirty": False,
+                "content_sha256": (
+                    sha256(source_revision.encode()).hexdigest()
+                    if source_content_sha256 is None
+                    else source_content_sha256
+                ),
             },
             "execution_target": {
                 "backend": "numpy",
                 "requested_device": "cpu",
                 "resolved_device": "cpu",
             },
+            "host": {
+                "system": "Darwin",
+                "machine": "arm64",
+                "cpu_model": "Apple M1 Pro",
+                "logical_cpu_count": 10,
+            },
             "environment": {
                 "python": "3.11",
                 "numpy": "1.26",
-                "torch": "not-installed",
                 "array_api_compat": "1.12",
                 "opt_einsum": "3.4",
             },
             "seed": seed,
-            "stages": ["__call__", "solve", "runner_resolve", "fusion", "kernel"],
+            "stages": stages,
+            "resolved_stage_targets": {
+                stage: [f"einf.{stage}"] for stage in stages if stage != "__call__"
+            },
         },
         scenarios=[
             {
@@ -478,9 +496,39 @@ def test_load_overhead_report_requires_schema_version(tmp_path: Path) -> None:
 
 def test_load_overhead_report_rejects_unsupported_schema(tmp_path: Path) -> None:
     report = _report(call_ms=1.0)
-    cast(dict[str, object], report)["schema_version"] = 2
+    unsupported_version = OVERHEAD_REPORT_SCHEMA_VERSION + 1
+    cast(dict[str, object], report)["schema_version"] = unsupported_version
 
-    with pytest.raises(ValueError, match="unsupported schema_version 2"):
+    with pytest.raises(
+        ValueError,
+        match=f"unsupported schema_version {unsupported_version}",
+    ):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+@pytest.mark.parametrize("field_name", ("call_repr", "loops"))
+def test_load_overhead_report_requires_case_configuration(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    report = _report(call_ms=1.0)
+    case = cast(dict[str, object], report["scenarios"][0]["cases"][0])
+    del case[field_name]
+
+    with pytest.raises(TypeError, match=field_name):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
+@pytest.mark.parametrize("loops", (True, 0, -1))
+def test_load_overhead_report_rejects_invalid_loop_count(
+    tmp_path: Path,
+    loops: object,
+) -> None:
+    report = _report(call_ms=1.0)
+    case = cast(dict[str, object], report["scenarios"][0]["cases"][0])
+    case["loops"] = loops
+
+    with pytest.raises((TypeError, ValueError), match="loops"):
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
@@ -665,9 +713,11 @@ def test_compare_overhead_reports_allows_small_drift() -> None:
 
 def test_compare_overhead_reports_flags_missing_cases() -> None:
     baseline = _report(call_ms=1.0)
+    candidate_meta = deepcopy(baseline["meta"])
+    candidate_meta["capture_id"] = str(uuid4())
     candidate: OverheadReportDict = {
         "schema_version": baseline["schema_version"],
-        "meta": baseline["meta"],
+        "meta": candidate_meta,
         "scenarios": [],
     }
     regressions, missing_keys = compare_overhead_reports(
@@ -731,9 +781,11 @@ def test_compare_overhead_report_trials_flags_repeated_regressions() -> None:
 
 def test_compare_overhead_report_trials_flags_missing_cases() -> None:
     complete_report = _report(call_ms=1.0)
+    candidate_meta = deepcopy(complete_report["meta"])
+    candidate_meta["capture_id"] = str(uuid4())
     empty_candidate: OverheadReportDict = {
         "schema_version": complete_report["schema_version"],
-        "meta": complete_report["meta"],
+        "meta": candidate_meta,
         "scenarios": [],
     }
 
@@ -749,6 +801,24 @@ def test_compare_overhead_report_trials_flags_missing_cases() -> None:
     assert missing_keys == [("fixed_medium", "fixed", "medium", "rearrange_flatten")]
     text = render_trial_findings(regressions=regressions, missing_keys=missing_keys)
     assert "Missing cases:" in text
+
+
+def test_compare_overhead_reports_rejects_empty_baseline() -> None:
+    complete_report = _report(call_ms=1.0)
+    empty_baseline: OverheadReportDict = {
+        "schema_version": complete_report["schema_version"],
+        "meta": deepcopy(complete_report["meta"]),
+        "scenarios": [],
+    }
+
+    with pytest.raises(ValueError, match="baseline.*at least one case"):
+        compare_overhead_reports(
+            baseline=empty_baseline,
+            candidate=complete_report,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
 
 
 def test_compare_overhead_reports_allows_different_subject_sources() -> None:
@@ -767,10 +837,25 @@ def test_compare_overhead_reports_allows_different_subject_sources() -> None:
     assert not missing_keys
 
 
+def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = _report(call_ms=1.0)
+    candidate["meta"]["capture_id"] = baseline["meta"]["capture_id"]
+
+    with pytest.raises(ValueError, match="distinct captures"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("path", "value", "expected_axis"),
     (
-        (("schema_version",), 2, "schema"),
+        (("schema_version",), OVERHEAD_REPORT_SCHEMA_VERSION + 1, "schema"),
         (("meta", "harness_source_sha256"), "1" * 64, "harness_source"),
         (("meta", "execution_target", "backend"), "torch", "execution_target"),
         (
@@ -778,9 +863,15 @@ def test_compare_overhead_reports_allows_different_subject_sources() -> None:
             "cuda:0",
             "execution_target",
         ),
+        (("meta", "host", "cpu_model"), "Apple M4 Max", "host"),
         (("meta", "environment", "numpy"), "2.0", "environment"),
         (("meta", "seed"), 7, "configuration"),
         (("meta", "stages"), ["__call__", "kernel"], "configuration"),
+        (
+            ("meta", "resolved_stage_targets", "kernel"),
+            ["einf.different_kernel"],
+            "configuration",
+        ),
         (
             ("scenarios", 0, "cases", 0, "call_repr"),
             "different(...) ",
@@ -796,6 +887,7 @@ def test_compare_overhead_reports_rejects_incompatible_experiments_before_metric
 ) -> None:
     baseline = _report(call_ms=1.0)
     candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
     _replace_nested_value(candidate, path=path, value=value)
     _set_metric(
         baseline,
@@ -829,6 +921,63 @@ def test_compare_overhead_report_trials_requires_stable_role_sources(
     )
 
     with pytest.raises(ValueError, match=f"{drifting_role} trial reports"):
+        compare_overhead_report_trials(
+            report_pairs=(
+                (first_baseline, first_candidate),
+                (second_baseline, second_candidate),
+            ),
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            min_regression_count=2,
+            fail_on_missing_cases=True,
+        )
+
+
+def test_compare_overhead_report_trials_distinguishes_dirty_source_content() -> None:
+    with pytest.raises(ValueError, match="baseline trial reports"):
+        compare_overhead_report_trials(
+            report_pairs=(
+                (
+                    _report(
+                        call_ms=1.0,
+                        source_revision="a" * 40,
+                        source_content_sha256="1" * 64,
+                    ),
+                    _report(call_ms=1.0, source_revision="b" * 40),
+                ),
+                (
+                    _report(
+                        call_ms=1.0,
+                        source_revision="a" * 40,
+                        source_content_sha256="2" * 64,
+                    ),
+                    _report(call_ms=1.0, source_revision="b" * 40),
+                ),
+            ),
+            metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            min_regression_count=2,
+            fail_on_missing_cases=True,
+        )
+
+
+@pytest.mark.parametrize("drifting_role", ("baseline", "candidate"))
+def test_compare_overhead_report_trials_requires_stable_case_coverage(
+    drifting_role: str,
+) -> None:
+    first_baseline = _report(call_ms=1.0, source_revision="a" * 40)
+    first_candidate = _report(call_ms=1.0, source_revision="b" * 40)
+    second_baseline = _report(call_ms=1.0, source_revision="a" * 40)
+    second_candidate = _report(call_ms=1.0, source_revision="b" * 40)
+    drifting_report = (
+        second_baseline if drifting_role == "baseline" else second_candidate
+    )
+    drifting_report["scenarios"] = []
+
+    with pytest.raises(
+        ValueError,
+        match=f"{drifting_role} trial reports use different case configurations",
+    ):
         compare_overhead_report_trials(
             report_pairs=(
                 (first_baseline, first_candidate),

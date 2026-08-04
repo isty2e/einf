@@ -910,19 +910,16 @@ def test_expression_parity_renderers_preserve_inference_contract(
         "distribution_version": "0.2.0",
         "git_revision": "abc123",
         "git_dirty": False,
+        "content_sha256": "1" * 64,
     }
-    monkeypatch.setattr(
-        expression_parity_module,
-        "einf_source_metadata",
-        lambda: source_metadata,
-    )
     payload = _to_json(
         report,
         backend=BackendSpec(name="numpy"),
         config=config,
+        einf_source=source_metadata,
     )
     json.dumps(payload)
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     environment = payload["environment"]
     assert isinstance(environment, dict)
     assert {

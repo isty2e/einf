@@ -33,7 +33,13 @@ from benchmarks.harness.receipt import (
 )
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner
-from benchmarks.shared import as_single_array, einf_source_metadata, version_or_missing
+from benchmarks.shared import (
+    as_single_array,
+    einf_source_receipt_metadata,
+    require_einf_source_root,
+    require_stable_einf_source_content,
+    version_or_missing,
+)
 from benchmarks.shared.artifacts import publish_receipt
 from einf import ax, axes, einop
 
@@ -746,9 +752,10 @@ def _to_json(
     *,
     backend: BackendSpec,
     config: DynamicTaskConfig,
+    einf_source: dict[str, str | bool | None],
 ) -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "title": report.title,
         "environment": {
             "python": platform.python_version(),
@@ -758,7 +765,7 @@ def _to_json(
             "torch": version_or_missing("torch"),
             "einops": version_or_missing("einops"),
             "einx": version_or_missing("einx"),
-            "einf": einf_source_metadata(),
+            "einf": einf_source,
         },
         "configuration": list(report.configuration),
         "methodology": list(report.methodology),
@@ -1041,7 +1048,19 @@ def main() -> int:
         default=None,
         help="Optional canonical JSON receipt path; Markdown is written to stdout.",
     )
+    parser.add_argument(
+        "--expect-einf-source-root",
+        type=Path,
+        default=None,
+        help="Fail unless the imported einf package belongs to this checkout root.",
+    )
     args = parser.parse_args()
+
+    if args.expect_einf_source_root is not None:
+        require_einf_source_root(args.expect_einf_source_root)
+    receipt_einf_source = (
+        einf_source_receipt_metadata() if args.receipt is not None else None
+    )
 
     if args.batches < 1:
         raise ValueError(f"batches must be >= 1, got {args.batches}")
@@ -1164,9 +1183,20 @@ def main() -> int:
 
     markdown = _render_markdown(report)
     if args.receipt is not None:
+        if receipt_einf_source is None:
+            raise RuntimeError("receipt source identity was not captured")
+        content_sha256 = receipt_einf_source["content_sha256"]
+        if not isinstance(content_sha256, str):
+            raise RuntimeError("receipt source content digest is unavailable")
+        require_stable_einf_source_content(content_sha256)
         publish_receipt(
             args.receipt,
-            _to_json(report, backend=backend, config=config),
+            _to_json(
+                report,
+                backend=backend,
+                config=config,
+                einf_source=receipt_einf_source,
+            ),
         )
     print(markdown)
     if args.receipt is not None:

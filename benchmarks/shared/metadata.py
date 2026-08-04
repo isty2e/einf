@@ -1,5 +1,6 @@
 """Shared benchmark metadata helpers."""
 
+import hashlib
 import subprocess
 from importlib import import_module, metadata
 from pathlib import Path
@@ -77,6 +78,62 @@ def einf_source_metadata() -> dict[str, str | bool | None]:
         "git_revision": revision,
         "git_dirty": bool(status),
     }
+
+
+def einf_source_content_sha256() -> str:
+    """Hash the imported ``einf`` package sources used by a benchmark run."""
+    module_file = getattr(import_module("einf"), "__file__", None)
+    if module_file is None:
+        raise RuntimeError("cannot fingerprint imported einf source without __file__")
+
+    package_root = Path(module_file).resolve().parent
+    source_files = sorted(
+        path
+        for path in package_root.rglob("*")
+        if path.is_file()
+        and (path.suffix in {".py", ".pyi"} or path.name == "py.typed")
+    )
+    if not source_files:
+        raise RuntimeError(
+            "cannot fingerprint imported einf source without source files"
+        )
+
+    digest = hashlib.sha256()
+    for source_file in source_files:
+        relative_path = source_file.relative_to(package_root).as_posix().encode()
+        content = source_file.read_bytes()
+        digest.update(len(relative_path).to_bytes(8, "big"))
+        digest.update(relative_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def einf_source_receipt_metadata() -> dict[str, str | bool | None]:
+    """Describe and fingerprint the imported package for a benchmark receipt."""
+    source = einf_source_metadata()
+    source["content_sha256"] = einf_source_content_sha256()
+    return source
+
+
+def require_einf_source_root(checkout_root: Path) -> None:
+    """Fail unless the imported package belongs to the selected checkout."""
+    module_file = getattr(import_module("einf"), "__file__", None)
+    if module_file is None:
+        raise RuntimeError("imported einf package has no __file__")
+    expected_package_root = (checkout_root / "src" / "einf").resolve()
+    imported_source = Path(module_file).resolve()
+    if not imported_source.is_relative_to(expected_package_root):
+        raise RuntimeError(
+            "imported einf source does not belong to the expected checkout: "
+            f"expected {expected_package_root}, got {imported_source}"
+        )
+
+
+def require_stable_einf_source_content(expected_sha256: str) -> None:
+    """Fail when imported package sources change during a benchmark run."""
+    if einf_source_content_sha256() != expected_sha256:
+        raise RuntimeError("imported einf source changed during measurement")
 
 
 def available_libraries(
