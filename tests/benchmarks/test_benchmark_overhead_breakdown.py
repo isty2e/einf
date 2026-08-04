@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
     OverheadCpuAllocationDict,
     OverheadExecutionResourcesDict,
+    OverheadPythonRuntimeDict,
     load_overhead_report,
 )
 from benchmarks.profile import overhead_breakdown
@@ -32,6 +34,7 @@ def _execution_resources() -> OverheadExecutionResourcesDict:
         "cpu_allocation": {
             "process_cpu_affinity": None,
             "cgroup_cpu_bandwidth_limits": [],
+            "cgroup_cpu_weight_hierarchy": None,
         },
         "native_threadpools": [
             {
@@ -44,6 +47,22 @@ def _execution_resources() -> OverheadExecutionResourcesDict:
                 "architecture": "VORTEX",
             }
         ],
+    }
+
+
+def _python_runtime() -> OverheadPythonRuntimeDict:
+    return {
+        "implementation_name": "cpython",
+        "implementation_version": "3.11.0-final.0",
+        "language_version": "3.11.0",
+        "build": "3.11.0 (test build)",
+        "cache_tag": "cpython-311",
+        "abi_flags": "",
+        "optimize": 0,
+        "debug": 0,
+        "py_debug": False,
+        "hash_seed": 0,
+        "hash_witness": (123, 456),
     }
 
 
@@ -119,6 +138,65 @@ def test_receipt_sources_must_remain_stable(
         )
 
 
+def test_receipt_requires_fixed_hash_seed_before_profiling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["overhead_breakdown", "--receipt", str(tmp_path / "report.json")],
+    )
+    monkeypatch.setattr(overhead_breakdown, "_resolved_stage_target_names", dict)
+    monkeypatch.setattr(overhead_breakdown, "_harness_source_sha256", lambda: "0" * 64)
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_subject_source_metadata",
+        lambda: {
+            "kind": "git_checkout",
+            "distribution_version": "0.2.0.dev1",
+            "git_revision": "a" * 40,
+            "git_dirty": False,
+            "content_sha256": "1" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_cpu_allocation_metadata",
+        lambda: _execution_resources()["cpu_allocation"],
+    )
+
+    def execution_resources(
+        _backend: object,
+        *,
+        cpu_allocation: OverheadCpuAllocationDict,
+    ) -> OverheadExecutionResourcesDict:
+        assert cpu_allocation == _execution_resources()["cpu_allocation"]
+        return _execution_resources()
+
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_execution_resources_metadata",
+        execution_resources,
+    )
+
+    def reject_uncontrolled_seed() -> OverheadPythonRuntimeDict:
+        raise RuntimeError("receipt capture requires a fixed PYTHONHASHSEED")
+
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_python_runtime_metadata",
+        reject_uncontrolled_seed,
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_profile_scenario",
+        lambda **_kwargs: pytest.fail("profiling must not start"),
+    )
+
+    with pytest.raises(RuntimeError, match="requires a fixed PYTHONHASHSEED"):
+        overhead_breakdown.main()
+
+
 def test_execution_resources_capture_affinity_and_effective_threads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,6 +244,7 @@ def test_execution_resources_capture_affinity_and_effective_threads(
     cpu_allocation = OverheadCpuAllocationDict(
         process_cpu_affinity=[1, 3],
         cgroup_cpu_bandwidth_limits=[],
+        cgroup_cpu_weight_hierarchy=None,
     )
     resources = overhead_breakdown._execution_resources_metadata(
         "torch",
@@ -185,7 +264,7 @@ def test_execution_resources_capture_affinity_and_effective_threads(
     assert "torch_threads" not in numpy_resources
 
 
-def test_cgroup_v2_cpu_bandwidth_includes_finite_ancestor_constraints(
+def test_cgroup_v2_controls_include_ancestor_quota_and_ordered_weights(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -199,14 +278,16 @@ def test_cgroup_v2_cpu_bandwidth_includes_finite_ancestor_constraints(
         f"36 25 0:32 / {mount_point} rw,nosuid,nodev,noexec,relatime - "
         "cgroup2 cgroup rw\n"
     )
-    for directory, cpu_max, burst in (
-        (mount_point, "max 100000", "0"),
-        (mount_point / "parent", "200000 100000", "10000"),
-        (child, "max 50000", "0"),
+    for directory, cpu_max, burst, weight in (
+        (mount_point, "max 100000", "0", None),
+        (mount_point / "parent", "200000 100000", "10000", "100"),
+        (child, "max 50000", "0", "100"),
     ):
         directory.mkdir(exist_ok=True)
         (directory / "cpu.max").write_text(cpu_max)
         (directory / "cpu.max.burst").write_text(burst)
+        if weight is not None:
+            (directory / "cpu.weight").write_text(weight)
 
     monkeypatch.setattr(overhead_breakdown.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
@@ -220,12 +301,13 @@ def test_cgroup_v2_cpu_bandwidth_includes_finite_ancestor_constraints(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_bandwidth_limits() == [
-        {"quota_us": 200_000, "period_us": 100_000, "burst_us": 10_000}
-    ]
+    assert overhead_breakdown._cgroup_cpu_controls() == (
+        [{"quota_us": 200_000, "period_us": 100_000, "burst_us": 10_000}],
+        {"version": 2, "child_to_root": [100, 100]},
+    )
 
 
-def test_cgroup_v1_cpu_bandwidth_resolves_namespaced_mount_root(
+def test_cgroup_v1_controls_resolve_namespaced_mount_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -235,6 +317,7 @@ def test_cgroup_v1_cpu_bandwidth_resolves_namespaced_mount_root(
     mount_point.mkdir()
     (mount_point / "cpu.cfs_quota_us").write_text("50000")
     (mount_point / "cpu.cfs_period_us").write_text("100000")
+    (mount_point / "cpu.shares").write_text("1024")
     mountinfo_path = tmp_path / "mountinfo"
     mountinfo_path.write_text(
         f"36 25 0:32 /docker/container {mount_point} rw,relatime - "
@@ -253,9 +336,10 @@ def test_cgroup_v1_cpu_bandwidth_resolves_namespaced_mount_root(
         mountinfo_path,
     )
 
-    assert overhead_breakdown._cgroup_cpu_bandwidth_limits() == [
-        {"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}
-    ]
+    assert overhead_breakdown._cgroup_cpu_controls() == (
+        [{"quota_us": 50_000, "period_us": 100_000, "burst_us": 0}],
+        {"version": 1, "child_to_root": [1024]},
+    )
 
 
 def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
@@ -285,32 +369,47 @@ def test_cgroup_cpu_bandwidth_fails_closed_on_malformed_control(
     )
 
     with pytest.raises(RuntimeError, match="cpu.max must contain quota and period"):
-        overhead_breakdown._cgroup_cpu_bandwidth_limits()
+        overhead_breakdown._cgroup_cpu_controls()
 
 
-def test_receipt_rejects_cpu_allocation_drift(
+def test_cgroup_cpu_weight_enforces_controller_range(tmp_path: Path) -> None:
+    (tmp_path / "cpu.weight").write_text("0")
+    assert overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2) == 0
+
+    (tmp_path / "cpu.weight").write_text("10001")
+    with pytest.raises(RuntimeError, match="above 10000"):
+        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=2)
+
+    (tmp_path / "cpu.shares").write_text("1")
+    with pytest.raises(RuntimeError, match="below 2"):
+        overhead_breakdown._cgroup_cpu_weight(tmp_path, version=1)
+
+
+def test_receipt_rejects_execution_resource_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = OverheadCpuAllocationDict(
-        process_cpu_affinity=[0, 1],
-        cgroup_cpu_bandwidth_limits=[
-            {"quota_us": 200_000, "period_us": 100_000, "burst_us": 0}
-        ],
-    )
-    changed = OverheadCpuAllocationDict(
-        process_cpu_affinity=[0, 1],
-        cgroup_cpu_bandwidth_limits=[
-            {"quota_us": 100_000, "period_us": 100_000, "burst_us": 0}
-        ],
-    )
+    expected = _execution_resources()
+    changed = _execution_resources()
+    changed["cpu_allocation"]["cgroup_cpu_weight_hierarchy"] = {
+        "version": 2,
+        "child_to_root": [50, 100],
+    }
     monkeypatch.setattr(
         overhead_breakdown,
         "_cpu_allocation_metadata",
-        lambda: changed,
+        lambda: changed["cpu_allocation"],
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_native_threadpool_metadata",
+        lambda _backend: changed["native_threadpools"],
     )
 
-    with pytest.raises(RuntimeError, match="CPU allocation changed"):
-        overhead_breakdown._require_stable_cpu_allocation(expected)
+    with pytest.raises(RuntimeError, match="execution resources changed"):
+        overhead_breakdown._require_stable_execution_resources(
+            expected,
+            backend="numpy",
+        )
 
 
 def test_affinity_read_failure_is_not_treated_as_unsupported(
@@ -328,6 +427,96 @@ def test_affinity_read_failure_is_not_treated_as_unsupported(
 
     with pytest.raises(RuntimeError, match="cannot determine process CPU affinity"):
         overhead_breakdown._process_cpu_affinity()
+
+
+@pytest.mark.parametrize(
+    ("seed", "hash_randomization"),
+    (("0", 0), ("7", 1), ("4294967295", 1)),
+)
+def test_fixed_python_hash_seed_accepts_applied_decimal_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    seed: str,
+    hash_randomization: int,
+) -> None:
+    monkeypatch.setenv("PYTHONHASHSEED", seed)
+    monkeypatch.setattr(
+        overhead_breakdown.sys,
+        "flags",
+        SimpleNamespace(
+            ignore_environment=0,
+            hash_randomization=hash_randomization,
+        ),
+    )
+
+    assert overhead_breakdown._fixed_python_hash_seed() == int(seed)
+
+
+@pytest.mark.parametrize(
+    ("seed", "ignore_environment", "hash_randomization", "message"),
+    (
+        (None, 0, 1, "requires a fixed"),
+        ("random", 0, 1, "requires a fixed"),
+        ("-1", 0, 1, "unsigned decimal"),
+        ("4294967296", 0, 1, "outside"),
+        ("7", 1, 1, "environment variables disabled"),
+        ("0", 0, 1, "does not match"),
+    ),
+)
+def test_fixed_python_hash_seed_rejects_uncontrolled_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    seed: str | None,
+    ignore_environment: int,
+    hash_randomization: int,
+    message: str,
+) -> None:
+    if seed is None:
+        monkeypatch.delenv("PYTHONHASHSEED", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONHASHSEED", seed)
+    monkeypatch.setattr(
+        overhead_breakdown.sys,
+        "flags",
+        SimpleNamespace(
+            ignore_environment=ignore_environment,
+            hash_randomization=hash_randomization,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        overhead_breakdown._fixed_python_hash_seed()
+
+
+def test_python_runtime_metadata_records_build_abi_and_process_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(overhead_breakdown, "_fixed_python_hash_seed", lambda: 7)
+
+    runtime = overhead_breakdown._python_runtime_metadata()
+
+    assert runtime["implementation_name"] == overhead_breakdown.sys.implementation.name
+    assert runtime["language_version"] == overhead_breakdown.platform.python_version()
+    assert runtime["build"] == overhead_breakdown.sys.version
+    assert runtime["cache_tag"] == overhead_breakdown.sys.implementation.cache_tag
+    assert runtime["optimize"] == overhead_breakdown.sys.flags.optimize
+    assert runtime["debug"] == overhead_breakdown.sys.flags.debug
+    assert runtime["hash_seed"] == 7
+    assert len(runtime["hash_witness"]) == 2
+
+
+def test_receipt_rejects_python_runtime_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _python_runtime()
+    changed = _python_runtime()
+    changed["hash_seed"] = 7
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_python_runtime_metadata",
+        lambda: changed,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime settings changed"):
+        overhead_breakdown._require_stable_python_runtime(expected)
 
 
 def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
@@ -376,6 +565,7 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
             "content_sha256": "1" * 64,
         },
         execution_resources=_execution_resources(),
+        python_runtime=_python_runtime(),
     )
     path = tmp_path / "report.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -390,6 +580,7 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
     assert loaded["meta"]["seed"] == 20260215
     assert len(loaded["meta"]["harness_source_sha256"]) == 64
     assert len(loaded["meta"]["subject_source"]["content_sha256"]) == 64
+    assert loaded["meta"]["environment"]["python"] == _python_runtime()
     assert "torch" not in loaded["meta"]["environment"]
     case = loaded["scenarios"][0]["cases"][0]
     assert case.get("residual_ms_per_call") == 0.2
@@ -422,7 +613,7 @@ def test_guardrail_loader_accepts_residual_field(tmp_path: Path) -> None:
             },
             "execution_resources": _execution_resources(),
             "environment": {
-                "python": "3.11",
+                "python": _python_runtime(),
                 "numpy": "1.26",
                 "array_api_compat": "1.12",
                 "opt_einsum": "3.4",

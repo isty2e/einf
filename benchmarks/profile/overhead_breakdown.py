@@ -23,6 +23,7 @@ import platform
 import statistics
 import subprocess
 import sys
+import sysconfig
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -40,8 +41,11 @@ from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
     OverheadCpuAllocationDict,
     OverheadCpuBandwidthLimitDict,
+    OverheadCpuWeightHierarchyDict,
+    OverheadEnvironmentDict,
     OverheadExecutionResourcesDict,
     OverheadNativeThreadPoolDict,
+    OverheadPythonRuntimeDict,
     OverheadTorchThreadsDict,
 )
 from benchmarks.shared import (
@@ -1013,6 +1017,7 @@ def _to_json(
     harness_source_sha256: str,
     subject_source: dict[str, str | bool | None],
     execution_resources: OverheadExecutionResourcesDict,
+    python_runtime: OverheadPythonRuntimeDict,
 ) -> dict[str, object]:
     return {
         "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
@@ -1027,7 +1032,10 @@ def _to_json(
             },
             "host": _host_metadata(),
             "execution_resources": execution_resources,
-            "environment": _environment_metadata(backend),
+            "environment": _environment_metadata(
+                backend,
+                python_runtime=python_runtime,
+            ),
             "seed": seed,
             "stages": list(STAGES),
             "resolved_stage_targets": {
@@ -1362,10 +1370,33 @@ def _v1_cpu_bandwidth_limit(directory: Path) -> OverheadCpuBandwidthLimitDict | 
     )
 
 
-def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
-    """Return every finite CPU bandwidth constraint visible to this process."""
+def _cgroup_cpu_weight(
+    directory: Path,
+    *,
+    version: _CgroupVersion,
+) -> int | None:
+    control_name = "cpu.weight" if version == 2 else "cpu.shares"
+    raw_weight = _read_optional_control(directory / control_name)
+    if raw_weight is None:
+        return None
+    weight = _required_control_integer(
+        raw_weight,
+        name=control_name,
+        minimum=0 if version == 2 else 2,
+    )
+    maximum = 10_000 if version == 2 else 262_144
+    if weight > maximum:
+        raise RuntimeError(f"cgroup CPU control {control_name} is above {maximum}")
+    return weight
+
+
+def _cgroup_cpu_controls() -> tuple[
+    list[OverheadCpuBandwidthLimitDict],
+    OverheadCpuWeightHierarchyDict | None,
+]:
+    """Return CPU bandwidth and hierarchical weight controls for this process."""
     if platform.system() != "Linux":
-        return []
+        return [], None
     try:
         membership_text = _CGROUP_MEMBERSHIP_PATH.read_text()
         mountinfo_text = _CGROUP_MOUNTINFO_PATH.read_text()
@@ -1373,7 +1404,7 @@ def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
         raise RuntimeError("cannot inspect process cgroup CPU allocation") from error
     membership = _cgroup_cpu_membership(membership_text)
     if membership is None:
-        return []
+        return [], None
     version, cgroup_path = membership
     mounts = _cgroup_cpu_mounts(mountinfo_text, version=version)
     if not mounts:
@@ -1387,6 +1418,7 @@ def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
         raise RuntimeError("resolved CPU cgroup escapes its visible hierarchy")
 
     limits: set[tuple[int, int, int]] = set()
+    weights: list[int] = []
     current = directory
     while True:
         limit = (
@@ -1396,11 +1428,14 @@ def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
         )
         if limit is not None:
             limits.add((limit["quota_us"], limit["period_us"], limit["burst_us"]))
+        weight = _cgroup_cpu_weight(current, version=version)
+        if weight is not None:
+            weights.append(weight)
         if current == hierarchy_root:
             break
         current = current.parent
 
-    return [
+    bandwidth_limits = [
         OverheadCpuBandwidthLimitDict(
             quota_us=quota_us,
             period_us=period_us,
@@ -1408,18 +1443,24 @@ def _cgroup_cpu_bandwidth_limits() -> list[OverheadCpuBandwidthLimitDict]:
         )
         for quota_us, period_us, burst_us in sorted(limits)
     ]
+    weight_hierarchy = (
+        OverheadCpuWeightHierarchyDict(
+            version=version,
+            child_to_root=weights,
+        )
+        if weights
+        else None
+    )
+    return bandwidth_limits, weight_hierarchy
 
 
 def _cpu_allocation_metadata() -> OverheadCpuAllocationDict:
+    bandwidth_limits, weight_hierarchy = _cgroup_cpu_controls()
     return OverheadCpuAllocationDict(
         process_cpu_affinity=_process_cpu_affinity(),
-        cgroup_cpu_bandwidth_limits=_cgroup_cpu_bandwidth_limits(),
+        cgroup_cpu_bandwidth_limits=bandwidth_limits,
+        cgroup_cpu_weight_hierarchy=weight_hierarchy,
     )
-
-
-def _require_stable_cpu_allocation(expected: OverheadCpuAllocationDict) -> None:
-    if _cpu_allocation_metadata() != expected:
-        raise RuntimeError("CPU allocation changed during overhead measurement")
 
 
 def _native_threadpool_metadata(
@@ -1493,16 +1534,116 @@ def _execution_resources_metadata(
     return resources
 
 
-def _environment_metadata(backend: BackendName) -> dict[str, str]:
-    """Return only dependencies used by the selected profiler backend."""
-    environment = {
-        "python": platform.python_version(),
+def _require_stable_execution_resources(
+    expected: OverheadExecutionResourcesDict,
+    *,
+    backend: BackendName,
+) -> None:
+    current = _execution_resources_metadata(
+        backend,
+        cpu_allocation=_cpu_allocation_metadata(),
+    )
+    if current != expected:
+        raise RuntimeError("execution resources changed during overhead measurement")
+
+
+def _fixed_python_hash_seed() -> int:
+    """Validate and return this process's fixed PYTHONHASHSEED setting."""
+    raw_seed = os.environ.get("PYTHONHASHSEED")
+    if raw_seed is None or raw_seed == "random":
+        raise RuntimeError(
+            "receipt capture requires a fixed PYTHONHASHSEED in [0, 4294967295]"
+        )
+    if not raw_seed.isascii() or not raw_seed.isdecimal():
+        raise RuntimeError("PYTHONHASHSEED must be an unsigned decimal integer")
+    seed = int(raw_seed)
+    if not 0 <= seed <= 4_294_967_295:
+        raise RuntimeError("PYTHONHASHSEED is outside [0, 4294967295]")
+    if sys.flags.ignore_environment:
+        raise RuntimeError("Python was started with environment variables disabled")
+    expected_randomization = int(seed != 0)
+    if sys.flags.hash_randomization != expected_randomization:
+        raise RuntimeError(
+            "PYTHONHASHSEED does not match the active hash-randomization mode"
+        )
+    return seed
+
+
+def _python_debug_build() -> bool | None:
+    raw_value = sysconfig.get_config_var("Py_DEBUG")
+    if raw_value is None:
+        return None
+    if raw_value in (0, "0"):
+        return False
+    if raw_value in (1, "1"):
+        return True
+    raise RuntimeError("Python Py_DEBUG build setting is not canonical")
+
+
+def _python_runtime_metadata() -> OverheadPythonRuntimeDict:
+    implementation = sys.implementation
+    implementation_version = implementation.version
+    cache_tag = implementation.cache_tag
+    if cache_tag is not None and (not isinstance(cache_tag, str) or not cache_tag):
+        raise RuntimeError("Python implementation cache tag is invalid")
+    abi_flags = getattr(sys, "abiflags", "")
+    if not isinstance(abi_flags, str):
+        raise TypeError("Python ABI flags are invalid")
+    return OverheadPythonRuntimeDict(
+        implementation_name=implementation.name,
+        implementation_version=(
+            f"{implementation_version.major}.{implementation_version.minor}."
+            f"{implementation_version.micro}-{implementation_version.releaselevel}."
+            f"{implementation_version.serial}"
+        ),
+        language_version=platform.python_version(),
+        build=sys.version,
+        cache_tag=cache_tag,
+        abi_flags=abi_flags,
+        optimize=sys.flags.optimize,
+        debug=sys.flags.debug,
+        py_debug=_python_debug_build(),
+        hash_seed=_fixed_python_hash_seed(),
+        hash_witness=(
+            hash("einf-overhead-hash-witness-v1"),
+            hash("einf-overhead-hash-witness-v2"),
+        ),
+    )
+
+
+def _require_stable_python_runtime(expected: OverheadPythonRuntimeDict) -> None:
+    if _python_runtime_metadata() != expected:
+        raise RuntimeError(
+            "Python runtime settings changed during overhead measurement"
+        )
+
+
+def _dependency_versions(backend: BackendName) -> dict[str, str]:
+    dependencies = {
         "numpy": version_or_missing("numpy"),
         "array_api_compat": version_or_missing("array-api-compat"),
         "opt_einsum": version_or_missing("opt_einsum"),
     }
     if backend == "torch":
-        environment["torch"] = version_or_missing("torch")
+        dependencies["torch"] = version_or_missing("torch")
+    return dependencies
+
+
+def _environment_metadata(
+    backend: BackendName,
+    *,
+    python_runtime: OverheadPythonRuntimeDict,
+) -> OverheadEnvironmentDict:
+    """Return the Python runtime and dependencies used by this capture."""
+    dependencies = _dependency_versions(backend)
+    environment = OverheadEnvironmentDict(
+        python=python_runtime,
+        numpy=dependencies["numpy"],
+        array_api_compat=dependencies["array_api_compat"],
+        opt_einsum=dependencies["opt_einsum"],
+    )
+    if backend == "torch":
+        environment["torch"] = dependencies["torch"]
     return environment
 
 
@@ -1511,7 +1652,7 @@ def _to_markdown(
     result: tuple[ScenarioResult, ...],
     backend: BackendName,
 ) -> str:
-    environment = _environment_metadata(backend)
+    dependencies = _dependency_versions(backend)
     host = _host_metadata()
     lines = [
         "# Overhead Decomposition (einf)",
@@ -1539,7 +1680,7 @@ def _to_markdown(
         "## Repro",
         "",
         "```bash",
-        "python -m benchmarks.profile.overhead_breakdown \\",
+        "PYTHONHASHSEED=0 python -m benchmarks.profile.overhead_breakdown \\",
         f"  --backend {backend} \\",
         "  --receipt artifacts/bench/raw/overhead-breakdown.json",
         "```",
@@ -1549,11 +1690,11 @@ def _to_markdown(
         f"- Backend: `{backend}`",
         f"- Host: `{host['system']} {host['release']} {host['machine']}`",
         f"- CPU: `{host['cpu_model']}` ({host['logical_cpu_count']} logical CPUs)",
-        f"- Python: `{environment['python']}`",
-        f"- NumPy: `{environment['numpy']}`",
-        f"- array-api-compat: `{environment['array_api_compat']}`",
-        f"- opt_einsum: `{environment['opt_einsum']}`",
-        *([f"- torch: `{environment['torch']}`"] if backend == "torch" else []),
+        f"- Python: `{platform.python_version()}`",
+        f"- NumPy: `{dependencies['numpy']}`",
+        f"- array-api-compat: `{dependencies['array_api_compat']}`",
+        f"- opt_einsum: `{dependencies['opt_einsum']}`",
+        *([f"- torch: `{dependencies['torch']}`"] if backend == "torch" else []),
         "",
         "## Results",
         "",
@@ -1612,11 +1753,16 @@ def main() -> int:
     resolved_stage_targets = _resolved_stage_target_names()
     receipt_harness_source: str | None = None
     receipt_subject_source: dict[str, str | bool | None] | None = None
-    receipt_cpu_allocation: OverheadCpuAllocationDict | None = None
+    receipt_execution_resources: OverheadExecutionResourcesDict | None = None
+    receipt_python_runtime: OverheadPythonRuntimeDict | None = None
     if args.receipt is not None:
         receipt_harness_source = _harness_source_sha256()
         receipt_subject_source = _subject_source_metadata()
-        receipt_cpu_allocation = _cpu_allocation_metadata()
+        receipt_execution_resources = _execution_resources_metadata(
+            backend,
+            cpu_allocation=_cpu_allocation_metadata(),
+        )
+        receipt_python_runtime = _python_runtime_metadata()
 
     scenario_specs = (
         ("fixed-medium", "fixed", "medium"),
@@ -1643,9 +1789,10 @@ def main() -> int:
         if (
             receipt_harness_source is None
             or receipt_subject_source is None
-            or receipt_cpu_allocation is None
+            or receipt_execution_resources is None
+            or receipt_python_runtime is None
         ):
-            raise RuntimeError("receipt source identity was not captured")
+            raise RuntimeError("receipt experiment identity was not captured")
         subject_content_sha256 = receipt_subject_source["content_sha256"]
         if not isinstance(subject_content_sha256, str):
             raise RuntimeError("receipt subject content digest is unavailable")
@@ -1653,11 +1800,11 @@ def main() -> int:
             harness_source_sha256=receipt_harness_source,
             subject_content_sha256=subject_content_sha256,
         )
-        _require_stable_cpu_allocation(receipt_cpu_allocation)
-        receipt_execution_resources = _execution_resources_metadata(
-            backend,
-            cpu_allocation=receipt_cpu_allocation,
+        _require_stable_execution_resources(
+            receipt_execution_resources,
+            backend=backend,
         )
+        _require_stable_python_runtime(receipt_python_runtime)
         receipt_payload = _to_json(
             results,
             backend=backend,
@@ -1666,6 +1813,7 @@ def main() -> int:
             harness_source_sha256=receipt_harness_source,
             subject_source=receipt_subject_source,
             execution_resources=receipt_execution_resources,
+            python_runtime=receipt_python_runtime,
         )
         publish_receipt(args.receipt, receipt_payload)
     print(markdown)

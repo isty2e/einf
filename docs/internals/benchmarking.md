@@ -145,7 +145,7 @@ capture_overhead() {
   subject_root=$1
   artifact_stem=$2
 
-  uv run --isolated --no-project \
+  PYTHONHASHSEED=0 uv run --isolated --no-project \
     --with numpy \
     --with threadpoolctl \
     --with torch \
@@ -587,7 +587,7 @@ Use `benchmarks/profile/overhead_breakdown.py` to decompose internal `einf` over
 Example:
 
 ```bash
-python -m benchmarks.profile.overhead_breakdown \
+PYTHONHASHSEED=0 python -m benchmarks.profile.overhead_breakdown \
   --backend torch \
   --receipt artifacts/bench/raw/2026-02-15-overhead-breakdown-torch.json \
   > artifacts/bench/2026-02-15-overhead-breakdown-torch.md
@@ -644,16 +644,18 @@ Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outp
 
 The guardrail compares latencies only when both receipts describe the same
 recorded experiment. Both metrics require the same profiler, kernel release,
-host CPU, process affinity, cgroup CPU bandwidth limits, backend-specific thread
-settings, backend and device, relevant dependency versions, seed, and case
-configuration. CPU allocation is checked before and after each profiled run; if
-it changes, the profiler does not publish a receipt. Resolved instrumentation
-targets are compared only for `instrumented_call_ms`, since they do not affect
-the unpatched timing pass.
+host CPU, process affinity, cgroup CPU bandwidth and weight hierarchy,
+backend-specific thread settings, backend and device, Python implementation and
+build settings, dependency versions, fixed `PYTHONHASHSEED`, workload seed, and
+case configuration. CPU allocation and Python runtime settings are checked
+before and after each profiled run, as are backend thread settings. If any
+recorded execution resource or runtime setting changes, the profiler does not
+publish a receipt. Resolved instrumentation targets are compared only for
+`instrumented_call_ms`, since they do not affect the unpatched timing pass.
 
 The measured `einf` source is a separate axis. Baseline and candidate contents
 may differ, but repeated trials must keep each side on identical package content
-and case coverage. Every trial must come from a distinct capture. Schema v4
+and case coverage. Every trial must come from a distinct capture. Schema v5
 receipts are not comparable with older receipts, so capture both sides with the
 current profiler.
 

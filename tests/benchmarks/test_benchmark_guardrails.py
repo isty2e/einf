@@ -67,6 +67,7 @@ def _report(
                 "cpu_allocation": {
                     "process_cpu_affinity": None,
                     "cgroup_cpu_bandwidth_limits": [],
+                    "cgroup_cpu_weight_hierarchy": None,
                 },
                 "native_threadpools": [
                     {
@@ -81,7 +82,19 @@ def _report(
                 ],
             },
             "environment": {
-                "python": "3.11",
+                "python": {
+                    "implementation_name": "cpython",
+                    "implementation_version": "3.11.0-final.0",
+                    "language_version": "3.11.0",
+                    "build": "3.11.0 (test build)",
+                    "cache_tag": "cpython-311",
+                    "abi_flags": "",
+                    "optimize": 0,
+                    "debug": 0,
+                    "py_debug": False,
+                    "hash_seed": 0,
+                    "hash_witness": (123, 456),
+                },
                 "numpy": "1.26",
                 "array_api_compat": "1.12",
                 "opt_einsum": "3.4",
@@ -520,6 +533,79 @@ def test_load_overhead_report_requires_execution_resources(tmp_path: Path) -> No
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
+def test_load_overhead_report_preserves_cgroup_weight_hierarchy(
+    tmp_path: Path,
+) -> None:
+    report = _report(call_ms=1.0)
+    report["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_weight_hierarchy"
+    ] = {"version": 2, "child_to_root": [25, 100, 100]}
+
+    loaded = load_overhead_report(_write_report(tmp_path, report=report))
+
+    assert loaded["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_weight_hierarchy"
+    ] == {"version": 2, "child_to_root": [25, 100, 100]}
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    (
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_weight_hierarchy",
+                "child_to_root",
+            ),
+            [],
+            "must not be empty",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_weight_hierarchy",
+                "child_to_root",
+            ),
+            [10_001],
+            "list of valid weights",
+        ),
+        (
+            ("meta", "environment", "python", "hash_seed"),
+            4_294_967_296,
+            "outside the valid range",
+        ),
+        (
+            ("meta", "environment", "python", "abi_flags"),
+            None,
+            "abi_flags must be a string",
+        ),
+        (
+            ("meta", "environment", "python", "hash_witness"),
+            [123],
+            "hash_witness must contain two integers",
+        ),
+    ),
+)
+def test_load_overhead_report_rejects_invalid_runtime_fingerprint(
+    tmp_path: Path,
+    path: tuple[str | int, ...],
+    value: object,
+    message: str,
+) -> None:
+    report = _report(call_ms=1.0)
+    report["meta"]["execution_resources"]["cpu_allocation"][
+        "cgroup_cpu_weight_hierarchy"
+    ] = {"version": 2, "child_to_root": [100]}
+    _replace_nested_value(report, path=path, value=value)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
 def test_load_overhead_report_rejects_unsupported_schema(tmp_path: Path) -> None:
     report = _report(call_ms=1.0)
     unsupported_version = OVERHEAD_REPORT_SCHEMA_VERSION + 1
@@ -914,6 +1000,16 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
             (
                 "meta",
                 "execution_resources",
+                "cpu_allocation",
+                "cgroup_cpu_weight_hierarchy",
+            ),
+            {"version": 2, "child_to_root": [50, 100]},
+            "execution_resources",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
                 "native_threadpools",
                 0,
                 "num_threads",
@@ -922,6 +1018,16 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
             "execution_resources",
         ),
         (("meta", "environment", "numpy"), "2.0", "environment"),
+        (
+            ("meta", "environment", "python", "cache_tag"),
+            "cpython-312",
+            "environment",
+        ),
+        (
+            ("meta", "environment", "python", "hash_witness"),
+            (789, 1011),
+            "environment",
+        ),
         (("meta", "seed"), 7, "configuration"),
         (("meta", "stages"), ["__call__", "kernel"], "instrumentation"),
         (

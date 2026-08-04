@@ -13,7 +13,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
-OVERHEAD_REPORT_SCHEMA_VERSION = 4
+OVERHEAD_REPORT_SCHEMA_VERSION = 5
 
 
 def _required_string(
@@ -146,10 +146,26 @@ class OverheadExecutionTargetDict(TypedDict):
     resolved_device: str
 
 
-class OverheadEnvironmentDict(TypedDict):
-    """Runtime dependency versions that can affect overhead measurements."""
+class OverheadPythonRuntimeDict(TypedDict):
+    """Python implementation and process settings affecting measured overhead."""
 
-    python: str
+    implementation_name: str
+    implementation_version: str
+    language_version: str
+    build: str
+    cache_tag: str | None
+    abi_flags: str
+    optimize: int
+    debug: int
+    py_debug: bool | None
+    hash_seed: int
+    hash_witness: tuple[int, int]
+
+
+class OverheadEnvironmentDict(TypedDict):
+    """Runtime and dependency versions that can affect overhead measurements."""
+
+    python: OverheadPythonRuntimeDict
     numpy: str
     array_api_compat: str
     opt_einsum: str
@@ -193,11 +209,19 @@ class OverheadCpuBandwidthLimitDict(TypedDict):
     burst_us: int
 
 
+class OverheadCpuWeightHierarchyDict(TypedDict):
+    """Cgroup CPU weights from the process cgroup toward the visible root."""
+
+    version: int
+    child_to_root: list[int]
+
+
 class OverheadCpuAllocationDict(TypedDict):
     """CPU scheduling capacity assigned to the benchmark process."""
 
     process_cpu_affinity: list[int] | None
     cgroup_cpu_bandwidth_limits: list[OverheadCpuBandwidthLimitDict]
+    cgroup_cpu_weight_hierarchy: OverheadCpuWeightHierarchyDict | None
 
 
 class OverheadExecutionResourcesDict(TypedDict):
@@ -532,6 +556,40 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         )
     )
 
+    weight_hierarchy_raw = allocation_raw.get("cgroup_cpu_weight_hierarchy")
+    if weight_hierarchy_raw is None:
+        weight_hierarchy = None
+    elif not isinstance(weight_hierarchy_raw, dict):
+        raise TypeError(
+            f"{context}: cgroup CPU weight hierarchy must be object or null"
+        )
+    else:
+        weight_context = f"{context}: cgroup CPU weight hierarchy"
+        cgroup_version = _required_integer(
+            weight_hierarchy_raw,
+            name="version",
+            context=weight_context,
+        )
+        if cgroup_version not in (1, 2):
+            raise ValueError(f"{weight_context}: version must be 1 or 2")
+        weights_raw = weight_hierarchy_raw.get("child_to_root")
+        minimum_weight, maximum_weight = (
+            (2, 262_144) if cgroup_version == 1 else (0, 10_000)
+        )
+        if not isinstance(weights_raw, list) or not all(
+            type(weight) is int and minimum_weight <= weight <= maximum_weight
+            for weight in weights_raw
+        ):
+            raise TypeError(
+                f"{weight_context}: child_to_root must be a list of valid weights"
+            )
+        if not weights_raw:
+            raise ValueError(f"{weight_context}: child_to_root must not be empty")
+        weight_hierarchy = OverheadCpuWeightHierarchyDict(
+            version=cgroup_version,
+            child_to_root=list(weights_raw),
+        )
+
     native_threadpools_raw = resources_raw.get("native_threadpools")
     if not isinstance(native_threadpools_raw, list):
         raise TypeError(f"{context}: native_threadpools must be a list")
@@ -602,6 +660,7 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         cpu_allocation=OverheadCpuAllocationDict(
             process_cpu_affinity=process_cpu_affinity,
             cgroup_cpu_bandwidth_limits=bandwidth_limits,
+            cgroup_cpu_weight_hierarchy=weight_hierarchy,
         ),
         native_threadpools=native_threadpools,
     )
@@ -637,12 +696,80 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         name="environment",
         context=context,
     )
-    environment = OverheadEnvironmentDict(
-        python=_required_string(
-            environment_raw,
-            name="python",
-            context=f"{context}: meta.environment",
+    python_raw = _required_mapping(
+        environment_raw,
+        name="python",
+        context=f"{context}: meta.environment",
+    )
+    python_context = f"{context}: meta.environment.python"
+    cache_tag = python_raw.get("cache_tag")
+    if cache_tag is not None and (not isinstance(cache_tag, str) or not cache_tag):
+        raise TypeError(f"{python_context}: cache_tag must be string or null")
+    abi_flags = python_raw.get("abi_flags")
+    if not isinstance(abi_flags, str):
+        raise TypeError(f"{python_context}: abi_flags must be a string")
+    optimize = _required_integer(
+        python_raw,
+        name="optimize",
+        context=python_context,
+    )
+    debug = _required_integer(
+        python_raw,
+        name="debug",
+        context=python_context,
+    )
+    if optimize not in (0, 1, 2):
+        raise ValueError(f"{python_context}: optimize must be 0, 1, or 2")
+    if debug not in (0, 1):
+        raise ValueError(f"{python_context}: debug must be 0 or 1")
+    py_debug = python_raw.get("py_debug")
+    if py_debug is not None and type(py_debug) is not bool:
+        raise TypeError(f"{python_context}: py_debug must be boolean or null")
+    hash_seed = _required_integer(
+        python_raw,
+        name="hash_seed",
+        context=python_context,
+    )
+    if not 0 <= hash_seed <= 4_294_967_295:
+        raise ValueError(f"{python_context}: hash_seed is outside the valid range")
+    hash_witness_raw = python_raw.get("hash_witness")
+    if (
+        not isinstance(hash_witness_raw, list)
+        or len(hash_witness_raw) != 2
+        or not all(type(value) is int for value in hash_witness_raw)
+    ):
+        raise TypeError(f"{python_context}: hash_witness must contain two integers")
+    python_runtime = OverheadPythonRuntimeDict(
+        implementation_name=_required_string(
+            python_raw,
+            name="implementation_name",
+            context=python_context,
         ),
+        implementation_version=_required_string(
+            python_raw,
+            name="implementation_version",
+            context=python_context,
+        ),
+        language_version=_required_string(
+            python_raw,
+            name="language_version",
+            context=python_context,
+        ),
+        build=_required_string(
+            python_raw,
+            name="build",
+            context=python_context,
+        ),
+        cache_tag=cache_tag,
+        abi_flags=abi_flags,
+        optimize=optimize,
+        debug=debug,
+        py_debug=py_debug,
+        hash_seed=hash_seed,
+        hash_witness=(hash_witness_raw[0], hash_witness_raw[1]),
+    )
+    environment = OverheadEnvironmentDict(
+        python=python_runtime,
         numpy=_required_string(
             environment_raw,
             name="numpy",
@@ -864,6 +991,14 @@ def _experiment_axes(
                 )
                 for limit in allocation["cgroup_cpu_bandwidth_limits"]
             ),
+            (
+                None
+                if allocation["cgroup_cpu_weight_hierarchy"] is None
+                else (
+                    allocation["cgroup_cpu_weight_hierarchy"]["version"],
+                    tuple(allocation["cgroup_cpu_weight_hierarchy"]["child_to_root"]),
+                )
+            ),
             tuple(
                 (
                     threadpool["user_api"],
@@ -882,7 +1017,13 @@ def _experiment_axes(
                 else (torch_threads["intra_op"], torch_threads["inter_op"])
             ),
         ),
-        "environment": tuple(sorted(environment.items())),
+        "environment": (
+            tuple(sorted(environment["python"].items())),
+            environment["numpy"],
+            environment["array_api_compat"],
+            environment["opt_einsum"],
+            environment.get("torch"),
+        ),
         "configuration": meta["seed"],
     }
     if metric == "instrumented_call_ms":
