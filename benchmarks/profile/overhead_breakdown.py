@@ -28,14 +28,20 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from unittest.mock import patch
 from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
+from threadpoolctl import threadpool_info
 
-from benchmarks.guardrail.policy import OVERHEAD_REPORT_SCHEMA_VERSION
+from benchmarks.guardrail.policy import (
+    OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadExecutionResourcesDict,
+    OverheadNativeThreadPoolDict,
+    OverheadTorchThreadsDict,
+)
 from benchmarks.shared import (
     einf_source_receipt_metadata,
     require_einf_source_root,
@@ -994,6 +1000,7 @@ def _to_json(
     resolved_stage_targets: dict[str, tuple[str, ...]],
     harness_source_sha256: str,
     subject_source: dict[str, str | bool | None],
+    execution_resources: OverheadExecutionResourcesDict,
 ) -> dict[str, object]:
     return {
         "schema_version": OVERHEAD_REPORT_SCHEMA_VERSION,
@@ -1007,6 +1014,7 @@ def _to_json(
                 "resolved_device": "cpu",
             },
             "host": _host_metadata(),
+            "execution_resources": execution_resources,
             "environment": _environment_metadata(backend),
             "seed": seed,
             "stages": list(STAGES),
@@ -1103,6 +1111,88 @@ def _host_metadata() -> dict[str, str | int]:
         "cpu_model": _cpu_model(),
         "logical_cpu_count": logical_cpu_count,
     }
+
+
+def _process_cpu_affinity() -> list[int] | None:
+    get_affinity = cast(
+        Callable[[int], set[int]] | None,
+        getattr(os, "sched_getaffinity", None),
+    )
+    if get_affinity is None:
+        return None
+    try:
+        affinity = sorted(get_affinity(0))
+    except OSError:
+        return None
+    if not affinity:
+        raise RuntimeError("process CPU affinity is empty")
+    return affinity
+
+
+def _native_threadpool_metadata(
+    backend: BackendName,
+) -> list[OverheadNativeThreadPoolDict]:
+    threadpools: list[OverheadNativeThreadPoolDict] = []
+    for index, raw_threadpool in enumerate(threadpool_info()):
+        context = f"native thread pool {index}"
+        required_strings: dict[str, str] = {}
+        for field_name in ("user_api", "internal_api", "prefix"):
+            value = raw_threadpool.get(field_name)
+            if not isinstance(value, str) or not value:
+                raise RuntimeError(f"{context} has no valid {field_name}")
+            required_strings[field_name] = value
+        if backend == "numpy" and required_strings["user_api"] != "blas":
+            continue
+        num_threads = raw_threadpool.get("num_threads")
+        if type(num_threads) is not int or num_threads < 1:
+            raise RuntimeError(f"{context} has no valid num_threads")
+
+        optional_strings: dict[str, str | None] = {}
+        for field_name in ("version", "threading_layer", "architecture"):
+            value = raw_threadpool.get(field_name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise RuntimeError(f"{context} has invalid {field_name}")
+            optional_strings[field_name] = value
+        threadpools.append(
+            OverheadNativeThreadPoolDict(
+                user_api=required_strings["user_api"],
+                internal_api=required_strings["internal_api"],
+                prefix=required_strings["prefix"],
+                num_threads=num_threads,
+                version=optional_strings["version"],
+                threading_layer=optional_strings["threading_layer"],
+                architecture=optional_strings["architecture"],
+            )
+        )
+    threadpools.sort(
+        key=lambda threadpool: (
+            threadpool["user_api"],
+            threadpool["internal_api"],
+            threadpool["prefix"],
+            threadpool["version"] or "",
+            threadpool["threading_layer"] or "",
+            threadpool["architecture"] or "",
+            threadpool["num_threads"],
+        )
+    )
+    return threadpools
+
+
+def _execution_resources_metadata(
+    backend: BackendName,
+) -> OverheadExecutionResourcesDict:
+    resources = OverheadExecutionResourcesDict(
+        process_cpu_affinity=_process_cpu_affinity(),
+        native_threadpools=_native_threadpool_metadata(backend),
+    )
+    if backend == "torch":
+        if torch is None:
+            raise RuntimeError("torch backend selected but torch is not installed")
+        resources["torch_threads"] = OverheadTorchThreadsDict(
+            intra_op=torch.get_num_threads(),
+            inter_op=torch.get_num_interop_threads(),
+        )
+    return resources
 
 
 def _environment_metadata(backend: BackendName) -> dict[str, str]:
@@ -1259,6 +1349,7 @@ def main() -> int:
             harness_source_sha256=receipt_harness_source,
             subject_content_sha256=subject_content_sha256,
         )
+        receipt_execution_resources = _execution_resources_metadata(backend)
         receipt_payload = _to_json(
             results,
             backend=backend,
@@ -1266,6 +1357,7 @@ def main() -> int:
             resolved_stage_targets=resolved_stage_targets,
             harness_source_sha256=receipt_harness_source,
             subject_source=receipt_subject_source,
+            execution_resources=receipt_execution_resources,
         )
         publish_receipt(args.receipt, receipt_payload)
     print(markdown)

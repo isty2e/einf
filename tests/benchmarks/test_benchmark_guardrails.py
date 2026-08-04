@@ -62,6 +62,20 @@ def _report(
                 "cpu_model": "Apple M1 Pro",
                 "logical_cpu_count": 10,
             },
+            "execution_resources": {
+                "process_cpu_affinity": None,
+                "native_threadpools": [
+                    {
+                        "user_api": "blas",
+                        "internal_api": "openblas",
+                        "prefix": "libopenblas",
+                        "num_threads": 10,
+                        "version": "0.3.30",
+                        "threading_layer": "openmp",
+                        "architecture": "VORTEX",
+                    }
+                ],
+            },
             "environment": {
                 "python": "3.11",
                 "numpy": "1.26",
@@ -494,6 +508,14 @@ def test_load_overhead_report_requires_schema_version(tmp_path: Path) -> None:
         load_overhead_report(_write_report(tmp_path, report=report))
 
 
+def test_load_overhead_report_requires_execution_resources(tmp_path: Path) -> None:
+    report = _report(call_ms=1.0)
+    del cast(dict[str, object], report["meta"])["execution_resources"]
+
+    with pytest.raises(TypeError, match="execution_resources"):
+        load_overhead_report(_write_report(tmp_path, report=report))
+
+
 def test_load_overhead_report_rejects_unsupported_schema(tmp_path: Path) -> None:
     report = _report(call_ms=1.0)
     unsupported_version = OVERHEAD_REPORT_SCHEMA_VERSION + 1
@@ -864,13 +886,29 @@ def test_compare_overhead_reports_rejects_duplicate_capture() -> None:
             "execution_target",
         ),
         (("meta", "host", "cpu_model"), "Apple M4 Max", "host"),
+        (
+            ("meta", "execution_resources", "process_cpu_affinity"),
+            [0],
+            "execution_resources",
+        ),
+        (
+            (
+                "meta",
+                "execution_resources",
+                "native_threadpools",
+                0,
+                "num_threads",
+            ),
+            1,
+            "execution_resources",
+        ),
         (("meta", "environment", "numpy"), "2.0", "environment"),
         (("meta", "seed"), 7, "configuration"),
-        (("meta", "stages"), ["__call__", "kernel"], "configuration"),
+        (("meta", "stages"), ["__call__", "kernel"], "instrumentation"),
         (
             ("meta", "resolved_stage_targets", "kernel"),
             ["einf.different_kernel"],
-            "configuration",
+            "instrumentation",
         ),
         (
             ("scenarios", 0, "cases", 0, "call_repr"),
@@ -900,6 +938,51 @@ def test_compare_overhead_reports_rejects_incompatible_experiments_before_metric
             baseline=baseline,
             candidate=candidate,
             metric="instrumented_call_ms",
+            max_regression_ratio=0.10,
+            fail_on_missing_cases=True,
+        )
+
+
+def test_unpatched_comparison_ignores_instrumentation_target_changes() -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
+    candidate["meta"]["resolved_stage_targets"]["kernel"] = ["einf.moved_kernel"]
+
+    regressions, missing_keys = compare_overhead_reports(
+        baseline=baseline,
+        candidate=candidate,
+        metric="unpatched_call_ms",
+        max_regression_ratio=0.10,
+        fail_on_missing_cases=True,
+    )
+
+    assert not regressions
+    assert not missing_keys
+
+
+def test_torch_comparison_rejects_effective_thread_count_changes() -> None:
+    baseline = _report(call_ms=1.0)
+    candidate = deepcopy(baseline)
+    candidate["meta"]["capture_id"] = str(uuid4())
+    for report in (baseline, candidate):
+        report["meta"]["execution_target"]["backend"] = "torch"
+        report["meta"]["environment"]["torch"] = "2.6"
+        report["meta"]["execution_resources"]["torch_threads"] = {
+            "intra_op": 8,
+            "inter_op": 2,
+        }
+    candidate_torch_threads = candidate["meta"]["execution_resources"].get(
+        "torch_threads"
+    )
+    assert candidate_torch_threads is not None
+    candidate_torch_threads["intra_op"] = 4
+
+    with pytest.raises(ValueError, match="execution_resources"):
+        compare_overhead_reports(
+            baseline=baseline,
+            candidate=candidate,
+            metric="unpatched_call_ms",
             max_regression_ratio=0.10,
             fail_on_missing_cases=True,
         )

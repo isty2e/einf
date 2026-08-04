@@ -13,7 +13,7 @@ from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 MetricName = Literal["unpatched_call_ms", "instrumented_call_ms"]
-OVERHEAD_REPORT_SCHEMA_VERSION = 2
+OVERHEAD_REPORT_SCHEMA_VERSION = 3
 
 
 def _required_string(
@@ -165,6 +165,33 @@ class OverheadHostDict(TypedDict):
     logical_cpu_count: int
 
 
+class OverheadNativeThreadPoolDict(TypedDict):
+    """One effective native thread pool visible to the benchmark process."""
+
+    user_api: str
+    internal_api: str
+    prefix: str
+    num_threads: int
+    version: str | None
+    threading_layer: str | None
+    architecture: str | None
+
+
+class OverheadTorchThreadsDict(TypedDict):
+    """Effective PyTorch thread counts for one capture."""
+
+    intra_op: int
+    inter_op: int
+
+
+class OverheadExecutionResourcesDict(TypedDict):
+    """Process-level CPU allocation and effective backend thread settings."""
+
+    process_cpu_affinity: list[int] | None
+    native_threadpools: list[OverheadNativeThreadPoolDict]
+    torch_threads: NotRequired[OverheadTorchThreadsDict]
+
+
 class OverheadMetaDict(TypedDict):
     """Top-level metadata section in overhead raw JSON."""
 
@@ -173,6 +200,7 @@ class OverheadMetaDict(TypedDict):
     subject_source: OverheadSourceDict
     execution_target: OverheadExecutionTargetDict
     host: OverheadHostDict
+    execution_resources: OverheadExecutionResourcesDict
     environment: OverheadEnvironmentDict
     seed: int
     stages: list[str]
@@ -412,6 +440,122 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         logical_cpu_count=logical_cpu_count,
     )
 
+    resources_raw = _required_mapping(
+        meta_raw,
+        name="execution_resources",
+        context=context,
+    )
+    affinity_raw = resources_raw.get("process_cpu_affinity")
+    if affinity_raw is None:
+        process_cpu_affinity = None
+    elif not isinstance(affinity_raw, list) or not all(
+        type(cpu_index) is int and cpu_index >= 0 for cpu_index in affinity_raw
+    ):
+        raise TypeError(f"{context}: process_cpu_affinity must be list[int] or null")
+    elif not affinity_raw or affinity_raw != sorted(set(affinity_raw)):
+        raise ValueError(
+            f"{context}: process_cpu_affinity must be non-empty, sorted, and unique"
+        )
+    else:
+        process_cpu_affinity = list(affinity_raw)
+
+    native_threadpools_raw = resources_raw.get("native_threadpools")
+    if not isinstance(native_threadpools_raw, list):
+        raise TypeError(f"{context}: native_threadpools must be a list")
+    native_threadpools: list[OverheadNativeThreadPoolDict] = []
+    for index, threadpool_raw in enumerate(native_threadpools_raw):
+        threadpool_context = f"{context}: native_threadpools[{index}]"
+        if not isinstance(threadpool_raw, dict):
+            raise TypeError(f"{threadpool_context} must be an object")
+        identity = (
+            _required_string(
+                threadpool_raw,
+                name="user_api",
+                context=threadpool_context,
+            ),
+            _required_string(
+                threadpool_raw,
+                name="internal_api",
+                context=threadpool_context,
+            ),
+            _required_string(
+                threadpool_raw,
+                name="prefix",
+                context=threadpool_context,
+            ),
+        )
+        num_threads = _required_integer(
+            threadpool_raw,
+            name="num_threads",
+            context=threadpool_context,
+        )
+        if num_threads < 1:
+            raise ValueError(f"{threadpool_context}: num_threads must be positive")
+
+        optional_values: dict[str, str | None] = {}
+        for field_name in ("version", "threading_layer", "architecture"):
+            field_value = threadpool_raw.get(field_name)
+            if field_value is not None and (
+                not isinstance(field_value, str) or not field_value
+            ):
+                raise TypeError(
+                    f"{threadpool_context}: {field_name} must be string or null"
+                )
+            optional_values[field_name] = field_value
+        native_threadpools.append(
+            OverheadNativeThreadPoolDict(
+                user_api=identity[0],
+                internal_api=identity[1],
+                prefix=identity[2],
+                num_threads=num_threads,
+                version=optional_values["version"],
+                threading_layer=optional_values["threading_layer"],
+                architecture=optional_values["architecture"],
+            )
+        )
+    native_threadpools.sort(
+        key=lambda threadpool: (
+            threadpool["user_api"],
+            threadpool["internal_api"],
+            threadpool["prefix"],
+            threadpool["version"] or "",
+            threadpool["threading_layer"] or "",
+            threadpool["architecture"] or "",
+            threadpool["num_threads"],
+        )
+    )
+
+    execution_resources = OverheadExecutionResourcesDict(
+        process_cpu_affinity=process_cpu_affinity,
+        native_threadpools=native_threadpools,
+    )
+    if backend == "torch":
+        torch_threads_raw = _required_mapping(
+            resources_raw,
+            name="torch_threads",
+            context=context,
+        )
+        intra_op = _required_integer(
+            torch_threads_raw,
+            name="intra_op",
+            context=f"{context}: meta.execution_resources.torch_threads",
+        )
+        inter_op = _required_integer(
+            torch_threads_raw,
+            name="inter_op",
+            context=f"{context}: meta.execution_resources.torch_threads",
+        )
+        if intra_op < 1 or inter_op < 1:
+            raise ValueError(f"{context}: torch thread counts must be positive")
+        execution_resources["torch_threads"] = OverheadTorchThreadsDict(
+            intra_op=intra_op,
+            inter_op=inter_op,
+        )
+    elif "torch_threads" in resources_raw:
+        raise ValueError(
+            f"{context}: NumPy execution resources cannot include torch_threads"
+        )
+
     environment_raw = _required_mapping(
         meta_raw,
         name="environment",
@@ -495,6 +639,7 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
         ),
         "execution_target": execution_target,
         "host": host,
+        "execution_resources": execution_resources,
         "environment": environment,
         "seed": seed,
         "stages": list(stages_raw),
@@ -598,13 +743,19 @@ def load_overhead_report(path: Path) -> OverheadReportDict:
     )
 
 
-def _experiment_axes(report: OverheadReportDict) -> dict[str, object]:
+def _experiment_axes(
+    report: OverheadReportDict,
+    *,
+    metric: MetricName,
+) -> dict[str, object]:
     """Return controlled report-wide conditions in diagnostic order."""
     meta = report["meta"]
     target = meta["execution_target"]
     environment = meta["environment"]
     host = meta["host"]
-    return {
+    resources = meta["execution_resources"]
+    torch_threads = resources.get("torch_threads")
+    axes: dict[str, object] = {
         "schema": report["schema_version"],
         "harness_source": meta["harness_source_sha256"],
         "execution_target": (
@@ -618,16 +769,42 @@ def _experiment_axes(report: OverheadReportDict) -> dict[str, object]:
             host["cpu_model"],
             host["logical_cpu_count"],
         ),
+        "execution_resources": (
+            (
+                None
+                if resources["process_cpu_affinity"] is None
+                else tuple(resources["process_cpu_affinity"])
+            ),
+            tuple(
+                (
+                    threadpool["user_api"],
+                    threadpool["internal_api"],
+                    threadpool["prefix"],
+                    threadpool["num_threads"],
+                    threadpool["version"],
+                    threadpool["threading_layer"],
+                    threadpool["architecture"],
+                )
+                for threadpool in resources["native_threadpools"]
+            ),
+            (
+                None
+                if torch_threads is None
+                else (torch_threads["intra_op"], torch_threads["inter_op"])
+            ),
+        ),
         "environment": tuple(sorted(environment.items())),
-        "configuration": (
-            meta["seed"],
+        "configuration": meta["seed"],
+    }
+    if metric == "instrumented_call_ms":
+        axes["instrumentation"] = (
             tuple(meta["stages"]),
             tuple(
                 (stage, tuple(targets))
                 for stage, targets in sorted(meta["resolved_stage_targets"].items())
             ),
-        ),
-    }
+        )
+    return axes
 
 
 def _case_configurations(
@@ -658,17 +835,19 @@ def _subject_source_identity(
 
 def _require_compatible_experiments(
     reports: tuple[OverheadReportDict, ...],
+    *,
+    metric: MetricName,
 ) -> None:
     if not reports:
         return
-    expected_axes = _experiment_axes(reports[0])
+    expected_axes = _experiment_axes(reports[0], metric=metric)
     known_case_configurations: dict[tuple[str, str, str, str], tuple[str, int]] = {}
     mismatches: set[str] = set()
     capture_ids = [report["meta"]["capture_id"] for report in reports]
     if len(set(capture_ids)) != len(capture_ids):
         raise ValueError("overhead reports must come from distinct captures")
     for report in reports:
-        axes = _experiment_axes(report)
+        axes = _experiment_axes(report, metric=metric)
         mismatches.update(
             axis for axis, expected in expected_axes.items() if axes[axis] != expected
         )
@@ -762,7 +941,7 @@ def compare_overhead_reports(
     """Compare baseline/candidate overhead reports and return regressions."""
     if not _case_configurations(baseline):
         raise ValueError("baseline overhead report must contain at least one case")
-    _require_compatible_experiments((baseline, candidate))
+    _require_compatible_experiments((baseline, candidate), metric=metric)
     baseline_metrics = collect_case_metrics(baseline)
     candidate_metrics = collect_case_metrics(candidate)
     missing_keys: list[tuple[str, str, str, str]] = []
@@ -810,7 +989,8 @@ def compare_overhead_report_trials(
         raise ValueError("min_regression_count cannot exceed report pair count")
 
     _require_compatible_experiments(
-        tuple(report for report_pair in report_pairs for report in report_pair)
+        tuple(report for report_pair in report_pairs for report in report_pair),
+        metric=metric,
     )
     _require_stable_trial_sources(report_pairs)
     _require_stable_trial_case_configurations(report_pairs)

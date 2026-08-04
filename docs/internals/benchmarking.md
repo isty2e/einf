@@ -147,6 +147,7 @@ capture_overhead() {
 
   uv run --isolated --no-project \
     --with numpy \
+    --with threadpoolctl \
     --with torch \
     --with-editable "$subject_root" \
     python -m benchmarks.profile.overhead_breakdown \
@@ -642,13 +643,15 @@ python -m benchmarks.profile.lsp_latency \
 Use `benchmarks/guardrail/check_overhead.py` to compare stored raw profiler outputs and fail on unacceptable regressions.
 
 The guardrail compares latencies only when both receipts describe the same
-experiment. The profiler source, host CPU, backend and device, relevant
-dependency versions, seed, resolved instrumentation targets, and each shared
-case's call form and loop count must match. The measured `einf` source is kept
-separate: baseline and candidate revisions may differ, while repeated trials
-must keep each side on identical package contents and case coverage. Every
-trial must also come from a distinct capture. Receipts from the previous schema
-cannot be compared; capture both sides with the same current profiler.
+experiment. Both metrics require the same profiler, host CPU, process affinity,
+effective native and Torch thread counts, backend and device, relevant
+dependency versions, seed, and shared case configuration. Resolved
+instrumentation targets are compared only for `instrumented_call_ms`; they do
+not affect the unpatched timing pass. The measured `einf` source remains a
+separate axis: baseline and candidate contents may differ, while repeated trials
+must keep each side on identical package contents and case coverage. Every trial
+must also come from a distinct capture. Receipts from the previous schema cannot
+be compared; capture both sides with the same current profiler.
 
 Example:
 

@@ -6,6 +6,7 @@ import pytest
 
 from benchmarks.guardrail.policy import (
     OVERHEAD_REPORT_SCHEMA_VERSION,
+    OverheadExecutionResourcesDict,
     load_overhead_report,
 )
 from benchmarks.profile import overhead_breakdown
@@ -23,6 +24,23 @@ from benchmarks.profile.overhead_breakdown import (
 
 def _resolved_targets() -> dict[str, tuple[str, ...]]:
     return {stage: (f"einf.{stage}",) for stage in STAGES if stage != "__call__"}
+
+
+def _execution_resources() -> OverheadExecutionResourcesDict:
+    return {
+        "process_cpu_affinity": None,
+        "native_threadpools": [
+            {
+                "user_api": "blas",
+                "internal_api": "openblas",
+                "prefix": "libopenblas",
+                "num_threads": 10,
+                "version": "0.3.30",
+                "threading_layer": "openmp",
+                "architecture": "VORTEX",
+            }
+        ],
+    }
 
 
 def test_overhead_stage_targets_resolve() -> None:
@@ -97,6 +115,65 @@ def test_receipt_sources_must_remain_stable(
         )
 
 
+def test_execution_resources_capture_affinity_and_effective_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "_process_cpu_affinity",
+        lambda: [1, 3],
+    )
+    monkeypatch.setattr(
+        overhead_breakdown,
+        "threadpool_info",
+        lambda: [
+            {
+                "user_api": "blas",
+                "internal_api": "openblas",
+                "prefix": "libopenblas",
+                "num_threads": 2,
+                "version": "0.3.30",
+                "threading_layer": "openmp",
+                "architecture": "VORTEX",
+            },
+            {
+                "user_api": "openmp",
+                "internal_api": "openmp",
+                "prefix": "libomp",
+                "num_threads": 8,
+                "version": None,
+                "threading_layer": None,
+                "architecture": None,
+            },
+        ],
+    )
+
+    class Torch:
+        @staticmethod
+        def get_num_threads() -> int:
+            return 4
+
+        @staticmethod
+        def get_num_interop_threads() -> int:
+            return 2
+
+    monkeypatch.setattr(overhead_breakdown, "torch", Torch)
+
+    resources = overhead_breakdown._execution_resources_metadata("torch")
+    numpy_resources = overhead_breakdown._execution_resources_metadata("numpy")
+
+    assert resources["process_cpu_affinity"] == [1, 3]
+    assert [pool["user_api"] for pool in resources["native_threadpools"]] == [
+        "blas",
+        "openmp",
+    ]
+    assert resources.get("torch_threads") == {"intra_op": 4, "inter_op": 2}
+    assert [pool["user_api"] for pool in numpy_resources["native_threadpools"]] == [
+        "blas"
+    ]
+    assert "torch_threads" not in numpy_resources
+
+
 def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
     result = (
         ScenarioResult(
@@ -142,6 +219,7 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
             "git_dirty": False,
             "content_sha256": "1" * 64,
         },
+        execution_resources=_execution_resources(),
     )
     path = tmp_path / "report.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -185,6 +263,7 @@ def test_guardrail_loader_accepts_residual_field(tmp_path: Path) -> None:
                 "cpu_model": "Apple M1 Pro",
                 "logical_cpu_count": 10,
             },
+            "execution_resources": _execution_resources(),
             "environment": {
                 "python": "3.11",
                 "numpy": "1.26",
