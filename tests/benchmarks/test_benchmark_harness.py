@@ -668,6 +668,35 @@ def test_numpy_profiler_restores_duplicate_input_writeability() -> None:
     assert input_array.flags.writeable
 
 
+@pytest.mark.parametrize("view_first", [True, False])
+def test_numpy_input_guard_restores_writable_base_and_view(
+    *,
+    view_first: bool,
+) -> None:
+    base = np.arange(4, dtype=np.float32)
+    view = base[1:]
+    batch = (view, base) if view_first else (base, view)
+
+    with BackendSpec(name="numpy").preserve_input_batch(batch):
+        pass
+
+    assert base.flags.writeable
+    assert view.flags.writeable
+
+
+def test_numpy_input_guard_restores_read_only_base_before_writable_view() -> None:
+    base = np.arange(4, dtype=np.float32)
+    view = base[1:]
+    base.setflags(write=False)
+    assert view.flags.writeable
+
+    with BackendSpec(name="numpy").preserve_input_batch((view,)):
+        pass
+
+    assert not base.flags.writeable
+    assert view.flags.writeable
+
+
 def test_numpy_input_guard_restores_state_after_partial_setup_failure() -> None:
     input_array = np.asarray([1.0], dtype=np.float32)
     invalid_input = cast(Array, SimpleNamespace())

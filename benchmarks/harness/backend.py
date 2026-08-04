@@ -133,8 +133,8 @@ class BackendSpec:
         """Prevent or detect runner mutation without copying input tensors."""
         if self.name == "numpy":
             numpy_batch: list[NumpyArray] = []
-            original_writeable: list[bool] = []
             protected_ids: set[int] = set()
+            restoration_state: dict[int, tuple[NumpyArray, bool]] = {}
             try:
                 for index, value in enumerate(batch):
                     if not isinstance(value, np.ndarray):
@@ -146,7 +146,14 @@ class BackendSpec:
                         continue
                     protected_ids.add(id(value))
                     numpy_batch.append(value)
-                    original_writeable.append(bool(value.flags.writeable))
+
+                    current: object | None = value
+                    while isinstance(current, np.ndarray):
+                        restoration_state.setdefault(
+                            id(current),
+                            (current, bool(current.flags.writeable)),
+                        )
+                        current = current.base
                     value.setflags(write=False)
 
                 yield
@@ -157,12 +164,26 @@ class BackendSpec:
                             f"at index {index}"
                         )
             finally:
-                for value, writeable in zip(
-                    numpy_batch,
-                    original_writeable,
-                    strict=True,
-                ):
-                    value.setflags(write=writeable)
+                restoration = list(restoration_state.values())
+
+                def base_depth(item: tuple[NumpyArray, bool]) -> int:
+                    depth = 0
+                    base = item[0].base
+                    while isinstance(base, np.ndarray):
+                        depth += 1
+                        base = base.base
+                    return depth
+
+                restoration.sort(key=base_depth)
+                for value, writeable in restoration:
+                    try:
+                        value.setflags(write=True)
+                    except ValueError:
+                        if writeable:
+                            raise
+                for value, writeable in reversed(restoration):
+                    if not writeable:
+                        value.setflags(write=False)
             return
 
         if torch is None:
