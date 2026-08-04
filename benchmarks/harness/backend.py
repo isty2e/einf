@@ -1,4 +1,5 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from importlib import import_module
@@ -126,6 +127,94 @@ class BackendSpec:
     def synchronize(self) -> None:
         """Wait until work submitted to the execution target is complete."""
         self._synchronize()
+
+    @contextmanager
+    def preserve_input_batch(self, batch: tuple[Array, ...]) -> Iterator[None]:
+        """Prevent or detect runner mutation without copying input tensors."""
+        if self.name == "numpy":
+            numpy_batch: list[NumpyArray] = []
+            protected_ids: set[int] = set()
+            restoration_state: dict[int, tuple[NumpyArray, bool]] = {}
+            try:
+                for index, value in enumerate(batch):
+                    if not isinstance(value, np.ndarray):
+                        raise TypeError(
+                            "numpy benchmark input has an unsupported type at "
+                            f"index {index}: {type(value)!r}"
+                        )
+                    if id(value) in protected_ids:
+                        continue
+                    protected_ids.add(id(value))
+                    numpy_batch.append(value)
+
+                    current: object | None = value
+                    while isinstance(current, np.ndarray):
+                        restoration_state.setdefault(
+                            id(current),
+                            (current, bool(current.flags.writeable)),
+                        )
+                        current = current.base
+                    value.setflags(write=False)
+
+                yield
+                for index, value in enumerate(numpy_batch):
+                    if value.flags.writeable:
+                        raise RuntimeError(
+                            "numpy benchmark runner removed input write protection "
+                            f"at index {index}"
+                        )
+            finally:
+                restoration = list(restoration_state.values())
+
+                def base_depth(item: tuple[NumpyArray, bool]) -> int:
+                    depth = 0
+                    base = item[0].base
+                    while isinstance(base, np.ndarray):
+                        depth += 1
+                        base = base.base
+                    return depth
+
+                restoration.sort(key=base_depth)
+                for value, writeable in restoration:
+                    try:
+                        value.setflags(write=True)
+                    except ValueError:
+                        if writeable:
+                            raise
+                for value, writeable in reversed(restoration):
+                    if not writeable:
+                        value.setflags(write=False)
+            return
+
+        if torch is None:
+            raise RuntimeError("torch benchmark target is not resolved")
+
+        torch_batch = []
+        versions: list[int] = []
+        for index, value in enumerate(batch):
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    "torch benchmark input has an unsupported type at "
+                    f"index {index}: {type(value)!r}"
+                )
+            try:
+                version = value._version
+            except RuntimeError as error:
+                raise RuntimeError(
+                    "torch benchmark input does not expose a mutation version "
+                    f"at index {index}"
+                ) from error
+            torch_batch.append(value)
+            versions.append(version)
+
+        yield
+        for index, (value, version) in enumerate(
+            zip(torch_batch, versions, strict=True)
+        ):
+            if value._version != version:
+                raise RuntimeError(
+                    f"torch benchmark runner mutated input at index {index}"
+                )
 
     def to_backend_batch(
         self,

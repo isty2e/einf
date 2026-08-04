@@ -393,11 +393,23 @@ What matters here:
   summaries and paired comparisons,
 - one target batch is materialized per paired coordinate and shared by all
   libraries,
+- runners borrow that batch as immutable input; NumPy write protection blocks
+  ordinary in-place writes, while PyTorch version-counter checks stop the
+  coordinate after an in-place tensor operation,
 - host and target inputs are released before the next coordinate,
 - every distinct measured coordinate is numerically checked after timing and
   before report generation,
 - repeats regenerate the same logical unit from its recorded seed, and each
   receipt includes the realized input shapes.
+
+Input-integrity checks do not duplicate the batch. NumPy temporarily changes
+array writeability flags and restores them after each call. PyTorch reads each
+tensor's host-side version counter before the call and again after the target
+has synchronized. Both operations are outside the timed interval; they add no
+accelerator work or device-to-host transfer. This keeps live tensor storage
+bounded to the current coordinate. These checks enforce the runner contract
+through the backends' standard mutation paths; custom code that deliberately
+bypasses backend tracking through raw storage access is unsupported.
 
 ### Paired evidence contract
 

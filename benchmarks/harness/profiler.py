@@ -41,15 +41,16 @@ class Profiler:
         validate_output: Callable[[Output], None],
     ) -> float:
         """Measure one call and validate its exact output after the timer stops."""
-        self.backend.synchronize()
-        started = time.perf_counter()
-        try:
-            output = runner(batch)
-        except Exception:
+        with self.backend.preserve_input_batch(batch):
             self.backend.synchronize()
-            raise
-        self.backend.synchronize()
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            try:
+                output = runner(batch)
+            except Exception:
+                self.backend.synchronize()
+                raise
+            self.backend.synchronize()
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.backend.validate_output_target(output)
         validate_output(output)
         return elapsed_ms

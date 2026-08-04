@@ -616,8 +616,9 @@ def _run_dynamic_case(
                 offset=batch_index,
             )
             for name in batch_order:
-                output = runners[name](batch)
-                backend.synchronize()
+                with backend.preserve_input_batch(batch):
+                    output = runners[name](batch)
+                    backend.synchronize()
                 backend.validate_output_target(output)
                 del output
             del batch

@@ -217,6 +217,26 @@ def test_fixed_runner_rejects_wrong_timed_output_after_correct_warmup() -> None:
         )
 
 
+def test_fixed_runner_rejects_input_mutation_during_warmup() -> None:
+    backend = BackendSpec(name="numpy")
+    inputs = (np.asarray([1.0], dtype=np.float32),)
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        array = batch[0]
+        assert isinstance(array, np.ndarray)
+        array.fill(0.0)
+        return array
+
+    with pytest.raises(ValueError, match="read-only"):
+        _single_library_runner(backend=backend)._warmup_coordinate(
+            runners={"einf": run},
+            batch=inputs,
+            order=("einf",),
+        )
+
+    assert inputs[0].flags.writeable
+
+
 def test_fixed_runner_isolates_reference_from_measured_inputs() -> None:
     measured_inputs: list[np.ndarray] = []
 
@@ -614,6 +634,148 @@ def test_profiler_measure_call_synchronizes_around_timed_call(
         "validate",
     ]
     assert elapsed_ms == pytest.approx(4.0)
+
+
+def test_numpy_profiler_detects_runner_that_removes_input_protection() -> None:
+    input_array = np.asarray([1.0], dtype=np.float32)
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        array = batch[0]
+        assert isinstance(array, np.ndarray)
+        array.setflags(write=True)
+        array.fill(0.0)
+        return array
+
+    with pytest.raises(RuntimeError, match="removed input write protection"):
+        Profiler(backend=BackendSpec(name="numpy")).measure_call(
+            runner=run,
+            batch=(input_array,),
+            validate_output=lambda _: None,
+        )
+
+    assert input_array.flags.writeable
+
+
+def test_numpy_profiler_restores_duplicate_input_writeability() -> None:
+    input_array = np.asarray([1.0], dtype=np.float32)
+
+    Profiler(backend=BackendSpec(name="numpy")).measure_call(
+        runner=lambda batch: batch[0],
+        batch=(input_array, input_array),
+        validate_output=lambda _: None,
+    )
+
+    assert input_array.flags.writeable
+
+
+@pytest.mark.parametrize("view_first", [True, False])
+def test_numpy_input_guard_restores_writable_base_and_view(
+    *,
+    view_first: bool,
+) -> None:
+    base = np.arange(4, dtype=np.float32)
+    view = base[1:]
+    batch = (view, base) if view_first else (base, view)
+
+    with BackendSpec(name="numpy").preserve_input_batch(batch):
+        pass
+
+    assert base.flags.writeable
+    assert view.flags.writeable
+
+
+def test_numpy_input_guard_restores_read_only_base_before_writable_view() -> None:
+    base = np.arange(4, dtype=np.float32)
+    view = base[1:]
+    base.setflags(write=False)
+    assert view.flags.writeable
+
+    with BackendSpec(name="numpy").preserve_input_batch((view,)):
+        pass
+
+    assert not base.flags.writeable
+    assert view.flags.writeable
+
+
+def test_numpy_input_guard_restores_state_after_partial_setup_failure() -> None:
+    input_array = np.asarray([1.0], dtype=np.float32)
+    invalid_input = cast(Array, SimpleNamespace())
+
+    with (
+        pytest.raises(TypeError, match="unsupported type at index 1"),
+        BackendSpec(name="numpy").preserve_input_batch((input_array, invalid_input)),
+    ):
+        pass
+
+    assert input_array.flags.writeable
+
+
+def test_torch_profiler_detects_in_place_input_mutation() -> None:
+    if backend_module.torch is None:
+        pytest.skip("torch is not installed")
+
+    backend = BackendSpec(name="torch")
+    input_tensor = backend_module.torch.tensor(
+        [1.0], dtype=backend_module.torch.float32
+    )
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        value = batch[0]
+        assert not isinstance(value, np.ndarray)
+        value.add_(1.0)
+        return value
+
+    with pytest.raises(RuntimeError, match="mutated input at index 0"):
+        Profiler(backend=backend).measure_call(
+            runner=run,
+            batch=(input_tensor,),
+            validate_output=lambda _: None,
+        )
+
+
+def test_torch_profiler_detects_mutation_without_real_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeDevice:
+        type = "cpu"
+
+        def __str__(self) -> str:
+            return "cpu"
+
+    class FakeTensor:
+        def __init__(self, device: FakeDevice) -> None:
+            self.device = device
+            self._version = 0
+
+        def add_(self, value: float) -> "FakeTensor":
+            _ = value
+            self._version += 1
+            return self
+
+    resolved_device = FakeDevice()
+    monkeypatch.setattr(
+        backend_module,
+        "torch",
+        SimpleNamespace(
+            Tensor=FakeTensor,
+            cpu=SimpleNamespace(synchronize=lambda device: None),
+            device=lambda label: resolved_device,
+            empty=lambda size, *, device: FakeTensor(device),
+        ),
+    )
+    backend = BackendSpec(name="torch")
+    input_tensor = FakeTensor(resolved_device)
+
+    def run(batch: tuple[Array, ...]) -> Output:
+        value = cast(FakeTensor, batch[0])
+        return cast(Output, value.add_(1.0))
+
+    with pytest.raises(RuntimeError, match="mutated input at index 0"):
+        Profiler(backend=backend).measure_call(
+            runner=run,
+            batch=cast(tuple[Array, ...], (input_tensor,)),
+            validate_output=lambda _: None,
+        )
 
 
 def test_profiler_releases_timed_output_after_validation() -> None:

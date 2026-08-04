@@ -321,7 +321,7 @@ def test_validate_output_uses_runner_specific_reference() -> None:
     )
 
 
-def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None:
+def test_run_dynamic_case_rejects_runner_input_mutation() -> None:
     case = _case()
     target = case.target
 
@@ -352,7 +352,7 @@ def test_run_dynamic_case_validates_against_unmodified_canonical_batch() -> None
         runner_specs=(mutating_target, *case.runner_specs[1:]),
     )
 
-    with pytest.raises(ValueError, match="value mismatch"):
+    with pytest.raises(ValueError, match="read-only"):
         _run_dynamic_case(
             case=mutation_case,
             config=DynamicTaskConfig(
