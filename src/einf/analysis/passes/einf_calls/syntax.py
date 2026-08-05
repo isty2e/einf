@@ -246,7 +246,10 @@ def _parse_side_spec(
         diagnostics.append(
             _diagnostic(
                 code=_ANALYSIS_SIDE_SPEC_ERROR,
-                message="side specification must contain at least one ax[...] entry",
+                message=(
+                    "side specification must contain at least one ax[...] entry; "
+                    "use ax[()] for an empty side"
+                ),
                 span=context.span_from_ast_node(expr),
             )
         )

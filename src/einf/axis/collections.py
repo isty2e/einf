@@ -150,10 +150,14 @@ class AxisSide(tuple[AxisTerms, ...]):
             return cls((spec.normalize(),))
 
         if spec == ():
-            return cls((AxisTerms(()),))
+            raise TypeError(f"{side_name} empty side must be written as ax[()]")
 
         normalized_side: list[AxisTerms] = []
         for axis_terms in spec:
+            if not isinstance(axis_terms, AxisTerms) and axis_terms == ():
+                raise TypeError(
+                    f"{side_name} empty side entry must be written as ax[()]"
+                )
             try:
                 normalized_side.append(AxisTerms.from_spec(axis_terms))
             except (TypeError, ValueError) as exc:
