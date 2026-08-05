@@ -453,6 +453,12 @@ def test_unknown_intermediate_method_stops_with_sizes_chain_analysis() -> None:
     assert len(n_tokens) == 2
 
 
+def test_side_spec_accepts_canonical_empty_form() -> None:
+    result = _analyze("rearrange(ax[()], ax[()])\n")
+    assert result.diagnostics == ()
+    assert result.axis_tokens == ()
+
+
 def test_side_spec_rejects_empty_tuple_with_span_text() -> None:
     source = "rearrange((), ax[b, n])\n"
     result = _analyze(source)

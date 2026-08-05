@@ -379,12 +379,16 @@ def test_tensorop_inflate_overflow_arity_raises_multi_input_not_allowed() -> Non
     assert error.value.external_code == "MULTI_INPUT_NOT_ALLOWED"
 
 
-def test_rearrange_constructor_normalizes_empty_axis_list_spelling() -> None:
-    op_single = rearrange.__call__((), ())
-    op_tuple = rearrange.__call__(((),), ((),))
+def test_rearrange_constructor_rejects_bare_empty_tuple_side_spec() -> None:
+    (b,) = axes("b")
+    for bad_spec in ((), ((),), (ax[b], ())):
+        with pytest.raises(TypeError, match="must be written as ax"):
+            _ = rearrange.__call__(bad_spec, ax[b])
 
-    assert op_single.lhs == ((),)
-    assert op_single.rhs == ((),)
+    op = rearrange.__call__(ax[()], ax[()])
+    assert op.lhs == ((),)
+    assert op.rhs == ((),)
+    op_tuple = rearrange.__call__((ax[()],), (ax[()],))
     assert op_tuple.lhs == ((),)
     assert op_tuple.rhs == ((),)
 
