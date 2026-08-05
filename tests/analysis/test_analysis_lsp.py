@@ -12,6 +12,7 @@ from einf.analysis.lsp import (
     path_from_uri,
 )
 from einf.analysis.model import TextPosition, TextSpan
+from einf.analysis.parser import LibCstParserBackend, ParserUnavailableError
 
 VALID_SOURCE = """from einf import ax, axes, rearrange\nb = axes(\"b\")[0]\nrearrange(ax[b], ax[b])\n"""
 INVALID_SOURCE = """from einf import ax, axes, reduce\nb, n, z = axes(\"b\", \"n\", \"z\")\nreduce(ax[b, n], ax[b, z])\n"""
@@ -112,6 +113,49 @@ def test_lsp_service_analyzes_non_file_document_in_memory() -> None:
     assert skipped.report.diagnostics == ()
     assert skipped.report.axis_tokens == ()
     assert skipped.report.failures == ()
+
+
+def test_lsp_service_untitled_parse_error_reports_in_memory_path() -> None:
+    service = LspService()
+
+    state = service.analyze_document(
+        uri="untitled:Untitled-broken",
+        source="from einf import rearrange\nrearrange(\n",
+        version=1,
+    )
+
+    assert state.report.path == "<in-memory>"
+    assert state.report.diagnostics == ()
+    assert len(state.report.failures) == 1
+    assert state.report.failures[0].kind == "parse_error"
+
+
+def test_lsp_service_untitled_reports_unavailable_parser(
+    monkeypatch,
+) -> None:
+    def fail_validate_available(self) -> None:
+        raise ParserUnavailableError(
+            backend="libcst",
+            message="libcst parser backend requires libcst",
+        )
+
+    monkeypatch.setattr(
+        LibCstParserBackend,
+        "validate_available",
+        fail_validate_available,
+    )
+    service = LspService(parser="libcst")
+
+    state = service.analyze_document(
+        uri="untitled:Untitled-unavailable",
+        source=VALID_SOURCE,
+        version=1,
+    )
+
+    assert state.report.path == "<in-memory>"
+    assert state.report.diagnostics == ()
+    assert len(state.report.failures) == 1
+    assert state.report.failures[0].kind == "parser_unavailable"
 
 
 def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) -> None:
