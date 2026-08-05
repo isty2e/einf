@@ -1,19 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
-from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextSpan
-
-ValidationFailureKind = Literal["read_error", "parse_error", "parser_unavailable"]
-
-
-@dataclass(frozen=True, slots=True)
-class ValidationFailure:
-    """Validator-level file failure outside DSL semantic diagnostics."""
-
-    kind: ValidationFailureKind
-    message: str
-    span: TextSpan | None
+from einf.analysis.checkers import CheckerFailure
+from einf.analysis.report import AnalysisFileReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,21 +15,6 @@ class ValidationDiscoveryFailure:
 
 
 @dataclass(frozen=True, slots=True)
-class ValidationFileReport:
-    """Machine-readable validation result for one analyzed path."""
-
-    path: str
-    diagnostics: tuple[AnalysisDiagnostic, ...]
-    checker_diagnostics: tuple[CheckerDiagnostic, ...]
-    axis_tokens: tuple[AxisToken, ...]
-    failures: tuple[ValidationFailure, ...]
-
-    def has_errors(self) -> bool:
-        """Return whether this file report contains diagnostics or failures."""
-        return bool(self.diagnostics or self.checker_diagnostics or self.failures)
-
-
-@dataclass(frozen=True, slots=True)
 class ValidationReport:
     """Stable machine-readable validator output bundle."""
 
@@ -48,7 +22,7 @@ class ValidationReport:
     parser_backend: str
     checker_failures: tuple[CheckerFailure, ...]
     discovery_failures: tuple[ValidationDiscoveryFailure, ...]
-    files: tuple[ValidationFileReport, ...]
+    files: tuple[AnalysisFileReport, ...]
 
     def exit_code(self) -> int:
         """Return process exit code for this validation report."""
@@ -59,8 +33,5 @@ class ValidationReport:
 
 __all__ = [
     "ValidationDiscoveryFailure",
-    "ValidationFailure",
-    "ValidationFailureKind",
-    "ValidationFileReport",
     "ValidationReport",
 ]

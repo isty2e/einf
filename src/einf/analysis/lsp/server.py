@@ -10,7 +10,7 @@ from einf.analysis.checkers import (
     build_checker_adapters,
 )
 from einf.analysis.model import DiagnosticSeverity, TextSpan
-from einf.analysis.validator.model import ValidationFileReport
+from einf.analysis.report import AnalysisFileReport
 
 from .analysis_queue import DocumentAnalysisRequest, LspAnalysisQueue
 from .change_debounce import LspChangeDebouncer, PendingDocumentChange
@@ -394,7 +394,7 @@ def _build_checker_coordinator(config: LspConfig) -> LspCheckerCoordinator:
 
 
 def _build_diagnostics(
-    report: ValidationFileReport,
+    report: AnalysisFileReport,
     *,
     position_codec: LspPositionCodec,
 ) -> list[lsp.Diagnostic]:

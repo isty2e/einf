@@ -8,12 +8,9 @@ from einf.analysis.checkers import (
     CheckerExecutionPolicy,
     build_checker_adapters,
 )
+from einf.analysis.parser import SUPPORTED_PARSER_NAMES, build_parser_backend
 from einf.analysis.validator.json_projection import project_validation_report
-from einf.analysis.validator.run import (
-    SUPPORTED_PARSER_NAMES,
-    build_parser_backend,
-    run_validation,
-)
+from einf.analysis.validator.run import run_validation
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

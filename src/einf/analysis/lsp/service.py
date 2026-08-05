@@ -4,9 +4,13 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from einf.analysis.checkers import CheckerResult
+from einf.analysis.engine import analyze_source
 from einf.analysis.parser import ParserBackend, ParserUnavailableError
-from einf.analysis.validator.model import ValidationFailure, ValidationFileReport
-from einf.analysis.validator.run import analyze_source, build_parser_backend
+from einf.analysis.parser.factory import build_parser_backend
+from einf.analysis.report import (
+    AnalysisFileReport,
+    parser_unavailable_report,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +21,7 @@ class LspDocumentState:
     path: Path | None
     version: int | None
     source: str
-    semantic_report: ValidationFileReport
+    semantic_report: AnalysisFileReport
     checker_result: CheckerResult | None = None
     _source_lines: tuple[str, ...] | None = field(
         default=None,
@@ -41,7 +45,7 @@ class LspDocumentState:
         return lines
 
     @property
-    def report(self) -> ValidationFileReport:
+    def report(self) -> AnalysisFileReport:
         """Project semantic and checker state into one LSP-facing report."""
         if self.checker_result is None or self.path is None:
             return self.semantic_report
@@ -150,19 +154,13 @@ class LspService:
         *,
         path: Path | None,
         source: str,
-    ) -> ValidationFileReport:
+    ) -> AnalysisFileReport:
         if path is None:
-            return _empty_file_report(path="")
+            path = _IN_MEMORY_PATH
         if self._parser_unavailable_error is not None:
-            return _empty_file_report(
-                path=str(path),
-                failures=(
-                    ValidationFailure(
-                        kind="parser_unavailable",
-                        message=self._parser_unavailable_error.message,
-                        span=None,
-                    ),
-                ),
+            return parser_unavailable_report(
+                path=path,
+                error=self._parser_unavailable_error,
             )
         if not _source_may_contain_einf_calls(source):
             return _empty_file_report(path=str(path))
@@ -171,6 +169,9 @@ class LspService:
             path=path,
             parser_backend=self._parser_backend,
         )
+
+
+_IN_MEMORY_PATH = Path("<in-memory>")
 
 
 def path_from_uri(uri: str) -> Path | None:
@@ -190,17 +191,13 @@ def _source_may_contain_einf_calls(source: str) -> bool:
     return "einf" in source
 
 
-def _empty_file_report(
-    *,
-    path: str,
-    failures: tuple[ValidationFailure, ...] = (),
-) -> ValidationFileReport:
-    return ValidationFileReport(
+def _empty_file_report(*, path: str) -> AnalysisFileReport:
+    return AnalysisFileReport(
         path=path,
         diagnostics=(),
         checker_diagnostics=(),
         axis_tokens=(),
-        failures=failures,
+        failures=(),
     )
 
 

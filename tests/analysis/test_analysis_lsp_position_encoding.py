@@ -18,7 +18,7 @@ from einf.analysis.lsp import (
 from einf.analysis.lsp.position_codec import LspPositionCodec
 from einf.analysis.lsp.server import _publish_document_state, build_server
 from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextPosition, TextSpan
-from einf.analysis.validator.model import ValidationFileReport
+from einf.analysis.report import AnalysisFileReport
 
 _SOURCE = "한😋axis\n"
 _AXIS_SPAN = TextSpan(
@@ -253,7 +253,7 @@ def test_server_features_share_the_negotiated_position_codec(
         path=Path("/workspace/sample.py"),
         version=1,
         source=_SOURCE,
-        semantic_report=ValidationFileReport(
+        semantic_report=AnalysisFileReport(
             path="/workspace/sample.py",
             diagnostics=(diagnostic,),
             checker_diagnostics=(),
@@ -327,7 +327,7 @@ def test_empty_diagnostic_publish_skips_position_indexing(
         path=Path("/workspace/irrelevant.py"),
         version=1,
         source="value = 1\n",
-        semantic_report=ValidationFileReport(
+        semantic_report=AnalysisFileReport(
             path="/workspace/irrelevant.py",
             diagnostics=(),
             checker_diagnostics=(),

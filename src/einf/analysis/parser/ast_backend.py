@@ -96,6 +96,7 @@ class AstParserBackend:
             source=source,
             nodes=tuple(nodes),
             root_id=root_id,
+            stdlib_module=module_node,
         )
 
     def reparse(
