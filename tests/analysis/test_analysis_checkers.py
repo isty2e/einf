@@ -600,6 +600,61 @@ def test_zuban_adapter_rejects_nonzero_summary_without_diagnostics(
     assert result.failures[0].kind == "output_parse_error"
 
 
+def test_zuban_adapter_places_targets_after_end_of_options(tmp_path: Path) -> None:
+    target = tmp_path / "-sample.py"
+
+    command = ZubanAdapter().build_command(
+        CheckerRequest(targets=(target,), project_root=tmp_path)
+    )
+
+    assert command == (
+        "zuban",
+        "check",
+        "--no-pretty",
+        "--show-column-numbers",
+        "--show-error-end",
+        "--show-error-codes",
+        "--",
+        "-sample.py",
+    )
+
+
+def test_zuban_adapter_checks_option_shaped_filename_without_option_injection(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "zuban"
+    captured = tmp_path / "captured-argv.json"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"with open({str(captured)!r}, 'w', encoding='utf-8') as stream:\n"
+        "    json.dump(sys.argv[1:], stream)\n"
+        "print('Success: no issues found in 1 source file')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    target = tmp_path / "-sample.py"
+    target.write_text("value: int = 1\n", encoding="utf-8")
+
+    result = _run_adapter(
+        ZubanAdapter(executable=str(executable)),
+        target=target,
+        project_root=tmp_path,
+    )
+
+    assert result.diagnostics == ()
+    assert result.failures == ()
+    assert json.loads(captured.read_text(encoding="utf-8")) == [
+        "check",
+        "--no-pretty",
+        "--show-column-numbers",
+        "--show-error-end",
+        "--show-error-codes",
+        "--",
+        "-sample.py",
+    ]
+
+
 def test_run_validation_merges_checker_diagnostics_and_failures(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     target.write_text(

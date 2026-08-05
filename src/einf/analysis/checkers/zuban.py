@@ -42,11 +42,12 @@ class ZubanAdapter(CheckerAdapter):
         return (
             self.executable,
             "check",
-            *target_arguments,
             "--no-pretty",
             "--show-column-numbers",
             "--show-error-end",
             "--show-error-codes",
+            "--",
+            *target_arguments,
         )
 
     def parse_output(
