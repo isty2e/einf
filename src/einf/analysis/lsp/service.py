@@ -8,7 +8,6 @@ from einf.analysis.engine import analyze_source
 from einf.analysis.parser import ParserBackend, ParserUnavailableError
 from einf.analysis.parser.factory import build_parser_backend
 from einf.analysis.report import (
-    AnalysisFailure,
     AnalysisFileReport,
     parser_unavailable_report,
 )
@@ -192,17 +191,13 @@ def _source_may_contain_einf_calls(source: str) -> bool:
     return "einf" in source
 
 
-def _empty_file_report(
-    *,
-    path: str,
-    failures: tuple[AnalysisFailure, ...] = (),
-) -> AnalysisFileReport:
+def _empty_file_report(*, path: str) -> AnalysisFileReport:
     return AnalysisFileReport(
         path=path,
         diagnostics=(),
         checker_diagnostics=(),
         axis_tokens=(),
-        failures=failures,
+        failures=(),
     )
 
 
