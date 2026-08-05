@@ -1,5 +1,6 @@
 import ast
 import inspect
+from collections.abc import Sequence
 
 from einf.analysis.model import AnalysisDiagnostic, TextSpan
 from einf.analysis.passes.call_resolution import EINF_OP_NAMES, CallBindings
@@ -49,6 +50,21 @@ def _build_base_definition(
     )
 
 
+def _first_duplicate_keyword(
+    keywords: Sequence[ast.keyword],
+) -> str | None:
+    """Return the first repeated call keyword name in source order."""
+    seen: set[str] = set()
+    for keyword in keywords:
+        name = keyword.arg
+        if name is None:
+            continue
+        if name in seen:
+            return name
+        seen.add(name)
+    return None
+
+
 def _bind_base_call_arguments(
     *,
     op_name: str,
@@ -79,6 +95,17 @@ def _bind_base_call_arguments(
                 message=(
                     "operation constructors do not support **kwargs in static analysis"
                 ),
+                span=call_span,
+            )
+        )
+        return None
+
+    duplicate_keyword = _first_duplicate_keyword(call_expr.keywords)
+    if duplicate_keyword is not None:
+        diagnostics.append(
+            _diagnostic(
+                code=_ANALYSIS_CALL_SHAPE_ERROR,
+                message=f"duplicate keyword argument in call: {duplicate_keyword!r}",
                 span=call_span,
             )
         )
@@ -228,6 +255,17 @@ def _parse_with_sizes_call(
             _diagnostic(
                 code=_ANALYSIS_WITH_SIZES_ERROR,
                 message="with_sizes only accepts keyword bindings",
+                span=call_span,
+            )
+        )
+        return None
+
+    duplicate_keyword = _first_duplicate_keyword(call_expr.keywords)
+    if duplicate_keyword is not None:
+        diagnostics.append(
+            _diagnostic(
+                code=_ANALYSIS_WITH_SIZES_ERROR,
+                message=f"duplicate with_sizes keyword binding: {duplicate_keyword!r}",
                 span=call_span,
             )
         )

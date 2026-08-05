@@ -337,6 +337,30 @@ def test_call_shape_error_for_missing_rhs_argument() -> None:
     assert diagnostic.span is not None
 
 
+def test_base_constructor_rejects_duplicate_keyword_argument() -> None:
+    result = _analyze("rearrange(lhs=ax[b], lhs=ax[b])\n")
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert diagnostic.code == "ANALYSIS_CALL_SHAPE_ERROR"
+    assert diagnostic.message == "duplicate keyword argument in call: 'lhs'"
+    assert diagnostic.span is not None
+
+
+def test_duplicate_keyword_reports_first_repeat_in_source_order() -> None:
+    result = _analyze("rearrange(lhs=ax[b], rhs=ax[b], lhs=ax[b])\n")
+    assert len(result.diagnostics) == 1
+    assert result.diagnostics[0].message == "duplicate keyword argument in call: 'lhs'"
+
+
+def test_with_sizes_rejects_duplicate_keyword_binding() -> None:
+    result = _analyze("rearrange(ax[b], ax[b]).with_sizes(b=2, b=3)\n")
+    assert len(result.diagnostics) == 1
+    diagnostic = result.diagnostics[0]
+    assert diagnostic.code == "ANALYSIS_WITH_SIZES_ERROR"
+    assert diagnostic.message == "duplicate with_sizes keyword binding: 'b'"
+    assert diagnostic.span is not None
+
+
 def test_non_einf_calls_are_ignored() -> None:
     result = _analyze("foo(ax[b, n], ax[b, n]).with_sizes(n=3)\n")
     assert result.diagnostics == ()

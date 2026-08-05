@@ -256,6 +256,34 @@ def test_libcst_backend_matches_ast_pack_tokens_when_installed() -> None:
     assert tuple(token.kind for token in libcst_output.axis_tokens) == ("pack", "pack")
 
 
+def test_libcst_backend_rejects_duplicate_call_keywords_when_installed() -> None:
+    if importlib.util.find_spec("libcst") is None:
+        pytest.skip("libcst is not installed in this environment")
+
+    source = (
+        "from einf import rearrange\n"
+        "rearrange(lhs=ax[b], lhs=ax[b])\n"
+        "rearrange(ax[b], ax[b]).with_sizes(b=2, b=3)\n"
+    )
+    ast_output = analyze_module(
+        source=source,
+        path=Path("sample.py"),
+        parser_backend=AstParserBackend(),
+    )
+    libcst_output = analyze_module(
+        source=source,
+        path=Path("sample.py"),
+        parser_backend=LibCstParserBackend(),
+    )
+
+    assert libcst_output.diagnostics == ast_output.diagnostics
+    assert libcst_output.axis_tokens == ast_output.axis_tokens
+    assert tuple(item.code for item in ast_output.diagnostics) == (
+        "ANALYSIS_CALL_SHAPE_ERROR",
+        "ANALYSIS_WITH_SIZES_ERROR",
+    )
+
+
 def test_libcst_backend_normalizes_syntax_error_when_installed() -> None:
     if importlib.util.find_spec("libcst") is None:
         pytest.skip("libcst is not installed in this environment")
