@@ -140,6 +140,13 @@ BOUNDARY_RULES = (
         rationale="static analysis should use canonical definitions rather than executable TensorOp objects",
     ),
     BoundaryRule(
+        name="lsp-must-not-import-validator",
+        source_prefixes=("einf.analysis.lsp",),
+        target_prefix="einf.analysis.validator",
+        ticket="fv6c",
+        rationale="editor semantics must not couple to batch discovery and CLI policy; shared per-file models live in neutral analysis ownership",
+    ),
+    BoundaryRule(
         name="runtime-packages-must-not-import-analysis",
         source_prefixes=RUNTIME_PACKAGE_PREFIXES,
         target_prefix="einf.analysis",
@@ -178,6 +185,7 @@ def test_import_boundary_rules_cover_taxonomy_audit_targets() -> None:
         "ir-must-not-import-backend",
         "ir-must-not-import-plans",
         "ir-must-not-import-steps",
+        "lsp-must-not-import-validator",
         "operations-must-not-import-concrete-steps",
         "plans-must-not-import-concrete-lowering",
         "plans-must-not-import-operations",
