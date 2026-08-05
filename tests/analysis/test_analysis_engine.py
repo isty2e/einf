@@ -1,3 +1,4 @@
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,3 +104,28 @@ def test_analyze_module_emits_diagnostics_and_tokens_from_real_parser() -> None:
     assert len(result.diagnostics) == 1
     assert result.diagnostics[0].code == "ANALYSIS_AXIS_NOT_IN_INPUT"
     assert len(result.axis_tokens) == 3
+
+
+def test_analyze_module_reuses_backend_parse_for_call_bindings(monkeypatch) -> None:
+    source = (
+        "from einf import rearrange\n"
+        + "\n".join("rearrange(ax[b, n], ax[n, b])" for _ in range(4))
+        + "\n"
+    )
+    parse_modes: list[str | None] = []
+    real_parse = ast.parse
+
+    def counting_parse(*args, **kwargs) -> ast.Module:
+        parse_modes.append(kwargs.get("mode"))
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("ast.parse", counting_parse)
+    analyze_module(
+        source=source,
+        path=Path("sample.py"),
+        parser_backend=AstParserBackend(),
+    )
+
+    full_parses = [mode for mode in parse_modes if mode is None]
+    assert len(full_parses) == 1
+    assert full_parses == [None]

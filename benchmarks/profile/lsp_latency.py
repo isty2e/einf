@@ -27,7 +27,7 @@ from einf.analysis.lsp.checker_coordinator import (
 )
 from einf.analysis.lsp.position_codec import LspPositionCodec
 from einf.analysis.model import TextPosition
-from einf.analysis.validator.model import ValidationFileReport
+from einf.analysis.report import AnalysisFileReport
 
 JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -143,7 +143,7 @@ def _default_cases() -> tuple[LspLatencyCase, ...]:
     )
 
 
-def _first_hover_position(report: ValidationFileReport) -> TextPosition:
+def _first_hover_position(report: AnalysisFileReport) -> TextPosition:
     if not report.axis_tokens:
         return TextPosition(line=1, column=0)
     return report.axis_tokens[0].span.start
@@ -279,7 +279,7 @@ def _measure_save_with_checkers(
 
 def _measure_optional_feature_latency(
     *,
-    report: ValidationFileReport,
+    report: AnalysisFileReport,
     position_codec: LspPositionCodec,
     repeats: int,
 ) -> tuple[TimingSummary | None, TimingSummary | None]:

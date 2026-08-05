@@ -1,4 +1,4 @@
-from .engine import AnalysisOutput, analyze_module
+from .engine import AnalysisOutput, analyze_module, analyze_source
 from .model import (
     AnalysisDiagnostic,
     AxisToken,
@@ -6,13 +6,18 @@ from .model import (
     TextPosition,
     TextSpan,
 )
+from .report import AnalysisFailure, AnalysisFailureKind, AnalysisFileReport
 
 __all__ = [
     "AnalysisDiagnostic",
+    "AnalysisFailure",
+    "AnalysisFailureKind",
+    "AnalysisFileReport",
     "AnalysisOutput",
     "AxisToken",
     "DiagnosticSeverity",
     "TextPosition",
     "TextSpan",
     "analyze_module",
+    "analyze_source",
 ]

@@ -9,7 +9,7 @@ from einf.analysis.lsp.analysis_queue import (
     LspAnalysisQueue,
 )
 from einf.analysis.lsp.service import LspDocumentState
-from einf.analysis.validator.model import ValidationFileReport
+from einf.analysis.report import AnalysisFileReport
 
 
 def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
@@ -18,7 +18,7 @@ def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
         path=Path(request.uri.removeprefix("file://")),
         version=request.version,
         source=request.source,
-        semantic_report=ValidationFileReport(
+        semantic_report=AnalysisFileReport(
             path=request.uri,
             diagnostics=(),
             checker_diagnostics=(),

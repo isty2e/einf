@@ -8,7 +8,7 @@ except ImportError:
     from typing_extensions import Self
 
 from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, CheckerExecutionPolicy
-from einf.analysis.validator.run import SUPPORTED_PARSER_NAMES
+from einf.analysis.parser import SUPPORTED_PARSER_NAMES
 
 InitializeOptionValue = str | int | float | Sequence[str] | None
 InitializeOptions = Mapping[str, InitializeOptionValue]

@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from einf.analysis.lsp import LspService
-from einf.analysis.validator.run import build_parser_backend, run_validation
+from einf.analysis.parser import build_parser_backend
+from einf.analysis.validator.run import run_validation
 from tests.analysis.conformance_analysis_cases import LSP_CASES, VALIDATOR_CASES
 
 

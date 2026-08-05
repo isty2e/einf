@@ -81,6 +81,39 @@ def test_path_from_uri_resolves_file_uri(tmp_path: Path) -> None:
     assert path_from_uri("untitled:sample") is None
 
 
+def test_lsp_service_analyzes_non_file_document_in_memory() -> None:
+    service = LspService()
+
+    state = service.analyze_document(
+        uri="untitled:Untitled-1",
+        source=VALID_SOURCE,
+        version=1,
+    )
+
+    assert state.path is None
+    assert state.report is state.semantic_report
+    assert state.report.path == "<in-memory>"
+    assert state.report.diagnostics == ()
+    assert state.report.failures == ()
+    assert state.report.axis_tokens
+
+    invalid = service.analyze_document(
+        uri="untitled:Untitled-2",
+        source=INVALID_SOURCE,
+        version=1,
+    )
+    assert len(invalid.report.diagnostics) == 1
+
+    skipped = service.analyze_document(
+        uri="untitled:Untitled-3",
+        source="x = 1\n",
+        version=1,
+    )
+    assert skipped.report.diagnostics == ()
+    assert skipped.report.axis_tokens == ()
+    assert skipped.report.failures == ()
+
+
 def test_lsp_service_open_and_change_analyze_in_memory_document(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     service = LspService()

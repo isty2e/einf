@@ -52,6 +52,7 @@ def analyze_einf_calls(
     """Analyze `einf` calls in one parsed module."""
     module_source = SourceText(module.source)
     call_bindings = build_call_bindings(
+        module_node=module.stdlib_module,
         source=module.source,
         path=module.path,
         source_text=module_source,

@@ -13,11 +13,13 @@ from einf.analysis.model import (
     TextPosition,
     TextSpan,
 )
+from einf.analysis.report import (
+    AnalysisFailure,
+    AnalysisFailureKind,
+    AnalysisFileReport,
+)
 from einf.analysis.validator.model import (
     ValidationDiscoveryFailure,
-    ValidationFailure,
-    ValidationFailureKind,
-    ValidationFileReport,
     ValidationReport,
 )
 
@@ -70,18 +72,18 @@ class _AxisTokenJson(TypedDict):
     group: int
 
 
-class _ValidationFailureJson(TypedDict):
-    kind: ValidationFailureKind
+class _AnalysisFailureJson(TypedDict):
+    kind: AnalysisFailureKind
     message: str
     span: _TextSpanJson | None
 
 
-class _ValidationFileReportJson(TypedDict):
+class _AnalysisFileReportJson(TypedDict):
     path: str
     diagnostics: list[_AnalysisDiagnosticJson]
     checker_diagnostics: list[_CheckerDiagnosticJson]
     axis_tokens: list[_AxisTokenJson]
-    failures: list[_ValidationFailureJson]
+    failures: list[_AnalysisFailureJson]
 
 
 class ValidationReportJson(TypedDict):
@@ -91,7 +93,7 @@ class ValidationReportJson(TypedDict):
     parser_backend: str
     checker_failures: list[_CheckerFailureJson]
     discovery_failures: list[_ValidationDiscoveryFailureJson]
-    files: list[_ValidationFileReportJson]
+    files: list[_AnalysisFileReportJson]
 
 
 def _project_text_position(position: TextPosition) -> _TextPositionJson:
@@ -165,9 +167,9 @@ def _project_axis_token(token: AxisToken) -> _AxisTokenJson:
     }
 
 
-def _project_validation_failure(
-    failure: ValidationFailure,
-) -> _ValidationFailureJson:
+def _project_analysis_failure(
+    failure: AnalysisFailure,
+) -> _AnalysisFailureJson:
     return {
         "kind": failure.kind,
         "message": failure.message,
@@ -176,8 +178,8 @@ def _project_validation_failure(
 
 
 def _project_file_report(
-    file_report: ValidationFileReport,
-) -> _ValidationFileReportJson:
+    file_report: AnalysisFileReport,
+) -> _AnalysisFileReportJson:
     return {
         "path": file_report.path,
         "diagnostics": [
@@ -192,7 +194,7 @@ def _project_file_report(
             _project_axis_token(token) for token in file_report.axis_tokens
         ],
         "failures": [
-            _project_validation_failure(failure) for failure in file_report.failures
+            _project_analysis_failure(failure) for failure in file_report.failures
         ],
     }
 

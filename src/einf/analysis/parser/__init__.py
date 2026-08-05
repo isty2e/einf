@@ -7,9 +7,11 @@ from .base import (
     ParserUnavailableError,
     TextEdit,
 )
+from .factory import SUPPORTED_PARSER_NAMES, build_parser_backend
 from .libcst_backend import LibCstParserBackend
 
 __all__ = [
+    "SUPPORTED_PARSER_NAMES",
     "AstParserBackend",
     "LibCstParserBackend",
     "ParsedModule",
@@ -18,4 +20,5 @@ __all__ = [
     "ParserSyntaxError",
     "ParserUnavailableError",
     "TextEdit",
+    "build_parser_backend",
 ]

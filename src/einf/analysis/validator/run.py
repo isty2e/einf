@@ -10,34 +10,19 @@ from einf.analysis.checkers import (
     CheckerRequest,
     CheckerResult,
 )
-from einf.analysis.engine import analyze_module
-from einf.analysis.parser import (
-    AstParserBackend,
-    LibCstParserBackend,
-    ParserBackend,
-    ParserSyntaxError,
-    ParserUnavailableError,
+from einf.analysis.engine import analyze_source
+from einf.analysis.parser import ParserBackend, ParserUnavailableError
+from einf.analysis.report import (
+    AnalysisFailure,
+    AnalysisFileReport,
+    parser_unavailable_report,
 )
 from einf.analysis.validator.model import (
     ValidationDiscoveryFailure,
-    ValidationFailure,
-    ValidationFileReport,
     ValidationReport,
 )
 
 SCHEMA_VERSION = "0.3"
-SUPPORTED_PARSER_NAMES = ("ast", "libcst")
-
-
-def build_parser_backend(parser_name: str) -> ParserBackend:
-    """Build one parser backend from validator CLI configuration."""
-    match parser_name:
-        case "ast":
-            return AstParserBackend()
-        case "libcst":
-            return LibCstParserBackend()
-        case _:
-            raise ValueError(f"unsupported parser backend: {parser_name}")
 
 
 def run_validation(
@@ -55,7 +40,7 @@ def run_validation(
         parser_backend.validate_available()
     except ParserUnavailableError as error:
         analyzer_reports = {
-            path: _parser_unavailable_report(path=path, error=error)
+            path: parser_unavailable_report(path=path, error=error)
             for path in resolved_targets
         }
     else:
@@ -212,18 +197,18 @@ def _run_checker_adapters(
 def _merge_file_report(
     *,
     path: Path,
-    analyzer_report: ValidationFileReport | None,
+    analyzer_report: AnalysisFileReport | None,
     checker_diagnostics: tuple[CheckerDiagnostic, ...],
-) -> ValidationFileReport:
+) -> AnalysisFileReport:
     if analyzer_report is None:
-        return ValidationFileReport(
+        return AnalysisFileReport(
             path=str(path),
             diagnostics=(),
             checker_diagnostics=checker_diagnostics,
             axis_tokens=(),
             failures=(),
         )
-    return ValidationFileReport(
+    return AnalysisFileReport(
         path=analyzer_report.path,
         diagnostics=analyzer_report.diagnostics,
         checker_diagnostics=checker_diagnostics,
@@ -236,17 +221,17 @@ def analyze_path(
     *,
     path: Path,
     parser_backend: ParserBackend,
-) -> ValidationFileReport:
+) -> AnalysisFileReport:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        return ValidationFileReport(
+        return AnalysisFileReport(
             path=str(path),
             diagnostics=(),
             checker_diagnostics=(),
             axis_tokens=(),
             failures=(
-                ValidationFailure(
+                AnalysisFailure(
                     kind="read_error",
                     message=str(error),
                     span=None,
@@ -257,67 +242,4 @@ def analyze_path(
     return analyze_source(source=source, path=path, parser_backend=parser_backend)
 
 
-def analyze_source(
-    *,
-    source: str,
-    path: Path,
-    parser_backend: ParserBackend,
-) -> ValidationFileReport:
-    """Analyze one in-memory source string as a single file report."""
-    try:
-        output = analyze_module(source=source, path=path, parser_backend=parser_backend)
-    except ParserSyntaxError as error:
-        return _parse_error_report(path=path, error=error)
-    except ParserUnavailableError as error:
-        return _parser_unavailable_report(path=path, error=error)
-
-    return ValidationFileReport(
-        path=str(path),
-        diagnostics=output.diagnostics,
-        checker_diagnostics=(),
-        axis_tokens=output.axis_tokens,
-        failures=(),
-    )
-
-
-def _parse_error_report(
-    *,
-    path: Path,
-    error: ParserSyntaxError,
-) -> ValidationFileReport:
-    return ValidationFileReport(
-        path=str(path),
-        diagnostics=(),
-        checker_diagnostics=(),
-        axis_tokens=(),
-        failures=(
-            ValidationFailure(
-                kind="parse_error",
-                message=error.message,
-                span=error.span,
-            ),
-        ),
-    )
-
-
-def _parser_unavailable_report(
-    *,
-    path: Path,
-    error: ParserUnavailableError,
-) -> ValidationFileReport:
-    return ValidationFileReport(
-        path=str(path),
-        diagnostics=(),
-        checker_diagnostics=(),
-        axis_tokens=(),
-        failures=(
-            ValidationFailure(
-                kind="parser_unavailable",
-                message=error.message,
-                span=None,
-            ),
-        ),
-    )
-
-
-__all__ = ["SCHEMA_VERSION", "build_parser_backend", "run_validation"]
+__all__ = ["SCHEMA_VERSION", "run_validation"]

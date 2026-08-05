@@ -1,3 +1,4 @@
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -44,12 +45,18 @@ class ParsedNode:
 
 @dataclass(frozen=True, slots=True)
 class ParsedModule:
-    """Backend-neutral parsed module graph."""
+    """Backend-neutral parsed module graph.
+
+    ``stdlib_module`` carries the canonical standard-library AST root when the
+    backend parses with the stdlib parser; backends with a different tree shape
+    leave it unset and the analysis layer falls back to a dedicated parse.
+    """
 
     path: Path
     source: str
     nodes: tuple[ParsedNode, ...]
     root_id: int
+    stdlib_module: ast.Module | None = None
 
     def __post_init__(self) -> None:
         if not self.nodes:

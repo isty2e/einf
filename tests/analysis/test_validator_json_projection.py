@@ -3,11 +3,10 @@ from pathlib import Path
 
 from einf.analysis.checkers import CheckerDiagnostic, CheckerFailure
 from einf.analysis.model import AnalysisDiagnostic, AxisToken, TextPosition, TextSpan
+from einf.analysis.report import AnalysisFailure, AnalysisFileReport
 from einf.analysis.validator.json_projection import project_validation_report
 from einf.analysis.validator.model import (
     ValidationDiscoveryFailure,
-    ValidationFailure,
-    ValidationFileReport,
     ValidationReport,
 )
 
@@ -35,7 +34,7 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
             ),
         ),
         files=(
-            ValidationFileReport(
+            AnalysisFileReport(
                 path="/project/sample.py",
                 diagnostics=(
                     AnalysisDiagnostic(
@@ -67,7 +66,7 @@ def test_project_validation_report_converts_every_nested_domain_value() -> None:
                     ),
                 ),
                 failures=(
-                    ValidationFailure(
+                    AnalysisFailure(
                         kind="parse_error",
                         message="parse failed",
                         span=span,

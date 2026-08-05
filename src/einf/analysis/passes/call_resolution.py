@@ -319,13 +319,15 @@ class _BindingCollector:
 
 def build_call_bindings(
     *,
+    module_node: ast.Module | None,
     source: str,
     path: Path,
     source_text: SourceText,
 ) -> dict[TextSpan, CallBindings]:
     """Build import/alias-aware binding snapshots for each call in one module."""
-    try:
-        module_node = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        return {}
+    if module_node is None:
+        try:
+            module_node = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            return {}
     return _BindingCollector(source_text).collect(module_node)
