@@ -5,9 +5,14 @@ from einf.backend import (
     ArrayNamespace,
     BackendArrayOps,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.backend.runtime import is_trusted_backend_array_ops
+from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
 from einf.signature import Signature
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep
+from einf.steps.runtime import (
+    FALLBACK_ELIGIBLE_BACKEND_ERRORS,
+    runtime_output_has_shape,
+)
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
@@ -18,6 +23,7 @@ from ..runtime import (
 from .model import ExpandSymbolicProgram
 from .runtime import (
     compile_expand_target_shape_evaluator,
+    expand_execution_error,
     run_expand_program,
 )
 from .solve import solve_expand_program_from_input_shape
@@ -40,37 +46,42 @@ class ExpandRuntimeStep(RuntimeStep[ExpandSymbolicProgram]):
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
         """Execute unary expand step and return one tensor."""
-        compiled_unary_runner = self.compiled_unary_runner
-        if compiled_unary_runner is not None:
-            compiled_output = compiled_unary_runner(tensor)
-            if compiled_output is not None:
-                return compiled_output
-
-        target_shape_evaluator = self.target_shape_evaluator
-        if target_shape_evaluator is None:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=(
-                    "inconsistent dims: expand lowering invariant violated "
-                    "(missing target-shape evaluator)"
-                ),
-                help="ensure lowering emits one resolvable unary expand program",
-                related=("expand lowering",),
-                data={"operation": "expand"},
-            )
-        target_shape = target_shape_evaluator(tensor.shape)
-        if target_shape is None:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=(
-                    "inconsistent dims: expand lowering invariant violated "
-                    "(target shape is unresolved at runtime)"
-                ),
-                help="bind required dimensions via with_sizes or one resolvable lhs shape",
-                related=("expand lowering",),
-                data={"operation": "expand"},
-            )
         try:
+            compiled_unary_runner = self.compiled_unary_runner
+            if compiled_unary_runner is not None:
+                try:
+                    compiled_output = compiled_unary_runner(tensor)
+                except TensorOpError:
+                    raise
+                except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
+                    compiled_output = None
+                if compiled_output is not None:
+                    return compiled_output
+
+            target_shape_evaluator = self.target_shape_evaluator
+            if target_shape_evaluator is None:
+                raise ValidationError(
+                    code=ErrorCode.INCONSISTENT_DIMS,
+                    message=(
+                        "inconsistent dims: expand lowering invariant violated "
+                        "(missing target-shape evaluator)"
+                    ),
+                    help="ensure lowering emits one resolvable unary expand program",
+                    related=("expand lowering",),
+                    data={"operation": "expand"},
+                )
+            target_shape = target_shape_evaluator(tensor.shape)
+            if target_shape is None:
+                raise ValidationError(
+                    code=ErrorCode.INCONSISTENT_DIMS,
+                    message=(
+                        "inconsistent dims: expand lowering invariant violated "
+                        "(target shape is unresolved at runtime)"
+                    ),
+                    help="bind required dimensions via with_sizes or one resolvable lhs shape",
+                    related=("expand lowering",),
+                    data={"operation": "expand"},
+                )
             return run_expand_program(
                 plan=self.program,
                 tensor=tensor,
@@ -78,14 +89,10 @@ class ExpandRuntimeStep(RuntimeStep[ExpandSymbolicProgram]):
                 backend_ops=self.runtime_backend_ops,
                 xp=self.runtime_xp,
             )
-        except (TypeError, ValueError, RuntimeError) as error:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=f"inconsistent dims: expand runtime failed: {error}",
-                help="ensure expand mapping is valid for the given tensor shape and backend",
-                related=("expand runtime",),
-                data={"operation": "expand"},
-            ) from error
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise expand_execution_error(error) from error
 
     def run(self, tensors: tuple[TensorLike, ...], /) -> tuple[TensorLike, ...]:
         """Execute runtime expand step."""
@@ -185,6 +192,7 @@ class ExpandSymbolicStep(AxisSideSymbolicStep[ExpandSymbolicProgram]):
         )
         backend_binding = bind_runtime_backend(
             context,
+            operation="expand",
             required_namespace_methods=("permute_dims", "expand_dims", "broadcast_to"),
             bind_namespace_when_backend_ops_available=False,
         )
@@ -208,21 +216,40 @@ class ExpandSymbolicStep(AxisSideSymbolicStep[ExpandSymbolicProgram]):
                     target_shape = target_shape_evaluator(tensor.shape)
                     if target_shape is None:
                         return None
+                    try:
+                        trusted_route = is_trusted_backend_array_ops(
+                            backend_ops=backend_ops,
+                            tensor=tensor,
+                        )
+                    except TensorOpError:
+                        raise
+                    except Exception as error:
+                        raise expand_execution_error(error) from error
+                    if not trusted_route:
+                        return run_expand_program(
+                            plan=program,
+                            tensor=tensor,
+                            target_shape=target_shape,
+                            backend_ops=backend_ops,
+                            xp=None,
+                        )
                     transformed = tensor
                     if has_non_identity_permutation:
                         transformed = permute_fn(transformed, permutation)
                     for output_index in insert_axes:
                         transformed = expand_dims_fn(transformed, output_index)
-                    return broadcast_to_fn(transformed, target_shape)
+                    output = broadcast_to_fn(transformed, target_shape)
+                    if runtime_output_has_shape(
+                        output,
+                        target_shape,
+                        operation="expand",
+                    ):
+                        return output
+                    return None
 
                 compiled_unary_runner = run_compiled_with_backend_ops
             elif backend_binding.xp is not None:
                 xp = backend_binding.xp
-                permutation = compiled_program.permutation
-                has_non_identity_permutation = (
-                    compiled_program.has_non_identity_permutation
-                )
-                insert_axes = compiled_program.insert_axes
 
                 def run_compiled_with_namespace(
                     tensor: TensorLike,
@@ -230,12 +257,13 @@ class ExpandSymbolicStep(AxisSideSymbolicStep[ExpandSymbolicProgram]):
                     target_shape = target_shape_evaluator(tensor.shape)
                     if target_shape is None:
                         return None
-                    transformed = tensor
-                    if has_non_identity_permutation:
-                        transformed = xp.permute_dims(transformed, permutation)
-                    for output_index in insert_axes:
-                        transformed = xp.expand_dims(transformed, axis=output_index)
-                    return xp.broadcast_to(transformed, target_shape)
+                    return run_expand_program(
+                        plan=program,
+                        tensor=tensor,
+                        target_shape=target_shape,
+                        backend_ops=None,
+                        xp=xp,
+                    )
 
                 compiled_unary_runner = run_compiled_with_namespace
         return ExpandRuntimeStep(

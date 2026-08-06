@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import einf.steps.einsum.step as einsum_step_module
-from einf import ErrorCode, ValidationError, ax, axes
+from einf import ErrorCode, ExecutionError, ax, axes
 from einf.axis import AxisSide
 from einf.backend import BACKEND_RESOLVER
 from einf.backend.namespace import ArrayNamespaceLike
@@ -14,7 +14,7 @@ from einf.steps.axis_slice import (
     build_axis_slice_symbolic_program,
 )
 from einf.steps.einsum import EinsumRuntimeProgram, EinsumRuntimeStep
-from einf.steps.einsum.step import _EinsumEquationExecutor
+from einf.steps.einsum.step import EinsumEquationExecutor
 from einf.tensor_types import TensorLike
 
 _EINSUM_EQUATION = "bnd,dj->bnj"
@@ -31,7 +31,7 @@ _EXPECTED_FALLBACK_EVENTS = {
 
 def _build_runtime_steps(
     *,
-    executor: _EinsumEquationExecutor,
+    executor: EinsumEquationExecutor,
     allow_native_matmul: bool,
     chain_mode: bool = False,
 ) -> tuple[EinsumRuntimeStep, AxisSliceRuntimeStep]:
@@ -163,7 +163,7 @@ def test_einsum_axis_slice_fusion_preserves_fallback_order(
     )
     monkeypatch.setattr(einsum_step_module.opt_einsum, "contract", opt_contract)
 
-    executor = _EinsumEquationExecutor(
+    executor = EinsumEquationExecutor(
         profile=profile,
         native_namespace_einsum=namespace_einsum,
         native_module_einsum=module_einsum,
@@ -263,7 +263,7 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
         fail_opt_contract,
     )
 
-    executor = _EinsumEquationExecutor(
+    executor = EinsumEquationExecutor(
         profile=profile,
         native_namespace_einsum=fail_namespace_einsum,
         native_module_einsum=fail_module_einsum,
@@ -276,7 +276,7 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
     )
     tensors = (left, right)
 
-    with pytest.raises(ValidationError) as unfused_error:
+    with pytest.raises(ExecutionError) as unfused_error:
         _run_unfused(
             einsum_step=steps[0],
             slice_step=steps[1],
@@ -285,7 +285,7 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
     unfused_events = tuple(events)
     assert unfused_events == ("cached", "module", "namespace", "native", "opt")
     events.clear()
-    with pytest.raises(ValidationError) as fused_error:
+    with pytest.raises(ExecutionError) as fused_error:
         _run_fused(
             einsum_step=steps[0],
             slice_step=steps[1],
@@ -293,14 +293,14 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
         )
 
     assert tuple(events) == unfused_events
-    assert fused_error.value.code == ErrorCode.INCONSISTENT_DIMS
+    assert fused_error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED
     assert fused_error.value.message == unfused_error.value.message
     assert fused_error.value.help == unfused_error.value.help
     assert fused_error.value.related == unfused_error.value.related
     assert fused_error.value.data == unfused_error.value.data
 
 
-def test_einsum_axis_slice_fusion_preserves_slice_validation(
+def test_einsum_axis_slice_fusion_preserves_einsum_output_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
@@ -322,20 +322,20 @@ def test_einsum_axis_slice_fusion_preserves_slice_validation(
         "_cached_contract_expression",
         cached_contract_expression,
     )
-    executor = _EinsumEquationExecutor(profile=profile)
+    executor = EinsumEquationExecutor(profile=profile)
     steps = _build_runtime_steps(
         executor=executor,
         allow_native_matmul=False,
     )
     tensors = (left, right)
 
-    with pytest.raises(ValidationError) as unfused_error:
+    with pytest.raises(ExecutionError) as unfused_error:
         _run_unfused(
             einsum_step=steps[0],
             slice_step=steps[1],
             tensors=tensors,
         )
-    with pytest.raises(ValidationError) as fused_error:
+    with pytest.raises(ExecutionError) as fused_error:
         _run_fused(
             einsum_step=steps[0],
             slice_step=steps[1],
@@ -343,6 +343,7 @@ def test_einsum_axis_slice_fusion_preserves_slice_validation(
         )
 
     assert fused_error.value.code == ErrorCode.INCONSISTENT_DIMS
+    assert fused_error.value.data["operation"] == "einsum"
     assert fused_error.value.message == unfused_error.value.message
     assert fused_error.value.help == unfused_error.value.help
     assert fused_error.value.related == unfused_error.value.related
@@ -353,7 +354,7 @@ def test_single_einsum_step_is_not_registered_as_pass_through_fusion() -> None:
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
     right = np.arange(5 * 4).reshape(5, 4)
     profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
-    executor = _EinsumEquationExecutor(profile=profile)
+    executor = EinsumEquationExecutor(profile=profile)
     einsum_step, _ = _build_runtime_steps(
         executor=executor,
         allow_native_matmul=False,

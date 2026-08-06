@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 
 from einf.axis import Axis, ScalarAxisTerms
 from einf.backend import ArrayNamespace
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, ExecutionError, ValidationError
 from einf.reduction.schema import ReducerName
 from einf.steps.reduce.build import ReduceAxesResolver
 from einf.steps.reduce.runtime import REDUCER_COMPILER, ReducerRuntimeContext
@@ -32,16 +32,18 @@ def test_reduce_axis_resolution_diagnostic_reports_reduce_operation() -> None:
 
 
 def test_reduce_output_type_diagnostic_reports_reduce_operation() -> None:
-    with pytest.raises(ValidationError) as error:
+    with pytest.raises(ExecutionError) as error:
         _runtime_context().raise_output_type_error()
 
-    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
     assert error.value.data == {"operation": "reduce"}
 
 
 def test_string_reducer_failure_reports_operation_and_reducer() -> None:
     error = _runtime_context().string_reducer_error(
         reducer_name=ReducerName.MAX,
+        tensor=np.zeros((2, 0)),
+        axes=(1,),
         error=ValueError("empty domain"),
     )
 

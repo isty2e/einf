@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from einf import ErrorCode, ValidationError, ax, axes, reduce, repeat
+from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, reduce, repeat
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
@@ -602,7 +602,7 @@ def test_reduce_scalar_custom_output_does_not_silently_broadcast() -> None:
     op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
     tensor = np.arange(6).reshape(2, 3)
 
-    with pytest.raises(ValidationError) as error:
+    with pytest.raises(ExecutionError) as error:
         _ = op(tensor)
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -621,7 +621,7 @@ def test_reduce_scalar_custom_output_is_validated_without_reindex() -> None:
 
     op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
 
-    with pytest.raises(ValidationError) as error:
+    with pytest.raises(ExecutionError) as error:
         _ = op(np.arange(6).reshape(2, 3))
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 
+import numpy as np
 import pytest
 
 from einf import ExecutionError, ax, axes, packs
@@ -313,3 +314,28 @@ def test_shape_free_runner_cache_resolves_backend_once_per_call(
     assert op(tensor) is tensor
     assert op(tensor) is tensor
     assert resolve_calls == 2
+
+
+def test_backend_profile_derives_identity_from_namespace() -> None:
+    profile = BackendProfile(
+        namespace=np,
+        supports_einsum=False,
+        supports_strict_view=False,
+    )
+
+    assert profile.namespace_id == "numpy"
+    assert profile.backend_family == "numpy"
+    assert profile.execution_identity.namespace is np
+    assert profile.execution_identity.namespace_id == "numpy"
+    assert profile.execution_identity.backend_family == "numpy"
+
+
+def test_backend_profile_accepts_capability_override() -> None:
+    profile = BackendProfile(
+        namespace=np,
+        supports_einsum=False,
+        supports_strict_view=True,
+    )
+
+    assert profile.supports_strict_view is True
+    assert profile.execution_identity.supports_strict_view is True

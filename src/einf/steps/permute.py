@@ -6,7 +6,7 @@ from einf.backend import (
     ArrayNamespace,
     BackendArrayOps,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -19,9 +19,37 @@ from einf.steps.context import PlanSelectionContext, build_runtime_execution_con
 from einf.tensor_types import TensorLike
 
 from .base import AxisSideSymbolicStep
-from .runtime import bind_runtime_backend
+from .runtime import bind_runtime_backend, validate_runtime_output_shape
 
 _PERMUTE_REQUIRED_METHODS = ("permute_dims",)
+
+
+def permute_execution_error(error: Exception, /) -> ExecutionError:
+    """Build the canonical permute backend failure.
+
+    Parameters
+    ----------
+    error
+        Backend exception raised while executing a permute route.
+
+    Returns
+    -------
+    ExecutionError
+        Structured failure for the public operation boundary.
+    """
+    return ExecutionError(
+        code=ErrorCode.BACKEND_EXECUTION_FAILED,
+        message=(
+            "backend execution failed: rearrange backend primitive failed "
+            f"during reindex execution: {error}"
+        ),
+        help=(
+            "ensure shape mapping is valid and backend primitives support "
+            "the required operation on the given tensor layout"
+        ),
+        related=("backend execution",),
+        data={"operation": "rearrange"},
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,38 +116,39 @@ class PermuteRuntimeStep(RuntimeStep[PermuteSymbolicProgram]):
         if not self.program.has_non_identity_permutation:
             return tensor
         permutation = self.program.permutation
-        runtime_backend_ops = self.runtime_backend_ops
-        if runtime_backend_ops is not None:
-            return runtime_backend_ops.permute(tensor, permutation)
-
-        xp = self.runtime_xp
-        if xp is None:
-            raise ValidationError(
-                code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
-                message=(
-                    "backend dispatch unsupported input: "
-                    "permute runtime requires one resolved backend namespace/profile"
-                ),
-                help="execute through AbstractPlan/TensorOp call path to resolve backend profile",
-                related=("backend dispatch",),
-                data={"operation": "permute"},
-            )
         try:
-            return xp.permute_dims(tensor, permutation)
+            runtime_backend_ops = self.runtime_backend_ops
+            if runtime_backend_ops is not None:
+                output = runtime_backend_ops.permute(tensor, permutation)
+            else:
+                xp = self.runtime_xp
+                if xp is None:
+                    raise ValidationError(
+                        code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
+                        message=(
+                            "backend dispatch unsupported input: "
+                            "permute runtime requires one resolved backend "
+                            "namespace/profile"
+                        ),
+                        help=(
+                            "execute through AbstractPlan/TensorOp call path to "
+                            "resolve backend profile"
+                        ),
+                        related=("backend dispatch",),
+                        data={"operation": "permute"},
+                    )
+                output = xp.permute_dims(tensor, permutation)
+
+            expected_shape = tuple(tensor.shape[index] for index in permutation)
+            return validate_runtime_output_shape(
+                output,
+                expected_shape,
+                operation="permute",
+            )
+        except TensorOpError:
+            raise
         except Exception as error:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
-                message=(
-                    "inconsistent dims: rearrange backend primitive failed during "
-                    f"reindex execution: {error}"
-                ),
-                help=(
-                    "ensure shape mapping is valid and backend primitives support "
-                    "the required operation on the given tensor layout"
-                ),
-                related=("backend execution",),
-                data={"operation": "rearrange"},
-            ) from error
+            raise permute_execution_error(error) from error
 
     def run(
         self,
@@ -160,6 +189,7 @@ class PermuteSymbolicStep(SymbolicStep[PermuteSymbolicProgram]):
     ) -> RuntimeStep:
         backend_binding = bind_runtime_backend(
             context,
+            operation="permute",
             required_namespace_methods=_PERMUTE_REQUIRED_METHODS,
             bind_namespace_when_backend_ops_available=False,
         )
@@ -298,6 +328,7 @@ class AxisPermuteSymbolicStep(AxisSideSymbolicStep[AxisPermuteSymbolicProgram]):
             )
         backend_binding = bind_runtime_backend(
             context,
+            operation="permute",
             required_namespace_methods=_PERMUTE_REQUIRED_METHODS,
             bind_namespace_when_backend_ops_available=False,
         )

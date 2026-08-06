@@ -4,6 +4,7 @@ from typing import ClassVar
 import numpy as np
 import pytest
 
+import einf.steps.reduce.step as reduce_step_module
 from einf import ax, axes
 from einf.axis import AxisSide, AxisTerms
 from einf.backend import BACKEND_RESOLVER, BackendProfile
@@ -557,7 +558,9 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     assert routed_outputs[1].shape == (2, 3, 4)
 
 
-def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy() -> None:
+def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     b, h, w, d = axes("b", "h", "w", "d")
     sum_step = ReduceSymbolicStep(
         lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
@@ -581,12 +584,26 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy() -> Non
     assert isinstance(sum_runtime.program, ReduceRuntimeProgram)
     assert isinstance(sum_runtime.program, DirectMethodReduceRuntimeProgram)
 
+    class NamespaceReducer:
+        def __init__(self) -> None:
+            self.__name__ = "custom.reducer"
+
+        asarray = staticmethod(np.asarray)
+        sum = staticmethod(np.sum)
+        prod = staticmethod(np.prod)
+        mean = staticmethod(np.mean)
+        max = staticmethod(np.max)
+        min = staticmethod(np.min)
+        all = staticmethod(np.all)
+        any = staticmethod(np.any)
+
     namespace_profile = BackendProfile(
-        namespace=numpy_profile.namespace,
-        namespace_id=numpy_profile.namespace_id,
-        backend_family=None,
-        supports_einsum=numpy_profile.supports_einsum,
-        supports_strict_view=numpy_profile.supports_strict_view,
+        namespace=NamespaceReducer(),  # type: ignore[arg-type]
+        supports_einsum=False,
+        supports_strict_view=False,
+    )
+    monkeypatch.setattr(
+        reduce_step_module, "get_backend_array_ops", lambda _family: None
     )
     namespace_runtime = sum_step.specialize(
         RuntimeSpecializationContext(

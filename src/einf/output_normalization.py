@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from threading import RLock
 
-from .diagnostics import ErrorCode, ExecutionError
+from .diagnostics import ErrorCode, ExecutionError, TensorOpError
 from .tensor_types import TensorLike, is_trusted_tensor_type
 
 RuntimeOutputs = TensorLike | tuple[TensorLike, ...] | list[TensorLike]
@@ -15,8 +15,8 @@ class RuntimeOutputContract:
 
     op_name: str
     expected_output_arity: int
-    _trusted_type_signatures: set[_OutputTypeSignature] = field(
-        default_factory=set,
+    _trusted_type_signatures: list[_OutputTypeSignature] = field(
+        default_factory=list,
         init=False,
         repr=False,
     )
@@ -50,7 +50,10 @@ class RuntimeOutputContract:
             raw_outputs=raw_outputs,
         )
         type_signature = tuple(type(output) for output in outputs)
-        if type_signature != self._last_trusted_type_signature:
+        if not _same_type_signature(
+            type_signature,
+            self._last_trusted_type_signature,
+        ):
             trusted_signature = all(
                 is_trusted_tensor_type(output_type) for output_type in type_signature
             )
@@ -66,7 +69,10 @@ class RuntimeOutputContract:
     def _has_trusted(self, type_signature: _OutputTypeSignature, /) -> bool:
         """Return whether one trusted output signature was already validated."""
         with self._lock:
-            if type_signature not in self._trusted_type_signatures:
+            if not any(
+                _same_type_signature(type_signature, cached_signature)
+                for cached_signature in self._trusted_type_signatures
+            ):
                 return False
             object.__setattr__(
                 self,
@@ -83,12 +89,26 @@ class RuntimeOutputContract:
                 >= _TRUSTED_OUTPUT_SIGNATURE_CACHE_SIZE
             ):
                 self._trusted_type_signatures.clear()
-            self._trusted_type_signatures.add(type_signature)
+            self._trusted_type_signatures.append(type_signature)
             object.__setattr__(
                 self,
                 "_last_trusted_type_signature",
                 type_signature,
             )
+
+
+def _same_type_signature(
+    first: _OutputTypeSignature,
+    second: _OutputTypeSignature | None,
+    /,
+) -> bool:
+    """Compare output type signatures without invoking metaclass equality."""
+    if second is None or len(first) != len(second):
+        return False
+    return all(
+        first_type is second_type
+        for first_type, second_type in zip(first, second, strict=True)
+    )
 
 
 def normalize_outputs(
@@ -171,22 +191,44 @@ def _validate_output_tensors(
 ) -> None:
     """Validate each tensor in one canonical runtime output tuple."""
     for output_index, output in enumerate(outputs):
-        _validate_output_tensor(
+        validated_output_shape(
             op_name=op_name,
             output=output,
             output_index=output_index,
         )
 
 
-def _validate_output_tensor(
+def validated_output_shape(
     *,
     op_name: str,
     output: TensorLike,
     output_index: int,
-) -> None:
-    """Validate one backend output for TensorLike shape contract."""
+) -> tuple[int, ...]:
+    """Return one backend output's canonical TensorLike shape.
+
+    Parameters
+    ----------
+    op_name
+        Operation that produced the output.
+    output
+        Backend value whose TensorLike shape contract is validated.
+    output_index
+        Position of the output in the operation result.
+
+    Returns
+    -------
+    tuple of int
+        Validated output shape.
+
+    Raises
+    ------
+    ExecutionError
+        The output does not satisfy the TensorLike shape contract.
+    """
     try:
         shape = output.shape
+    except TensorOpError:
+        raise
     except Exception as exc:
         raise ExecutionError(
             code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
@@ -211,7 +253,23 @@ def _validate_output_tensor(
             data={"operation": op_name, "index": output_index},
         )
 
-    for dim in shape:
+    try:
+        canonical_shape = shape if type(shape) is tuple else tuple(shape)
+    except TensorOpError:
+        raise
+    except Exception as exc:
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message=(
+                f"{op_name} output protocol violation: output[{output_index}] "
+                "shape must be readable as tuple[int, ...]"
+            ),
+            help="return TensorLike outputs with readable tuple[int, ...] shape",
+            related=("TensorOp output protocol",),
+            data={"operation": op_name, "index": output_index},
+        ) from exc
+
+    for dim in canonical_shape:
         if isinstance(dim, bool) or not isinstance(dim, int):
             raise ExecutionError(
                 code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
@@ -223,6 +281,34 @@ def _validate_output_tensor(
                 related=("TensorOp output protocol",),
                 data={"operation": op_name, "index": output_index},
             )
+
+    try:
+        getitem = getattr(output, "__getitem__", None)
+    except TensorOpError:
+        raise
+    except Exception as exc:
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message=(
+                f"{op_name} output protocol violation: output[{output_index}] "
+                "must expose callable __getitem__"
+            ),
+            help="return TensorLike outputs that support tensor indexing",
+            related=("TensorOp output protocol",),
+            data={"operation": op_name, "index": output_index},
+        ) from exc
+    if not callable(getitem):
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message=(
+                f"{op_name} output protocol violation: output[{output_index}] "
+                "must expose callable __getitem__"
+            ),
+            help="return TensorLike outputs that support tensor indexing",
+            related=("TensorOp output protocol",),
+            data={"operation": op_name, "index": output_index},
+        )
+    return canonical_shape
 
 
 def _build_output_protocol_error(

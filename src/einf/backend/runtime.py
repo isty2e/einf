@@ -1,18 +1,22 @@
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from importlib import import_module
-from importlib.util import find_spec
 from types import ModuleType
 from typing import Literal, Protocol, TypeGuard, cast, runtime_checkable
 
 from array_api_compat import array_namespace
 
-from ..tensor_types import TensorLike
+from ..tensor_types import TensorLike, trusted_tensor_family
 from .namespace import ArrayNamespaceLike, BackendFamily, derive_namespace_id
 
 ReducerFn = Callable[[TensorLike, tuple[int, ...]], TensorLike]
 AxisKeyword = Literal["axis", "dim"]
+
+
+class BackendRuntimeUnavailable(ImportError):
+    """Signal that an optional backend-native runtime route is unavailable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +77,22 @@ _BACKEND_RUNTIME_SPECS: dict[BackendFamily, _BackendRuntimeSpec] = {
         reducer_axis_keyword="dim",
     ),
 }
+
+
+def supports_native_array_ops(backend_family: BackendFamily | None, /) -> bool:
+    """Return whether a family has a backend-native array adapter.
+
+    Parameters
+    ----------
+    backend_family
+        Canonical backend family, if one was resolved.
+
+    Returns
+    -------
+    bool
+        Whether the family has a registered native adapter.
+    """
+    return backend_family in _BACKEND_RUNTIME_SPECS
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +218,9 @@ def resolve_backend_array_ops(
     """Resolve backend-native primitive callables for one family."""
     spec = _BACKEND_RUNTIME_SPECS.get(backend_family)
     if spec is None:
-        raise ValueError(f"unsupported backend family: {backend_family!r}")
+        raise BackendRuntimeUnavailable(
+            f"backend family has no native array adapter: {backend_family!r}"
+        )
 
     backend_module = load_backend_module(backend_family)
     reducers: dict[str, ReducerFn] = {}
@@ -324,30 +346,115 @@ def get_backend_array_ops(
     /,
 ) -> BackendArrayOps | None:
     """Resolve backend-native primitive callables when family is supported."""
-    if backend_family is None:
+    if not supports_native_array_ops(backend_family):
         return None
     try:
         return resolve_backend_array_ops(backend_family)
-    except (ModuleNotFoundError, ValueError):
+    except BackendRuntimeUnavailable:
         return None
+
+
+def is_trusted_backend_array_ops(
+    *,
+    backend_ops: BackendArrayOps,
+    tensor: TensorLike,
+) -> bool:
+    """Return whether an adapter and tensor form one canonical native route.
+
+    Parameters
+    ----------
+    backend_ops
+        Backend adapter selected for the route.
+    tensor
+        Runtime tensor passed to the adapter.
+
+    Returns
+    -------
+    bool
+        Whether both objects match one canonical built-in runtime route.
+    """
+    family = trusted_tensor_family(type(tensor))
+    if family is None:
+        return False
+    try:
+        canonical_ops = resolve_backend_array_ops(family)
+    except BackendRuntimeUnavailable:
+        return False
+    return backend_ops is canonical_ops and is_backend_runtime_uninterposed(family)
+
+
+def is_backend_runtime_uninterposed(backend_family: BackendFamily, /) -> bool:
+    """Return whether native calls cannot be intercepted by a backend mode.
+
+    Parameters
+    ----------
+    backend_family
+        Canonical backend family for the native call.
+
+    Returns
+    -------
+    bool
+        Whether the runtime has no active user override mode.
+    """
+    if backend_family != "torch":
+        return True
+
+    try:
+        torch_module = load_backend_module("torch")
+        torch_c = torch_module._C
+        function_mode_enabled = torch_c._is_torch_function_mode_enabled
+        if not callable(function_mode_enabled) or function_mode_enabled():
+            return False
+
+        python_dispatch = sys.modules.get("torch.utils._python_dispatch")
+        if python_dispatch is None:
+            return True
+        dispatch_stack_length = getattr(
+            python_dispatch,
+            "_len_torch_dispatch_stack",
+            None,
+        )
+        return callable(dispatch_stack_length) and dispatch_stack_length() == 0
+    except Exception:  # noqa: BLE001 - missing proof selects the validated route
+        return False
 
 
 @cache
 def load_backend_module(backend_family: BackendFamily) -> ModuleType:
-    """Load one backend runtime module lazily and fail fast when unavailable."""
+    """Load one backend runtime module lazily.
+
+    Parameters
+    ----------
+    backend_family
+        Registered backend family whose native runtime module is required.
+
+    Returns
+    -------
+    ModuleType
+        Imported backend runtime module.
+
+    Raises
+    ------
+    BackendRuntimeUnavailable
+        The optional module or one of its loader dependencies is unavailable.
+    RuntimeError
+        The backend module fails during runtime initialization.
+    Notes
+    -----
+    Backend initialization errors such as ``RuntimeError`` are preserved. They
+    indicate a broken runtime rather than an unavailable optional route.
+    """
     runtime_spec = _BACKEND_RUNTIME_SPECS.get(backend_family)
     if runtime_spec is None:
-        raise ValueError(f"unknown backend family: {backend_family!r}")
-    module_name = runtime_spec.module_name
-    if find_spec(module_name) is None:
-        raise ModuleNotFoundError(
-            f"backend runtime module is not installed: {module_name!r}"
+        raise BackendRuntimeUnavailable(
+            f"backend family has no native runtime adapter: {backend_family!r}"
         )
+    module_name = runtime_spec.module_name
     try:
         return import_module(module_name)
-    except ImportError as error:
-        raise ModuleNotFoundError(
-            f"backend runtime module import failed: {module_name!r}"
+    except (ImportError, OSError) as error:
+        raise BackendRuntimeUnavailable(
+            f"backend runtime module is unavailable: {module_name!r}"
         ) from error
 
 
@@ -358,9 +465,15 @@ def _resolve_module_op(
     module_op_name: str,
 ) -> Callable[..., TensorLike]:
     """Resolve one backend module callable and fail when unavailable."""
-    op_candidate = getattr(backend_module, module_op_name, None)
+    try:
+        op_candidate = getattr(backend_module, module_op_name, None)
+    except (ImportError, OSError) as error:
+        raise BackendRuntimeUnavailable(
+            "backend runtime module callable is unavailable: "
+            f"{backend_module.__name__}.{module_op_name}"
+        ) from error
     if not callable(op_candidate):
-        raise TypeError(
+        raise BackendRuntimeUnavailable(
             "backend runtime module callable is unavailable: "
             f"{backend_module.__name__}.{module_op_name}"
         )

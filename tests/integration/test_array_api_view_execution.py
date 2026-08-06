@@ -205,6 +205,57 @@ def test_view_split_with_empty_prefix_segment_is_allowed() -> None:
     assert out_right.shape == (5,)
 
 
+def test_view_empty_reshape_keeps_numpy_storage_lineage() -> None:
+    a, b, c = axes("a", "b", "c")
+    op = view(ax[a, b, c], ax[a, (b * c)])
+
+    tensor = np.empty((0, 4, 3)).transpose(0, 2, 1)
+    result = op(tensor)
+
+    assert result.shape == (0, 12)
+    assert result.base is tensor.base
+
+
+def test_view_rejects_empty_reshape_without_numpy_storage_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CopyingNumpyRuntime:
+        @staticmethod
+        def reshape(
+            _tensor: np.ndarray,
+            shape: tuple[int, ...],
+            *,
+            order: str,
+        ) -> np.ndarray:
+            _ = order
+            return np.empty(shape)
+
+    monkeypatch.setattr(
+        "einf.steps.reshape.runtime.load_backend_module",
+        lambda _family: CopyingNumpyRuntime(),
+    )
+    a, b, c = axes("empty_copy_a", "empty_copy_b", "empty_copy_c")
+    op = view(ax[a, b, c], ax[a, (b * c)])
+
+    with pytest.raises(ValidationError) as error:
+        _ = op(np.empty((0, 4, 3)).transpose(0, 2, 1))
+
+    assert error.value.code == ErrorCode.NOT_A_VIEW.value
+
+
+@pytest.mark.skipif(torch is None, reason="torch is not installed")
+def test_view_empty_reshape_keeps_torch_storage_identity() -> None:
+    assert torch is not None
+    a, b, c = axes("a", "b", "c")
+    op = view(ax[a, b, c], ax[a, (b * c)])
+
+    tensor = torch.empty((0, 4, 3)).transpose(1, 2)
+    result = op(tensor)
+
+    assert result.shape == (0, 12)
+    assert result.untyped_storage() is tensor.untyped_storage()
+
+
 def test_view_rejects_non_contiguous_reshape_that_requires_copy() -> None:
     a, b, c = axes("a", "b", "c")
     op = view(ax[a, b, c], ax[(a * b), c]).with_sizes(a=3, b=2)

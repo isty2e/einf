@@ -10,9 +10,10 @@ from einf.backend import (
     BackendProfile,
     get_backend_array_ops,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
+from einf.steps.runtime import backend_specialization_error
 from einf.tensor_types import TensorLike
 
 from .runtime import REDUCER_COMPILER, CompiledReducer
@@ -154,7 +155,17 @@ def build_reduce_compiled_program(
 ) -> ReduceCompiledProgram:
     """Build one unary reduce runtime program from canonical terms and sizes."""
     namespace_candidate = backend_profile.namespace
-    if not _has_reduce_namespace_methods(namespace_candidate):
+    try:
+        has_runtime_namespace = has_reduce_namespace_methods(namespace_candidate)
+        backend_ops = get_backend_array_ops(backend_profile.backend_family)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
+    if not has_runtime_namespace:
         raise ValidationError(
             code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
             message=(
@@ -168,7 +179,6 @@ def build_reduce_compiled_program(
 
     normalized_reduce_axes = AxisTerms.from_spec(reduce_axes)
     xp = namespace_candidate
-    backend_ops = get_backend_array_ops(backend_profile.backend_family)
     cache_key = _build_reduce_compile_key(
         lhs_terms=lhs_terms,
         reduce_axes=normalized_reduce_axes,
@@ -219,7 +229,7 @@ def build_reduce_compiled_program(
     )
 
 
-def _has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
+def has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
     """Return whether one namespace exposes required reducer methods."""
     for method_name in _REDUCE_NAMESPACE_METHODS:
         if not callable(getattr(namespace, method_name, None)):

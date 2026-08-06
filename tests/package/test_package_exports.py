@@ -39,9 +39,9 @@ def test_backend_top_level_exports_dispatch_runtime_contract_only() -> None:
     assert not hasattr(backend, "is_namespace_family")
     assert not hasattr(backend, "load_backend_module")
     assert not hasattr(backend, "resolve_backend_array_ops")
-    assert not hasattr(backend, "numpy_shares_memory")
+    assert not hasattr(backend, "numpy_shares_storage")
     assert not hasattr(backend, "tensor_numel")
-    assert not hasattr(backend, "torch_storage_ptr")
+    assert not hasattr(backend, "torch_shares_storage")
 
 
 def test_backend_submodule_surface_remains_available() -> None:

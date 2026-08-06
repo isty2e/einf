@@ -1,10 +1,36 @@
 from collections.abc import Callable
 
 from einf.backend import ArrayNamespace, BackendArrayOps
+from einf.backend.runtime import is_trusted_backend_array_ops
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError
 from einf.shape import compile_fixed_rank_shape_evaluator
+from einf.steps.permute import permute_execution_error
+from einf.steps.runtime import validate_runtime_output_shape
 from einf.tensor_types import TensorLike
 
 from .model import ExpandSymbolicProgram
+
+
+def expand_execution_error(error: Exception, /) -> ExecutionError:
+    """Build the canonical expand backend failure.
+
+    Parameters
+    ----------
+    error
+        Backend exception raised while executing an expand route.
+
+    Returns
+    -------
+    ExecutionError
+        Structured failure for the public operation boundary.
+    """
+    return ExecutionError(
+        code=ErrorCode.BACKEND_EXECUTION_FAILED,
+        message=f"backend execution failed: expand runtime failed: {error}",
+        help="ensure expand mapping is valid for the given tensor shape and backend",
+        related=("expand runtime",),
+        data={"operation": "expand"},
+    )
 
 
 def compile_expand_target_shape_evaluator(
@@ -118,25 +144,93 @@ def run_expand_program(
     compiled = plan.compiled
     if compiled is None:
         raise ValueError("expand program must be compiled before runtime execution")
-    if backend_ops is not None:
-        transformed = tensor
-        if compiled.has_non_identity_permutation:
-            transformed = backend_ops.permute(transformed, compiled.permutation)
-        for output_index in compiled.insert_axes:
-            transformed = backend_ops.expand_dims(transformed, output_index)
-        return backend_ops.broadcast_to(transformed, target_shape)
-
-    if xp is None:
-        raise ValueError("array namespace is required for expand runtime")
     transformed = tensor
-    if compiled.has_non_identity_permutation:
-        transformed = xp.permute_dims(transformed, compiled.permutation)
-    for output_index in compiled.insert_axes:
-        transformed = xp.expand_dims(transformed, axis=output_index)
-    return xp.broadcast_to(transformed, target_shape)
+    active_stage = "expand"
+    try:
+        if backend_ops is not None:
+            trusted_route = is_trusted_backend_array_ops(
+                backend_ops=backend_ops,
+                tensor=tensor,
+            )
+            expected_shape = tensor.shape
+            if compiled.has_non_identity_permutation:
+                active_stage = "permute"
+                transformed = backend_ops.permute(
+                    transformed,
+                    compiled.permutation,
+                )
+                if not trusted_route:
+                    expected_shape = tuple(
+                        expected_shape[input_index]
+                        for input_index in compiled.permutation
+                    )
+                    transformed = validate_runtime_output_shape(
+                        transformed,
+                        expected_shape,
+                        operation="permute",
+                    )
+            active_stage = "expand"
+            for output_index in compiled.insert_axes:
+                transformed = backend_ops.expand_dims(transformed, output_index)
+                if not trusted_route:
+                    expected_shape = (
+                        expected_shape[:output_index]
+                        + (1,)
+                        + expected_shape[output_index:]
+                    )
+                    transformed = validate_runtime_output_shape(
+                        transformed,
+                        expected_shape,
+                        operation="expand",
+                    )
+            output = backend_ops.broadcast_to(transformed, target_shape)
+            return validate_runtime_output_shape(
+                output,
+                target_shape,
+                operation="expand",
+            )
+
+        if xp is None:
+            raise ValueError("array namespace is required for expand runtime")
+        expected_shape = tensor.shape
+        if compiled.has_non_identity_permutation:
+            active_stage = "permute"
+            transformed = xp.permute_dims(transformed, compiled.permutation)
+            expected_shape = tuple(
+                expected_shape[input_index] for input_index in compiled.permutation
+            )
+            transformed = validate_runtime_output_shape(
+                transformed,
+                expected_shape,
+                operation="permute",
+            )
+        active_stage = "expand"
+        for output_index in compiled.insert_axes:
+            transformed = xp.expand_dims(transformed, axis=output_index)
+            expected_shape = (
+                expected_shape[:output_index] + (1,) + expected_shape[output_index:]
+            )
+            transformed = validate_runtime_output_shape(
+                transformed,
+                expected_shape,
+                operation="expand",
+            )
+        output = xp.broadcast_to(transformed, target_shape)
+        return validate_runtime_output_shape(
+            output,
+            target_shape,
+            operation="expand",
+        )
+    except TensorOpError:
+        raise
+    except Exception as error:
+        if active_stage == "permute":
+            raise permute_execution_error(error) from error
+        raise expand_execution_error(error) from error
 
 
 __all__ = [
     "compile_expand_target_shape_evaluator",
+    "expand_execution_error",
     "run_expand_program",
 ]

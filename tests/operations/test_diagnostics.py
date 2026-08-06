@@ -16,6 +16,7 @@ from einf import (
     view,
 )
 from einf.axis import AxisTerms
+from einf.diagnostics import TensorOpError
 from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.solver import solve_dimensions
 
@@ -90,6 +91,11 @@ def test_execution_error_exposes_channel() -> None:
         message="execution mismatch",
     )
     assert error.channel == "execution_error"
+
+
+def test_tensor_op_errors_are_distinct_from_primitive_value_errors() -> None:
+    assert issubclass(TensorOpError, Exception)
+    assert not issubclass(TensorOpError, ValueError)
 
 
 def test_dim_solver_ambiguity_contains_help_and_related_metadata() -> None:
