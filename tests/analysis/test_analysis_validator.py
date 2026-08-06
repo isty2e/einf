@@ -257,6 +257,34 @@ def test_validator_cli_parses_checker_execution_policy() -> None:
     assert arguments.checker_max_concurrency == 3
 
 
+def test_validator_cli_parses_checker_output_limits() -> None:
+    arguments = build_argument_parser().parse_args(
+        [
+            "sample.py",
+            "--checker-max-output-bytes",
+            "2048",
+            "--checker-max-diagnostics",
+            "5",
+            "--checker-max-field-length",
+            "128",
+        ]
+    )
+
+    assert arguments.checker_max_output_bytes == 2048
+    assert arguments.checker_max_diagnostics == 5
+    assert arguments.checker_max_field_length == 128
+
+
+def test_validator_cli_rejects_invalid_checker_output_limits() -> None:
+    for flag in (
+        "--checker-max-output-bytes",
+        "--checker-max-diagnostics",
+        "--checker-max-field-length",
+    ):
+        with pytest.raises(SystemExit):
+            build_argument_parser().parse_args(["sample.py", flag, "0"])
+
+
 def test_validator_cli_subprocess_serializes_mixed_diagnostics(
     tmp_path: Path,
 ) -> None:

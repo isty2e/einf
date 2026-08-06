@@ -8,9 +8,12 @@ from einf.analysis.checkers.execution import CheckerExecutionPolicy, CheckerExec
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerOutputLimits,
     CheckerRequest,
     CheckerResult,
 )
+
+_TEST_LIMITS = CheckerOutputLimits(max_diagnostics=10_000, max_field_length=4096)
 from einf.analysis.checkers.pyrefly import PyreflyAdapter
 from einf.analysis.checkers.pyright import PyrightAdapter
 from einf.analysis.checkers.ty import TyAdapter
@@ -38,8 +41,9 @@ class _StubCheckerAdapter(CheckerAdapter):
         stdout: str,
         stderr: str,
         request: CheckerRequest,
+        limits: CheckerOutputLimits | None = None,
     ) -> CheckerResult:
-        _ = stdout, stderr
+        _ = stdout, stderr, limits
         target = request.targets[0]
         return CheckerResult(
             diagnostics=(
@@ -155,6 +159,7 @@ def test_pyright_adapter_parses_json_output() -> None:
         stdout=PYRIGHT_OUTPUT,
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -187,6 +192,7 @@ def test_pyright_adapter_preserves_diagnostic_without_range() -> None:
         ),
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -203,6 +209,7 @@ def test_pyrefly_adapter_parses_json_output() -> None:
         stdout=PYREFLY_OUTPUT,
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -231,6 +238,7 @@ def test_pyrefly_adapter_normalizes_severity() -> None:
             stdout=json.dumps({"errors": [record]}),
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert result.failures == ()
@@ -249,6 +257,7 @@ def test_pyrefly_adapter_rejects_invalid_severity() -> None:
             stdout=json.dumps({"errors": [record]}),
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert result.diagnostics == ()
@@ -293,6 +302,7 @@ def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records()
             stdout=stdout,
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert len(result.diagnostics) == 1
@@ -318,6 +328,7 @@ def test_text_adapters_preserve_valid_diagnostics_and_reject_malformed_lines() -
             stdout=stdout,
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert len(result.diagnostics) == 1
@@ -375,6 +386,7 @@ def test_checker_adapters_reject_invalid_report_paths() -> None:
             stdout=stdout,
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert result.diagnostics == ()
@@ -432,6 +444,7 @@ def test_checker_adapters_reject_invalid_diagnostic_coordinates() -> None:
             stdout=stdout,
             stderr="",
             request=_request(Path("/tmp")),
+            limits=_TEST_LIMITS,
         )
 
         assert result.diagnostics == ()
@@ -446,6 +459,7 @@ def test_ty_adapter_parses_concise_output() -> None:
         stdout=TY_OUTPUT,
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -466,6 +480,7 @@ def test_zuban_adapter_parses_text_output() -> None:
         stdout=ZUBAN_OUTPUT,
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -485,6 +500,7 @@ def test_zuban_adapter_preserves_valid_multiline_span() -> None:
         stdout="sample.py:1:5:2:1: error: multiline diagnostic\n",
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()
@@ -500,6 +516,7 @@ def test_ty_adapter_rejects_unrecognized_output() -> None:
         stdout="new ty diagnostic format\n",
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.diagnostics == ()
@@ -515,6 +532,7 @@ def test_ty_adapter_accepts_success_summary() -> None:
         stdout="All checks passed!\n",
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.diagnostics == ()
@@ -526,6 +544,7 @@ def test_zuban_adapter_rejects_unrecognized_output() -> None:
         stdout="new zuban diagnostic format\n",
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.diagnostics == ()
@@ -544,6 +563,7 @@ def test_zuban_adapter_normalizes_note_diagnostics() -> None:
         ),
         stderr="",
         request=_request(Path("/tmp")),
+        limits=_TEST_LIMITS,
     )
 
     assert result.failures == ()

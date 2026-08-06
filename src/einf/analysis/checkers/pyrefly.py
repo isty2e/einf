@@ -1,10 +1,19 @@
-import json
+import sys
 from dataclasses import dataclass
 
-from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
+from einf.analysis.checkers.base import (
+    CheckerAdapter,
+    diagnostic_count_violation,
+    diagnostic_field_violation,
+    field_limit_failure,
+    line_span,
+    resolve_report_path,
+)
+from einf.analysis.checkers.json_limited import load_list_field_limited
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerOutputLimits,
     CheckerRequest,
     CheckerResult,
 )
@@ -38,6 +47,7 @@ class PyreflyAdapter(CheckerAdapter):
         stdout: str,
         stderr: str,
         request: CheckerRequest,
+        limits: CheckerOutputLimits | None = None,
     ) -> CheckerResult:
         if not stdout.strip():
             if stderr.strip():
@@ -53,56 +63,66 @@ class PyreflyAdapter(CheckerAdapter):
                 )
             return CheckerResult(diagnostics=(), failures=())
 
-        try:
-            payload = json.loads(stdout)
-        except (RecursionError, ValueError) as error:
+        max_entries = limits.max_diagnostics if limits is not None else sys.maxsize
+        entries, truncated, parse_error = load_list_field_limited(
+            stdout,
+            field="errors",
+            max_entries=max_entries,
+        )
+        if parse_error is not None:
             return CheckerResult(
                 diagnostics=(),
                 failures=(
                     CheckerFailure(
                         tool=self.name,
                         kind="output_parse_error",
-                        message=str(error),
+                        message=f"pyrefly {parse_error}",
                     ),
                 ),
             )
-
-        if not isinstance(payload, dict):
+        if truncated:
+            assert limits is not None
             return CheckerResult(
                 diagnostics=(),
                 failures=(
-                    CheckerFailure(
+                    diagnostic_count_violation(
                         tool=self.name,
-                        kind="output_parse_error",
-                        message="pyrefly output must be a JSON object",
-                    ),
-                ),
-            )
-
-        errors = payload.get("errors")
-        if not isinstance(errors, list):
-            return CheckerResult(
-                diagnostics=(),
-                failures=(
-                    CheckerFailure(
-                        tool=self.name,
-                        kind="output_parse_error",
-                        message="pyrefly output missing errors list",
+                        limits=limits,
                     ),
                 ),
             )
 
         diagnostics: list[CheckerDiagnostic] = []
         failure: CheckerFailure | None = None
-        for index, entry in enumerate(errors):
+        for index, entry in enumerate(entries):
             parsed_entry = _parse_diagnostic_entry(
                 entry=entry,
                 index=index,
                 tool=self.name,
                 request=request,
+                limits=limits,
             )
             if isinstance(parsed_entry, CheckerDiagnostic):
+                field_violation = (
+                    diagnostic_field_violation(
+                        tool=self.name,
+                        limits=limits,
+                        diagnostic=parsed_entry,
+                    )
+                    if limits is not None
+                    else None
+                )
+                if field_violation is not None:
+                    return CheckerResult(
+                        diagnostics=(),
+                        failures=(field_violation,),
+                    )
                 diagnostics.append(parsed_entry)
+            elif parsed_entry.kind == "output_limit_exceeded":
+                return CheckerResult(
+                    diagnostics=(),
+                    failures=(parsed_entry,),
+                )
             elif failure is None:
                 failure = parsed_entry
 
@@ -118,6 +138,7 @@ def _parse_diagnostic_entry(
     index: int,
     tool: str,
     request: CheckerRequest,
+    limits: CheckerOutputLimits | None,
 ) -> CheckerDiagnostic | CheckerFailure:
     if not isinstance(entry, dict):
         return CheckerFailure(
@@ -133,6 +154,8 @@ def _parse_diagnostic_entry(
             kind="output_parse_error",
             message=f"{tool} diagnostic {index} has no valid file path",
         )
+    if limits is not None and len(path_text) > limits.max_field_length:
+        return field_limit_failure(tool=tool, limits=limits)
     path = resolve_report_path(path_text, request)
     if path is None:
         return CheckerFailure(
@@ -177,6 +200,11 @@ def _parse_diagnostic_entry(
             kind="output_parse_error",
             message=f"{tool} diagnostic {index} has an invalid name",
         )
+    if limits is not None and (
+        len(description) > limits.max_field_length
+        or (name is not None and len(name) > limits.max_field_length)
+    ):
+        return field_limit_failure(tool=tool, limits=limits)
 
     return CheckerDiagnostic(
         tool=tool,

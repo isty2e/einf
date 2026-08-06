@@ -44,6 +44,25 @@ def test_lsp_config_normalizes_checker_execution_policy() -> None:
             "checkerTimeoutSeconds": 2.5,
             "checkerCleanupTimeoutSeconds": 0.5,
             "checkerMaxConcurrency": 3,
+            "checkerMaxOutputBytes": 2048,
+            "checkerMaxDiagnostics": 5,
+            "checkerMaxFieldLength": 128,
+        }
+    )
+
+    assert config.checker_execution_policy == CheckerExecutionPolicy(
+        timeout_seconds=2.5,
+        cleanup_timeout_seconds=0.5,
+        max_concurrency=3,
+        max_output_bytes=2048,
+        max_diagnostics=5,
+        max_field_length=128,
+    )
+    config = LspConfig.from_initialize_options(
+        {
+            "checkerTimeoutSeconds": 2.5,
+            "checkerCleanupTimeoutSeconds": 0.5,
+            "checkerMaxConcurrency": 3,
         }
     )
 

@@ -39,7 +39,10 @@ truth. The default (and recommended) mode keeps `checkers` empty.
   "checkers": [],
   "checkerTimeoutSeconds": 30,
   "checkerCleanupTimeoutSeconds": 1,
-  "checkerMaxConcurrency": 1
+  "checkerMaxConcurrency": 1,
+  "checkerMaxOutputBytes": 8388608,
+  "checkerMaxDiagnostics": 10000,
+  "checkerMaxFieldLength": 4096
 }
 ```
 
@@ -93,7 +96,10 @@ external checkers on save by passing `checkers` in `initialize` options.
   "checkers": ["basedpyright", "pyrefly"],
   "checkerTimeoutSeconds": 30,
   "checkerCleanupTimeoutSeconds": 1,
-  "checkerMaxConcurrency": 1
+  "checkerMaxConcurrency": 1,
+  "checkerMaxOutputBytes": 8388608,
+  "checkerMaxDiagnostics": 10000,
+  "checkerMaxFieldLength": 4096
 }
 ```
 

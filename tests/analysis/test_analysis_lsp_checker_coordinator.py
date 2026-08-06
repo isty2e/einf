@@ -11,6 +11,7 @@ from einf.analysis.checkers import (
     CheckerRequest,
     CheckerResult,
 )
+from einf.analysis.checkers.model import CheckerOutputLimits
 from einf.analysis.lsp.checker_coordinator import (
     DocumentCheckerRequest,
     LspCheckerCoordinator,
@@ -35,8 +36,9 @@ class _NoopAdapter(CheckerAdapter):
         stdout: str,
         stderr: str,
         request: CheckerRequest,
+        limits: CheckerOutputLimits | None = None,
     ) -> CheckerResult:
-        _ = stdout, stderr, request
+        _ = stdout, stderr, request, limits
         return CheckerResult(diagnostics=(), failures=())
 
 
