@@ -268,6 +268,18 @@ def _coerce_initialize_options(
     concurrency_value = initialize_options.get("checkerMaxConcurrency")
     if type(concurrency_value) is int:
         options["checkerMaxConcurrency"] = concurrency_value
+
+    output_bytes_value = initialize_options.get("checkerMaxOutputBytes")
+    if type(output_bytes_value) is int:
+        options["checkerMaxOutputBytes"] = output_bytes_value
+
+    diagnostics_value = initialize_options.get("checkerMaxDiagnostics")
+    if type(diagnostics_value) is int:
+        options["checkerMaxDiagnostics"] = diagnostics_value
+
+    field_length_value = initialize_options.get("checkerMaxFieldLength")
+    if type(field_length_value) is int:
+        options["checkerMaxFieldLength"] = field_length_value
     return options
 
 

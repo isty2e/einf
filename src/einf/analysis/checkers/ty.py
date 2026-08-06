@@ -1,10 +1,19 @@
+import io
 import re
 from dataclasses import dataclass
 
-from einf.analysis.checkers.base import CheckerAdapter, line_span, resolve_report_path
+from einf.analysis.checkers.base import (
+    CheckerAdapter,
+    diagnostic_count_violation,
+    diagnostic_field_violation,
+    field_limit_failure,
+    line_span,
+    resolve_report_path,
+)
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
     CheckerFailure,
+    CheckerOutputLimits,
     CheckerRequest,
     CheckerResult,
 )
@@ -45,11 +54,12 @@ class TyAdapter(CheckerAdapter):
         stdout: str,
         stderr: str,
         request: CheckerRequest,
+        limits: CheckerOutputLimits | None = None,
     ) -> CheckerResult:
         diagnostics: list[CheckerDiagnostic] = []
         failure: CheckerFailure | None = None
         for output in (stdout, stderr):
-            for raw_line in output.splitlines():
+            for raw_line in io.StringIO(output):
                 line = raw_line.strip()
                 if not line or _TY_SUMMARY_LINE.fullmatch(line):
                     continue
@@ -64,13 +74,43 @@ class TyAdapter(CheckerAdapter):
                             ),
                         )
                     continue
+                if limits is not None and len(diagnostics) >= limits.max_diagnostics:
+                    return CheckerResult(
+                        diagnostics=(),
+                        failures=(
+                            diagnostic_count_violation(
+                                tool=self.name,
+                                limits=limits,
+                            ),
+                        ),
+                    )
                 parsed_line = _parse_diagnostic_line(
                     match=match,
                     tool=self.name,
                     request=request,
+                    limits=limits,
                 )
                 if isinstance(parsed_line, CheckerDiagnostic):
+                    field_violation = (
+                        diagnostic_field_violation(
+                            tool=self.name,
+                            limits=limits,
+                            diagnostic=parsed_line,
+                        )
+                        if limits is not None
+                        else None
+                    )
+                    if field_violation is not None:
+                        return CheckerResult(
+                            diagnostics=(),
+                            failures=(field_violation,),
+                        )
                     diagnostics.append(parsed_line)
+                elif parsed_line.kind == "output_limit_exceeded":
+                    return CheckerResult(
+                        diagnostics=(),
+                        failures=(parsed_line,),
+                    )
                 elif failure is None:
                     failure = parsed_line
 
@@ -85,6 +125,7 @@ def _parse_diagnostic_line(
     match: re.Match[str],
     tool: str,
     request: CheckerRequest,
+    limits: CheckerOutputLimits | None,
 ) -> CheckerDiagnostic | CheckerFailure:
     try:
         line = int(match.group("line"))
@@ -108,7 +149,10 @@ def _parse_diagnostic_line(
             message=f"{tool} diagnostic has invalid coordinates",
         )
 
-    path = resolve_report_path(match.group("path"), request)
+    raw_path = match.group("path")
+    if limits is not None and len(raw_path) > limits.max_field_length:
+        return field_limit_failure(tool=tool, limits=limits)
+    path = resolve_report_path(raw_path, request)
     if path is None:
         return CheckerFailure(
             tool=tool,

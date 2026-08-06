@@ -6,19 +6,37 @@ import shutil
 import signal
 from dataclasses import dataclass
 
-from einf.analysis.checkers.base import CheckerAdapter
-from einf.analysis.checkers.model import CheckerFailure, CheckerRequest, CheckerResult
+from einf.analysis.checkers.base import (
+    CheckerAdapter,
+    adapter_supports_limits,
+    diagnostic_count_violation,
+    diagnostic_field_violation,
+)
+from einf.analysis.checkers.model import (
+    CheckerFailure,
+    CheckerOutputLimits,
+    CheckerRequest,
+    CheckerResult,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class CheckerExecutionPolicy:
-    """Resource limits applied to external checker processes."""
+    """Resource limits applied to external checker processes.
+
+    ``max_output_bytes`` bounds the combined stdout+stderr output of one
+    process; ``max_diagnostics`` bounds one checker result and the merged
+    result; ``max_field_length`` bounds externally derived string fields.
+    """
 
     timeout_seconds: float = 30.0
     max_concurrency: int = 1
     cleanup_timeout_seconds: float = 1.0
+    max_output_bytes: int = 8 * 1024 * 1024
+    max_diagnostics: int = 10_000
+    max_field_length: int = 4096
 
     def __post_init__(self) -> None:
         if (
@@ -35,8 +53,22 @@ class CheckerExecutionPolicy:
             or self.cleanup_timeout_seconds <= 0
         ):
             raise ValueError("checker cleanup timeout must be a finite positive number")
-        if type(self.max_concurrency) is not int or self.max_concurrency < 1:
-            raise ValueError("checker max_concurrency must be positive")
+        for field_name, value in (
+            ("max_concurrency", self.max_concurrency),
+            ("max_output_bytes", self.max_output_bytes),
+            ("max_diagnostics", self.max_diagnostics),
+            ("max_field_length", self.max_field_length),
+        ):
+            if isinstance(value, bool) or type(value) is not int or value < 1:
+                raise ValueError(f"checker {field_name} must be a positive integer")
+
+    @property
+    def limits(self) -> CheckerOutputLimits:
+        """Return the parse-time output bounds for one checker result."""
+        return CheckerOutputLimits(
+            max_diagnostics=self.max_diagnostics,
+            max_field_length=self.max_field_length,
+        )
 
 
 class CheckerExecutor:
@@ -58,7 +90,18 @@ class CheckerExecutor:
     ) -> CheckerResult:
         """Execute one checker with bounded concurrency and process cleanup."""
         async with self._capacity:
-            return await self._run_bounded(adapter=adapter, request=request)
+            try:
+                return await self._run_bounded(adapter=adapter, request=request)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001
+                return _failure_result(
+                    CheckerFailure(
+                        tool=adapter.name,
+                        kind="execution_error",
+                        message=f"{adapter.name} checker failed: {error}",
+                    )
+                )
 
     async def run_all(
         self,
@@ -77,7 +120,23 @@ class CheckerExecutor:
         except Exception:
             await _cancel_tasks(tasks)
             raise
-        return CheckerResult.merge(results)
+        merged = CheckerResult.merge(results)
+        if len(merged.diagnostics) > self._policy.max_diagnostics:
+            return CheckerResult(
+                diagnostics=(),
+                failures=merged.failures
+                + (
+                    CheckerFailure(
+                        tool="einf-checkers",
+                        kind="output_limit_exceeded",
+                        message=(
+                            "aggregate checker diagnostics exceeded "
+                            f"{self._policy.max_diagnostics}"
+                        ),
+                    ),
+                ),
+            )
+        return merged
 
     async def _run_bounded(
         self,
@@ -122,9 +181,14 @@ class CheckerExecutor:
                 )
             )
 
-        communication = asyncio.create_task(process.communicate())
+        communication = asyncio.create_task(
+            bounded_communicate(
+                process,
+                max_output_bytes=self._policy.max_output_bytes,
+            )
+        )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            stdout_bytes, stderr_bytes, output_exceeded = await asyncio.wait_for(
                 asyncio.shield(communication),
                 timeout=self._policy.timeout_seconds,
             )
@@ -164,7 +228,7 @@ class CheckerExecutor:
                     self._policy.cleanup_timeout_seconds,
                 )
             raise
-        except OSError as error:
+        except Exception as error:  # noqa: BLE001
             cleanup_completed = await _kill_and_reap(
                 process,
                 communication,
@@ -185,17 +249,180 @@ class CheckerExecutor:
                 )
             )
 
-        return adapter.normalize_output(
-            returncode=process.returncode or 0,
-            stdout=_decode_output(stdout_bytes),
-            stderr=_decode_output(stderr_bytes),
-            request=request,
+        if output_exceeded:
+            cleanup_completed = await _kill_and_reap(
+                process,
+                communication,
+                process_group_id=process_group_id,
+                timeout_seconds=self._policy.cleanup_timeout_seconds,
+            )
+            message = (
+                f"{adapter.name} output exceeded {self._policy.max_output_bytes} bytes"
+            )
+            if not cleanup_completed:
+                message += (
+                    "; process cleanup did not complete within "
+                    f"{self._policy.cleanup_timeout_seconds:g} seconds"
+                )
+            return _failure_result(
+                CheckerFailure(
+                    tool=adapter.name,
+                    kind="output_limit_exceeded",
+                    message=message,
+                )
+            )
+
+        if adapter_supports_limits(adapter.normalize_output):
+            result = adapter.normalize_output(
+                returncode=process.returncode or 0,
+                stdout=_decode_output(stdout_bytes),
+                stderr=_decode_output(stderr_bytes),
+                request=request,
+                limits=self._policy.limits,
+            )
+        else:
+            result = adapter.normalize_output(  # type: ignore[call-arg]
+                returncode=process.returncode or 0,
+                stdout=_decode_output(stdout_bytes),
+                stderr=_decode_output(stderr_bytes),
+                request=request,
+            )
+        return _enforce_result_limits(
+            result=result,
+            adapter_name=adapter.name,
+            limits=self._policy.limits,
         )
+
+
+class _ByteBudget:
+    """Shared byte budget for both output streams of one checker process."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self._max_bytes = max_bytes
+        self._total = 0
+
+    def consume(self, byte_count: int) -> bool:
+        """Reserve bytes; return True when the shared budget is exceeded."""
+        self._total += byte_count
+        return self._total > self._max_bytes
+
+
+async def bounded_communicate(
+    process: asyncio.subprocess.Process,
+    *,
+    max_output_bytes: int,
+) -> tuple[bytes, bytes, bool]:
+    """Read process output under one shared byte budget and wait for exit.
+
+    Returns ``(stdout, stderr, exceeded)`` where ``exceeded`` marks output
+    beyond the combined per-process bound; over-bound bytes are drained
+    without accumulation so the process can reach EOF without a pipe
+    deadlock. The first stream error cancels the sibling reader and
+    propagates immediately instead of waiting for its EOF.
+    """
+    stdout_stream = process.stdout
+    stderr_stream = process.stderr
+    if stdout_stream is None or stderr_stream is None:
+        raise OSError("checker process output pipes unavailable")
+
+    budget = _ByteBudget(max_output_bytes)
+
+    async def read_stream(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
+        accumulated = bytearray()
+        exceeded = False
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            if budget.consume(len(chunk)):
+                exceeded = True
+                continue
+            accumulated.extend(chunk)
+        return bytes(accumulated), exceeded
+
+    stdout_task = asyncio.create_task(read_stream(stdout_stream))
+    stderr_task = asyncio.create_task(read_stream(stderr_stream))
+    reader_tasks = (stdout_task, stderr_task)
+    pending: set[asyncio.Task[tuple[bytes, bool]]] = set(reader_tasks)
+    results: dict[asyncio.Task[tuple[bytes, bool]], tuple[bytes, bool]] = {}
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending,
+                return_when=asyncio.FIRST_EXCEPTION,
+            )
+            for task in done:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    others = (pending | done) - {task}
+                    for sibling in others:
+                        sibling.cancel()
+                    if others:
+                        await asyncio.gather(*others, return_exceptions=True)
+                    raise error
+                results[task] = task.result()
+    except BaseException:
+        for task in reader_tasks:
+            task.cancel()
+        await asyncio.gather(*reader_tasks, return_exceptions=True)
+        raise
+    await process.wait()
+    stdout_bytes, stdout_exceeded = results[stdout_task]
+    stderr_bytes, stderr_exceeded = results[stderr_task]
+    return stdout_bytes, stderr_bytes, stdout_exceeded or stderr_exceeded
+
+
+def _enforce_result_limits(
+    *,
+    result: CheckerResult,
+    adapter_name: str,
+    limits: CheckerOutputLimits,
+) -> CheckerResult:
+    bounded_failures = tuple(
+        _truncate_failure_message(failure, limits=limits) for failure in result.failures
+    )
+    if len(result.diagnostics) > limits.max_diagnostics:
+        return CheckerResult(
+            diagnostics=(),
+            failures=bounded_failures
+            + (diagnostic_count_violation(tool=adapter_name, limits=limits),),
+        )
+    for diagnostic in result.diagnostics:
+        field_violation = diagnostic_field_violation(
+            tool=adapter_name,
+            limits=limits,
+            diagnostic=diagnostic,
+        )
+        if field_violation is not None:
+            return CheckerResult(
+                diagnostics=(),
+                failures=bounded_failures + (field_violation,),
+            )
+    return CheckerResult(
+        diagnostics=result.diagnostics,
+        failures=bounded_failures,
+    )
+
+
+def _truncate_failure_message(
+    failure: CheckerFailure,
+    *,
+    limits: CheckerOutputLimits,
+) -> CheckerFailure:
+    if len(failure.message) <= limits.max_field_length:
+        return failure
+    return CheckerFailure(
+        tool=failure.tool,
+        kind=failure.kind,
+        message=failure.message[: limits.max_field_length],
+    )
 
 
 async def _kill_and_reap(
     process: asyncio.subprocess.Process,
-    communication: asyncio.Task[tuple[bytes | None, bytes | None]],
+    communication: asyncio.Task[object],
     *,
     process_group_id: int | None,
     timeout_seconds: float,
@@ -222,7 +449,7 @@ async def _kill_and_reap(
 
 async def _kill_and_wait(
     process: asyncio.subprocess.Process,
-    communication: asyncio.Task[tuple[bytes | None, bytes | None]],
+    communication: asyncio.Task[object],
     *,
     process_group_id: int | None,
     timeout_seconds: float,

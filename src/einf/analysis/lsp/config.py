@@ -65,6 +65,18 @@ class LspConfig:
             initialize_options.get("checkerMaxConcurrency"),
             default=defaults.max_concurrency,
         )
+        max_output_bytes = _positive_int(
+            initialize_options.get("checkerMaxOutputBytes"),
+            default=defaults.max_output_bytes,
+        )
+        max_diagnostics = _positive_int(
+            initialize_options.get("checkerMaxDiagnostics"),
+            default=defaults.max_diagnostics,
+        )
+        max_field_length = _positive_int(
+            initialize_options.get("checkerMaxFieldLength"),
+            default=defaults.max_field_length,
+        )
         return cls(
             parser=parser,
             checkers=tuple(ordered_checkers),
@@ -72,6 +84,9 @@ class LspConfig:
                 timeout_seconds=timeout_seconds,
                 cleanup_timeout_seconds=cleanup_timeout_seconds,
                 max_concurrency=max_concurrency,
+                max_output_bytes=max_output_bytes,
+                max_diagnostics=max_diagnostics,
+                max_field_length=max_field_length,
             ),
         )
 

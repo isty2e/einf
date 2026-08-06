@@ -11,6 +11,7 @@ CheckerFailureKind = Literal[
     "timeout",
     "execution_error",
     "output_parse_error",
+    "output_limit_exceeded",
 ]
 
 
@@ -24,6 +25,14 @@ class CheckerRequest:
     def __post_init__(self) -> None:
         if not self.targets:
             raise ValueError("checker request requires at least one target")
+
+
+@dataclass(frozen=True, slots=True)
+class CheckerOutputLimits:
+    """Bounds enforced while parsing one checker's output."""
+
+    max_diagnostics: int
+    max_field_length: int
 
 
 @dataclass(frozen=True, slots=True)

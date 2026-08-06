@@ -32,10 +32,13 @@ are walked recursively for `*.py`.
 | Flag | Values | Default | Purpose |
 | --- | --- | --- | --- |
 | `--parser` | `ast`, `libcst` | `ast` | Parser backend. `libcst` needs the `analysis` extra. |
-| `--checker` | `pyright`, `basedpyright`, `zuban`, `ty`, `pyrefly` | none | External type checker to invoke alongside semantic analysis. Repeatable. |
+| `--checker` | `pyright`, `basedpyright`, `zuban`, `ty`, `pyrefly` | none | External type checker to invoke alongside semantic analysis. Repeatable; repeated names are collapsed. |
 | `--checker-timeout-seconds` | finite positive number | `30` | Maximum runtime for each checker process. |
 | `--checker-cleanup-timeout-seconds` | finite positive number | `1` | Maximum time spent cleaning up a checker after timeout or cancellation. |
 | `--checker-max-concurrency` | positive integer | `1` | Maximum number of checker processes running concurrently. |
+| `--checker-max-output-bytes` | positive integer | `8388608` | Maximum combined buffered stdout+stderr bytes per checker process; larger output fails closed. |
+| `--checker-max-diagnostics` | positive integer | `10000` | Maximum diagnostics per checker result and in the merged validator output. |
+| `--checker-max-field-length` | positive integer | `4096` | Maximum characters in one externally reported diagnostic field (message, path, code). |
 
 ## Exit codes
 

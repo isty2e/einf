@@ -57,6 +57,26 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=checker_policy_defaults.max_concurrency,
         help="Maximum number of external checker processes run concurrently.",
     )
+    parser.add_argument(
+        "--checker-max-output-bytes",
+        type=_positive_int,
+        default=checker_policy_defaults.max_output_bytes,
+        help="Maximum combined buffered stdout+stderr bytes per checker process.",
+    )
+    parser.add_argument(
+        "--checker-max-diagnostics",
+        type=_positive_int,
+        default=checker_policy_defaults.max_diagnostics,
+        help=(
+            "Maximum diagnostics per checker result and in the merged validator output."
+        ),
+    )
+    parser.add_argument(
+        "--checker-max-field-length",
+        type=_positive_int,
+        default=checker_policy_defaults.max_field_length,
+        help="Maximum characters in one externally reported diagnostic field.",
+    )
     return parser
 
 
@@ -73,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=arguments.checker_timeout_seconds,
             cleanup_timeout_seconds=arguments.checker_cleanup_timeout_seconds,
             max_concurrency=arguments.checker_max_concurrency,
+            max_output_bytes=arguments.checker_max_output_bytes,
+            max_diagnostics=arguments.checker_max_diagnostics,
+            max_field_length=arguments.checker_max_field_length,
         ),
     )
     print(json.dumps(project_validation_report(report), indent=2, sort_keys=True))
