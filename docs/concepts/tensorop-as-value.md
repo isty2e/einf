@@ -84,10 +84,9 @@ def slow_forward(x):
 ```
 
 `einf` also maintains bounded constructor caches for identical op
-specs (including `with_sizes(...)` and `reduce_by(...)` variants),
-so the slow form is less bad than it looks — but cache misses are
-still cold-path work, and the hoisted form is what the design is
-built for.
+specs, including unchanged `with_sizes(...)` and `reduce_by(...)`
+configurations. That makes the slow form less expensive than it looks,
+but a cache miss still does cold-path work. Hoist the op when you can.
 
 ## Configuring an op
 

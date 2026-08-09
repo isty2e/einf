@@ -175,7 +175,6 @@ class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
         )
 
         plan = build_reduce_compiled_program(
-            tensor=tensor,
             lhs_terms=context.lhs_terms[0],
             expected_output_terms=context.rhs_terms[0],
             axis_sizes=context.axis_sizes,

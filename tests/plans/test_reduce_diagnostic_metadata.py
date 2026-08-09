@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 from einf.axis import Axis, ScalarAxisTerms
 from einf.backend import ArrayNamespace
 from einf.diagnostics import ErrorCode, ExecutionError, ValidationError
+from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import ReducerName
 from einf.steps.reduce.build import ReduceAxesResolver
 from einf.steps.reduce.runtime import REDUCER_COMPILER, ReducerRuntimeContext
@@ -73,7 +74,6 @@ def test_unavailable_string_reducer_reports_operation_and_reducer() -> None:
         REDUCER_COMPILER.compile(
             reducer=ReducerName.SUM,
             axes=(0,),
-            tensor=np.ones((1,)),
             xp=missing_namespace,
         )
 
@@ -93,9 +93,8 @@ def test_compiled_reducer_signature_diagnostic_reports_reduce_operation() -> Non
 
     with pytest.raises(ValidationError) as error:
         REDUCER_COMPILER.compile(
-            reducer=unsupported_reducer,
+            reducer=CallableReducerBinding(unsupported_reducer),
             axes=(0,),
-            tensor=np.ones((1,)),
             xp=cast(ArrayNamespace, np),
         )
 

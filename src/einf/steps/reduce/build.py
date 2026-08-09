@@ -11,10 +11,10 @@ from einf.backend import (
     get_backend_array_ops,
 )
 from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
+from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
 from einf.steps.runtime import backend_specialization_error
-from einf.tensor_types import TensorLike
 
 from .runtime import REDUCER_COMPILER, CompiledReducer
 
@@ -40,7 +40,7 @@ class _ReduceCompileKey:
     pack_ranks: tuple[tuple[str, int], ...]
     backend_identity: BackendExecutionIdentity | None
     reducer_kind: str
-    reducer_token: str | int
+    reducer_token: str | CallableReducerBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +143,6 @@ _REDUCE_RUNTIME_CACHE_LOCK = RLock()
 
 def build_reduce_compiled_program(
     *,
-    tensor: TensorLike,
     lhs_terms: ScalarAxisTerms,
     expected_output_terms: ScalarAxisTerms,
     axis_sizes: dict[str, int],
@@ -194,7 +193,6 @@ def build_reduce_compiled_program(
             reducer=reducer,
             pack_sizes=pack_sizes,
             axis_sizes=axis_sizes,
-            tensor=tensor,
             xp=xp,
         )
         _put_cached_reduce_compiled_program(
@@ -244,7 +242,6 @@ def _compile_reduce_runtime_phase(
     reducer: CanonicalReducer,
     pack_sizes: dict[str, tuple[int, ...]],
     axis_sizes: dict[str, int],
-    tensor: TensorLike,
     xp: ArrayNamespace,
 ) -> tuple[tuple[int, ...], CompiledReducer, ScalarAxisTerms]:
     """Compile one unary reduce phase to concrete reducer execution."""
@@ -260,7 +257,6 @@ def _compile_reduce_runtime_phase(
     compiled_reducer = REDUCER_COMPILER.compile(
         reducer=reducer,
         axes=resolved.axes,
-        tensor=tensor,
         xp=xp,
     )
     return resolved.axes, compiled_reducer, resolved.output_terms
@@ -288,11 +284,13 @@ def _build_reduce_compile_key(
     )
 
 
-def _reducer_cache_token(reducer: CanonicalReducer) -> tuple[str, str | int]:
+def _reducer_cache_token(
+    reducer: CanonicalReducer,
+) -> tuple[str, str | CallableReducerBinding]:
     """Build stable cache token for one reducer."""
     if isinstance(reducer, ReducerName):
         return "string", reducer.value
-    return "callable", id(reducer)
+    return "callable", reducer
 
 
 def _get_cached_reduce_compiled_program(

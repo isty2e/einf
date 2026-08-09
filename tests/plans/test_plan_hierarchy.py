@@ -13,6 +13,7 @@ from einf.plans.abstract import AbstractPlan
 from einf.plans.runners import RouteRunnerKernel, StepChainRunnerKernel
 from einf.plans.scoring import SymbolicPlanScore
 from einf.plans.symbolic import SymbolicPlan
+from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import ReducerName
 from einf.steps.axis_slice import AxisSliceSymbolicStep
 from einf.steps.base import (
@@ -621,7 +622,9 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
         program=build_reduce_symbolic_program(
             lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
             rhs=AxisSide.from_spec(ax[b, d], side_name="rhs"),
-            reducer=lambda value, axis: np.sum(value, axis=axis),
+            reducer=CallableReducerBinding(
+                lambda value, axis: np.sum(value, axis=axis)
+            ),
             reduce_axes=AxisTerms.from_spec((h, w)),
             is_default_reducer=False,
         ),

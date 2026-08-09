@@ -1,10 +1,6 @@
-import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from dis import get_instructions
-from functools import partial
-from types import CodeType, TracebackType
-from typing import Literal, Protocol, TypeGuard, cast
+from typing import Protocol, TypeGuard, cast
 
 from array_api_compat import array_namespace
 
@@ -20,20 +16,15 @@ except ImportError:  # pragma: no cover
 
 from einf.backend import ArrayNamespace, BackendArrayOps
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
+from einf.reduction.callable import ReducerResult
 from einf.reduction.schema import (
     CanonicalReducer,
     ReducerCallable,
     ReducerName,
-    ReducerResult,
 )
 from einf.tensor_types import TensorLike
 
-ReducerCallMode = Literal[
-    "axis_keyword",
-    "axis_positional",
-    "tensor_only",
-    "fallback",
-]
+from .callable_contract import ReducerCallMode, resolve_callable_reducer_mode
 
 NamespaceReducer = Callable[..., ReducerResult]
 
@@ -320,12 +311,6 @@ class CallableReducerInvoker:
                     call_attempt=lambda: self.reducer(tensor),
                     context=context,
                 )
-            case "fallback":
-                return self._run_fallback(
-                    tensor=tensor,
-                    axes=axes,
-                    context=context,
-                )
         return context.raise_unsupported_reducer_signature()
 
     def _run_checked(
@@ -343,113 +328,6 @@ class CallableReducerInvoker:
             raise
         except Exception as error:
             raise context.custom_reducer_error(error=error) from error
-
-    def _run_fallback(
-        self,
-        *,
-        tensor: TensorLike,
-        axes: tuple[int, ...],
-        context: ReducerRuntimeContext,
-    ) -> ReducerResult:
-        """Try supported call forms for uninspectable callables."""
-        call_attempts = (
-            lambda: self.reducer(tensor, axis=axes),
-            lambda: self.reducer(tensor, axes),
-            lambda: self.reducer(tensor),
-        )
-        for call_attempt in call_attempts:
-            try:
-                return call_attempt()
-            except TensorOpError:
-                raise
-            except TypeError as error:
-                if self._is_binding_typeerror(error=error):
-                    continue
-                raise
-            except Exception as error:
-                raise context.custom_reducer_error(error=error) from error
-        return context.raise_unsupported_reducer_signature()
-
-    def _is_binding_typeerror(
-        self,
-        *,
-        error: TypeError,
-    ) -> bool:
-        """Return whether TypeError occurred before entering reducer code."""
-        body_codes = self._callable_body_codes()
-        if body_codes is None:
-            return False
-        traceback_entry = error.__traceback__
-        while traceback_entry is not None:
-            entered_body = traceback_entry.tb_frame.f_code in body_codes
-            failed_while_forwarding = (
-                traceback_entry.tb_next is None
-                and self._is_forwarding_call(traceback_entry)
-            )
-            if entered_body and not failed_while_forwarding:
-                return False
-            traceback_entry = traceback_entry.tb_next
-
-        message = str(error)
-        markers = (
-            "unexpected keyword argument",
-            "positional argument",
-            "required positional argument",
-            "missing 1 required",
-            "missing 2 required",
-            "takes",
-            "given",
-        )
-        return any(marker in message for marker in markers)
-
-    def _is_forwarding_call(self, traceback_entry: TracebackType, /) -> bool:
-        """Return whether a callable failed while forwarding variadic arguments."""
-        try:
-            return any(
-                instruction.offset == traceback_entry.tb_lasti
-                and instruction.opname == "CALL_FUNCTION_EX"
-                for instruction in get_instructions(traceback_entry.tb_frame.f_code)
-            )
-        except Exception:  # noqa: BLE001 - uncertain forwarding evidence fails closed
-            return False
-
-    def _callable_body_codes(self) -> frozenset[CodeType] | None:
-        """Return leaf callable code objects that establish reducer body entry."""
-        body_codes: set[CodeType] = set()
-        candidates: list[object] = [self.reducer]
-        seen: set[int] = set()
-        while candidates:
-            candidate = candidates.pop()
-            if id(candidate) in seen:
-                continue
-            seen.add(id(candidate))
-            try:
-                code = getattr(candidate, "__code__", None)
-                wrapped = getattr(candidate, "__wrapped__", None)
-            except Exception:  # noqa: BLE001 - preserve the original reducer error
-                return None
-            if isinstance(code, CodeType):
-                body_codes.add(code)
-
-            delegates: list[object] = []
-            if wrapped is not None and id(wrapped) not in seen:
-                delegates.append(wrapped)
-            if isinstance(candidate, partial):
-                delegate = candidate.func
-                if id(delegate) not in seen:
-                    delegates.append(delegate)
-            if delegates:
-                candidates.extend(delegates)
-                continue
-
-            try:
-                call = type(candidate).__call__
-                call_code = getattr(call, "__code__", None)
-            except Exception:  # noqa: BLE001 - uncertain body entry must fail closed
-                return None
-            if isinstance(call_code, CodeType):
-                body_codes.add(call_code)
-        return frozenset(body_codes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,7 +363,6 @@ class ReducerCompiler:
         *,
         reducer: CanonicalReducer,
         axes: tuple[int, ...],
-        tensor: TensorLike,
         xp: ArrayNamespace,
     ) -> CompiledReducer:
         """Compile one reducer against runtime backend and call-shape."""
@@ -496,12 +373,8 @@ class ReducerCompiler:
             )
         return CompiledCallableReducer(
             invoker=CallableReducerInvoker(
-                reducer=reducer,
-                call_mode=self._resolve_callable_call_mode(
-                    reducer=reducer,
-                    axes=axes,
-                    tensor=tensor,
-                ),
+                reducer=reducer.materialize(),
+                call_mode=resolve_callable_reducer_mode(reducer, axes=axes),
             ),
         )
 
@@ -531,47 +404,6 @@ class ReducerCompiler:
             name=reducer_name,
             reducer_fn=reducer_fn,
         )
-
-    def _resolve_callable_call_mode(
-        self,
-        *,
-        reducer: ReducerCallable,
-        axes: tuple[int, ...],
-        tensor: TensorLike,
-    ) -> ReducerCallMode:
-        """Resolve callable reducer invocation mode from inspectable signature."""
-        try:
-            signature = inspect.signature(reducer)
-        except (TypeError, ValueError):
-            return "fallback"
-
-        if self._can_bind(signature, (tensor,), {"axis": axes}):
-            return "axis_keyword"
-        if self._can_bind(signature, (tensor, axes), {}):
-            return "axis_positional"
-        if self._can_bind(signature, (tensor,), {}):
-            return "tensor_only"
-        raise ValidationError(
-            code=ErrorCode.INCONSISTENT_DIMS,
-            message="inconsistent dims: reducer signature is unsupported",
-            help="use (tensor), (tensor, axes), or (tensor, *, axis=...)",
-            related=("reduce reducer",),
-            data={"operation": "reduce"},
-        )
-
-    def _can_bind(
-        self,
-        signature: inspect.Signature,
-        args: tuple[TensorLike] | tuple[TensorLike, tuple[int, ...]],
-        kwargs: dict[str, tuple[int, ...]],
-    ) -> bool:
-        """Return whether reducer signature can bind given arguments."""
-        _ = self
-        try:
-            signature.bind(*args, **kwargs)
-        except TypeError:
-            return False
-        return True
 
 
 REDUCER_COMPILER = ReducerCompiler()

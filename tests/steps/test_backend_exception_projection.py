@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from dataclasses import replace
-from functools import partial, wraps
 from typing import cast
 
 import numpy as np
@@ -10,7 +9,6 @@ import einf.steps.einsum.native as native_module
 import einf.steps.einsum.step as einsum_step_module
 import einf.steps.reshape.runtime as reshape_runtime_module
 import einf.steps.runtime as steps_runtime_module
-from einf import ax, axes, reduce
 from einf.axis import AxisTerms
 from einf.backend import BackendProfile, get_backend_array_ops
 from einf.backend.memory_alias import numpy_shares_storage, torch_shares_storage
@@ -1634,171 +1632,6 @@ def test_named_reducer_unexpected_fault_is_execution_error(
         )
 
     assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
-
-
-def test_fallback_reducer_body_typeerror_is_not_retried() -> None:
-    calls = 0
-
-    def reducer(_tensor: object, **_kwargs: object) -> object:
-        return _tensor
-
-    def wrapper(*_args: object, **_kwargs: object) -> np.ndarray:
-        nonlocal calls
-        calls += 1
-        raise TypeError("takes an unsupported body path")
-
-    wrapper.__name__ = reducer.__name__
-    invoker = CallableReducerInvoker(reducer=wrapper, call_mode="fallback")
-
-    with pytest.raises(TypeError, match="unsupported body path"):
-        invoker.invoke(
-            tensor=np.zeros((2, 3)),
-            axes=(1,),
-            context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        )
-
-    assert calls == 1
-
-
-def test_decorated_wrapper_body_typeerror_is_not_retried() -> None:
-    calls = 0
-
-    def delegate(
-        tensor: np.ndarray,
-        axes: tuple[int, ...],
-    ) -> np.ndarray:
-        return np.sum(tensor, axis=axes)
-
-    @wraps(delegate)
-    def wrapper(*_args: object, **_kwargs: object) -> np.ndarray:
-        nonlocal calls
-        calls += 1
-        raise TypeError("missing 1 required positional argument: 'value'")
-
-    wrapper.__signature__ = "uninspectable"  # type: ignore[attr-defined]
-    invoker = CallableReducerInvoker(reducer=wrapper, call_mode="fallback")
-
-    with pytest.raises(TypeError, match="missing 1 required positional argument"):
-        invoker.invoke(
-            tensor=np.zeros((2, 3)),
-            axes=(1,),
-            context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        )
-
-    assert calls == 1
-
-
-def test_partial_reducer_body_typeerror_is_not_retried() -> None:
-    calls = 0
-
-    def reducer(prefix: str, _tensor: object, **_kwargs: object) -> np.ndarray:
-        nonlocal calls
-        _ = prefix
-        calls += 1
-        raise TypeError("takes an unsupported body path")
-
-    invoker = CallableReducerInvoker(
-        reducer=partial(reducer, "bound"),
-        call_mode="fallback",
-    )
-
-    with pytest.raises(TypeError, match="unsupported body path"):
-        invoker.invoke(
-            tensor=np.zeros((2, 3)),
-            axes=(1,),
-            context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        )
-
-    assert calls == 1
-
-
-def test_forwarding_reducer_retries_delegate_binding_failure() -> None:
-    wrapper_calls = 0
-    reducer_calls = 0
-
-    def reducer(tensor: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
-        nonlocal reducer_calls
-        reducer_calls += 1
-        return np.sum(tensor, axis=axes)
-
-    @wraps(reducer)
-    def wrapper(*args: object, **kwargs: object) -> np.ndarray:
-        nonlocal wrapper_calls
-        wrapper_calls += 1
-        return reducer(*args, **kwargs)  # type: ignore[arg-type]
-
-    wrapper.__signature__ = "uninspectable"  # type: ignore[attr-defined]
-    invoker = CallableReducerInvoker(reducer=wrapper, call_mode="fallback")
-
-    result = invoker.invoke(
-        tensor=np.arange(6).reshape(2, 3),
-        axes=(1,),
-        context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-    )
-
-    np.testing.assert_array_equal(result, np.array([3, 12]))
-    assert wrapper_calls == 2
-    assert reducer_calls == 1
-
-
-def test_opaque_forwarding_reducer_retries_delegate_binding_failure() -> None:
-    wrapper_calls = 0
-    reducer_calls = 0
-
-    def reducer(tensor: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
-        nonlocal reducer_calls
-        reducer_calls += 1
-        return np.sum(tensor, axis=axes)
-
-    class OpaqueWrapper:
-        @property
-        def __signature__(self) -> object:
-            raise ValueError("signature is unavailable")
-
-        def __call__(self, *args: object, **kwargs: object) -> np.ndarray:
-            nonlocal wrapper_calls
-            wrapper_calls += 1
-            return reducer(*args, **kwargs)  # type: ignore[arg-type]
-
-    batch_axis, feature_axis = axes("opaque_wrapper_batch", "opaque_wrapper_feature")
-    operation = reduce(ax[batch_axis, feature_axis], ax[batch_axis]).reduce_by(
-        OpaqueWrapper()
-    )
-
-    result = operation(np.arange(6).reshape(2, 3))
-
-    np.testing.assert_array_equal(result, np.array([3, 12]))
-    assert wrapper_calls == 2
-    assert reducer_calls == 1
-
-
-def test_forwarding_reducer_does_not_retry_delegate_body_typeerror() -> None:
-    wrapper_calls = 0
-    reducer_calls = 0
-
-    def reducer(_tensor: np.ndarray, _axes: tuple[int, ...]) -> np.ndarray:
-        nonlocal reducer_calls
-        reducer_calls += 1
-        raise TypeError("takes a failing reducer body path")
-
-    @wraps(reducer)
-    def wrapper(*args: object, **kwargs: object) -> np.ndarray:
-        nonlocal wrapper_calls
-        wrapper_calls += 1
-        return reducer(*args, **kwargs)  # type: ignore[arg-type]
-
-    wrapper.__signature__ = "uninspectable"  # type: ignore[attr-defined]
-    invoker = CallableReducerInvoker(reducer=wrapper, call_mode="fallback")
-
-    with pytest.raises(TypeError, match="failing reducer body path"):
-        invoker.invoke(
-            tensor=np.arange(6).reshape(2, 3),
-            axes=(1,),
-            context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        )
-
-    assert wrapper_calls == 2
-    assert reducer_calls == 1
 
 
 def test_strict_numpy_reshape_does_not_fallback_on_initialization_failure(
