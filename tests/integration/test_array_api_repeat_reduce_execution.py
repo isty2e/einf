@@ -1,5 +1,6 @@
 import functools
 import inspect
+from dataclasses import dataclass
 from functools import partial, partialmethod, wraps
 from types import MappingProxyType, MethodType
 from typing import NamedTuple
@@ -12,12 +13,87 @@ from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, reduce, r
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
+from einf.steps.reduce import runtime as reduce_runtime_module
 from einf.steps.reduce import step as reduce_step_module
 
 try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None
+
+
+class _SelectedReducerNamespace:
+    __name__ = "custom.selected_reducer"
+
+    def __init__(self) -> None:
+        self.sum_calls = 0
+        self.asarray_calls = 0
+
+    def asarray(self, value: bool | complex) -> "_SelectedReducerTensor":
+        self.asarray_calls += 1
+        return _SelectedReducerTensor(np.asarray(value), self)
+
+    def sum(
+        self,
+        tensor: "_SelectedReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> int | float | complex:
+        self.sum_calls += 1
+        return np.asarray(np.sum(tensor.value, axis=axis)).item()
+
+
+class _NoInventoryReducerNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.no_inventory_reducer"
+
+    def __getattribute__(self, name: str) -> object:
+        if name in {"all", "any", "max", "mean", "min", "prod"}:
+            raise AssertionError(f"unselected reducer {name!r} was inspected")
+        return super().__getattribute__(name)
+
+
+class _BrokenReducerLookupNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.broken_reducer_lookup"
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "sum":
+            raise OSError("selected reducer lookup failed")
+        return super().__getattribute__(name)
+
+
+class _FailingSelectedReducerNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.failing_selected_reducer"
+
+    def sum(
+        self,
+        tensor: "_SelectedReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> int | float | complex:
+        del tensor, axis
+        self.sum_calls += 1
+        raise OSError("selected reducer invocation failed")
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectedReducerTensor:
+    value: np.ndarray
+    namespace: _SelectedReducerNamespace
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.value.shape
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> _SelectedReducerNamespace:
+        del api_version
+        return self.namespace
+
+    def __getitem__(self, key: object) -> "_SelectedReducerTensor":
+        del key
+        return self
 
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
@@ -31,6 +107,57 @@ def test_inflate_rejects_multi_input_lhs_with_diagnostic_code() -> None:
         _ = repeat.__call__((ax[b], ax[b]), ax[b])
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value
+
+
+def test_reduce_requires_only_scalar_coercion_and_selected_reducer() -> None:
+    b, h = axes("selected_b", "selected_h")
+    namespace = _NoInventoryReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    result = reduce(ax[b, h], ax[()]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _SelectedReducerTensor)
+    assert result.shape == ()
+    assert result.value.item() == 15
+    assert namespace.sum_calls == 1
+    assert namespace.asarray_calls == 1
+
+
+def test_reduce_reports_missing_selected_reducer() -> None:
+    b, h = axes("missing_b", "missing_h")
+    namespace = _SelectedReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ValidationError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("prod")(tensor)
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert "backend reducer 'prod' is unavailable" in error.value.message
+
+
+def test_reduce_projects_selected_reducer_lookup_failure() -> None:
+    b, h = axes("lookup_b", "lookup_h")
+    namespace = _BrokenReducerLookupNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert "selected reducer lookup failed" in error.value.message
+
+
+def test_reduce_projects_selected_reducer_invocation_failure() -> None:
+    b, h = axes("invocation_b", "invocation_h")
+    namespace = _FailingSelectedReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert "selected reducer invocation failed" in error.value.message
+    assert namespace.sum_calls == 1
 
 
 def test_inflate_appends_axis_and_broadcasts_values() -> None:
@@ -299,7 +426,7 @@ def test_reduce_compile_invariant_rejects_mismatched_output_terms(
         reducer: CanonicalReducer,
         pack_sizes: dict[str, tuple[int, ...]],
         axis_sizes: dict[str, int],
-        xp: reduce_build_module.ArrayNamespace,
+        xp: reduce_runtime_module.ReducerArrayNamespace,
     ) -> tuple[
         tuple[int, ...],
         reduce_build_module.CompiledReducer,

@@ -825,8 +825,6 @@ def test_final_einsum_route_preserves_structured_error(
     )
     profile = BackendProfile(
         namespace=np,
-        supports_einsum=True,
-        supports_strict_view=True,
     )
     executor = EinsumEquationExecutor(profile=profile)
 
@@ -854,8 +852,6 @@ def test_final_einsum_route_projects_unexpected_backend_failure(
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         )
     )
 
@@ -881,8 +877,6 @@ def test_portable_einsum_rejects_wrong_semantic_output_shape() -> None:
     executor = einsum_step_module._build_einsum_executor(
         BackendProfile(
             namespace=PortableNamespace(),
-            supports_einsum=True,
-            supports_strict_view=False,
         )
     )
 
@@ -918,8 +912,6 @@ def test_numpy_family_einsum_validates_namespace_fallback_output() -> None:
     executor = einsum_step_module._build_einsum_executor(
         BackendProfile(
             namespace=NumpyFamilyNamespace(),
-            supports_einsum=True,
-            supports_strict_view=False,
         )
     )
 
@@ -948,8 +940,6 @@ def test_exact_native_einsum_skips_semantic_shape_validation(
     executor = einsum_step_module._build_einsum_executor(
         BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         )
     )
 
@@ -967,8 +957,6 @@ def test_injected_native_einsum_callable_validates_output_shape() -> None:
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         ),
         native_module_matmul=lambda _lhs, _rhs: np.zeros((99,)),
     )
@@ -988,8 +976,6 @@ def test_injected_native_module_einsum_validates_output_shape() -> None:
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         ),
         native_module_einsum=lambda *_args: np.zeros((99,)),
     )
@@ -1028,8 +1014,6 @@ def test_torch_override_mode_disables_native_validation_bypass() -> None:
     executor = einsum_step_module._build_einsum_executor(
         BackendProfile(
             namespace=torch,
-            supports_einsum=True,
-            supports_strict_view=True,
         )
     )
     operands = (torch.zeros((2, 3)), torch.zeros((3, 4)))
@@ -1068,24 +1052,25 @@ def test_torch_dispatch_mode_disables_native_validation_bypass() -> None:
         )
 
 
-def test_try_native_einsum_validates_fallback_output(
+def test_namespace_einsum_fallback_runs_once_and_validates_opt_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    namespace_calls: list[None] = []
+
     def unavailable_namespace(*_args: object) -> TensorLike:
+        namespace_calls.append(None)
         raise RuntimeError("namespace route unavailable")
 
     monkeypatch.setattr(
-        einsum_step_module,
-        "try_native_contract_einsum",
-        lambda **_kwargs: np.zeros((99,)),
+        einsum_step_module.opt_einsum,
+        "contract",
+        lambda *_args, **_kwargs: np.zeros((99,)),
     )
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         ),
-        native_namespace_einsum=unavailable_namespace,
+        namespace_einsum=unavailable_namespace,
     )
 
     with pytest.raises(ExecutionError, match="output shape does not match") as error:
@@ -1097,6 +1082,7 @@ def test_try_native_einsum_validates_fallback_output(
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert len(namespace_calls) == 1
 
 
 def test_final_opt_einsum_route_validates_output_shape(
@@ -1110,8 +1096,6 @@ def test_final_opt_einsum_route_validates_output_shape(
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
-            supports_einsum=True,
-            supports_strict_view=True,
         )
     )
 
@@ -1375,8 +1359,6 @@ def test_backend_specialization_projects_initialization_failure(
 ) -> None:
     profile = BackendProfile(
         namespace=np,
-        supports_einsum=True,
-        supports_strict_view=True,
     )
     context = RuntimeSpecializationContext(
         input_shapes=((2, 3),),
@@ -1410,8 +1392,6 @@ def test_backend_specialization_projects_capability_inspection_failure() -> None
 
     profile = BackendProfile(
         namespace=BrokenNamespace(),
-        supports_einsum=False,
-        supports_strict_view=False,
     )
     context = RuntimeSpecializationContext(
         input_shapes=((2, 3),),
@@ -1440,8 +1420,6 @@ def test_einsum_specialization_projects_capability_inspection_failure() -> None:
 
     profile = BackendProfile(
         namespace=BrokenNamespace(),
-        supports_einsum=True,
-        supports_strict_view=False,
     )
 
     with pytest.raises(ExecutionError, match="capability inspection failed") as error:

@@ -1,10 +1,8 @@
 from dataclasses import dataclass
 from threading import RLock
-from typing import TypeGuard
 
 from einf.axis import AxisTerms, ScalarAxisTerms
 from einf.backend import (
-    ArrayNamespace,
     BackendArrayOps,
     BackendExecutionIdentity,
     BackendProfile,
@@ -16,19 +14,14 @@ from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
 from einf.steps.runtime import backend_specialization_error
 
-from .runtime import REDUCER_COMPILER, CompiledReducer
+from .runtime import (
+    REDUCER_COMPILER,
+    CompiledReducer,
+    ReducerArrayNamespace,
+    bind_reducer_namespace,
+)
 
 _REDUCE_RUNTIME_CACHE_MAX_ENTRIES = 2_048
-_REDUCE_NAMESPACE_METHODS = (
-    "asarray",
-    "sum",
-    "prod",
-    "mean",
-    "max",
-    "min",
-    "all",
-    "any",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +122,7 @@ class ReduceCompiledProgram:
 
     axes: tuple[int, ...]
     compiled_reducer: CompiledReducer
-    xp: ArrayNamespace
+    xp: ReducerArrayNamespace
     backend_ops: BackendArrayOps | None
 
 
@@ -153,9 +146,8 @@ def build_reduce_compiled_program(
     backend_profile: BackendProfile,
 ) -> ReduceCompiledProgram:
     """Build one unary reduce runtime program from canonical terms and sizes."""
-    namespace_candidate = backend_profile.namespace
     try:
-        has_runtime_namespace = has_reduce_namespace_methods(namespace_candidate)
+        xp = bind_reducer_namespace(backend_profile.namespace)
         backend_ops = get_backend_array_ops(backend_profile.backend_family)
     except TensorOpError:
         raise
@@ -164,20 +156,7 @@ def build_reduce_compiled_program(
             operation="reduce",
             error=error,
         ) from error
-    if not has_runtime_namespace:
-        raise ValidationError(
-            code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
-            message=(
-                "backend dispatch unsupported input: "
-                "backend namespace is missing required Array API primitives"
-            ),
-            help="use tensors backed by a complete Array API namespace for this operation",
-            related=("backend dispatch",),
-            data={"operation": "reduce"},
-        )
-
     normalized_reduce_axes = AxisTerms.from_spec(reduce_axes)
-    xp = namespace_candidate
     cache_key = _build_reduce_compile_key(
         lhs_terms=lhs_terms,
         reduce_axes=normalized_reduce_axes,
@@ -227,14 +206,6 @@ def build_reduce_compiled_program(
     )
 
 
-def has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
-    """Return whether one namespace exposes required reducer methods."""
-    for method_name in _REDUCE_NAMESPACE_METHODS:
-        if not callable(getattr(namespace, method_name, None)):
-            return False
-    return True
-
-
 def _compile_reduce_runtime_phase(
     *,
     lhs_terms: ScalarAxisTerms,
@@ -242,7 +213,7 @@ def _compile_reduce_runtime_phase(
     reducer: CanonicalReducer,
     pack_sizes: dict[str, tuple[int, ...]],
     axis_sizes: dict[str, int],
-    xp: ArrayNamespace,
+    xp: ReducerArrayNamespace,
 ) -> tuple[tuple[int, ...], CompiledReducer, ScalarAxisTerms]:
     """Compile one unary reduce phase to concrete reducer execution."""
     reduce_terms = expand_pack_terms(

@@ -1,9 +1,17 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 import opt_einsum.backends as oe_backends
 from array_api_compat import array_namespace
 
-from ..diagnostics import ErrorCode, TensorOpError, ValidationError
+from ..diagnostics import (
+    ErrorCode,
+    ExecutionError,
+    TensorOpError,
+    ValidationError,
+)
+from ..tensor_types import TensorLike
 from .namespace import (
     ArrayNamespaceLike,
     BackendFamily,
@@ -13,7 +21,6 @@ from .namespace import (
 )
 
 _STRICT_VIEW_FAMILIES = frozenset(("numpy", "torch"))
-_EINSUM_REQUIRED_OPS = frozenset(("contract",))
 
 
 def _missing_einsum_extension_error(operation: str) -> ValidationError:
@@ -32,19 +39,24 @@ def _missing_einsum_extension_error(operation: str) -> ValidationError:
     )
 
 
+def _normalize_operation_name(op_name: str) -> str:
+    if not isinstance(op_name, str):
+        raise TypeError("op_name must be a non-empty string")
+
+    normalized_op_name = op_name.strip().lower()
+    if not normalized_op_name:
+        raise TypeError("op_name must be a non-empty string")
+    return normalized_op_name
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class BackendExecutionIdentity:
-    """Canonical backend facts that determine runtime specialization.
+    """Canonical backend identity for runtime specialization.
 
     Parameters
     ----------
     namespace
         Array namespace object selected for the runtime inputs.
-    supports_einsum
-        Whether the resolved execution policy permits einsum routes.
-    supports_strict_view
-        Whether the resolved execution policy permits strict view routes.
-
     Attributes
     ----------
     namespace_id
@@ -59,8 +71,6 @@ class BackendExecutionIdentity:
     """
 
     namespace: ArrayNamespaceLike
-    supports_einsum: bool
-    supports_strict_view: bool
     namespace_id: str = field(init=False)
     backend_family: BackendFamily | None = field(init=False)
 
@@ -79,8 +89,6 @@ class BackendExecutionIdentity:
                 id(self.namespace),
                 self.namespace_id,
                 self.backend_family,
-                self.supports_einsum,
-                self.supports_strict_view,
             )
         )
 
@@ -91,24 +99,17 @@ class BackendExecutionIdentity:
             self.namespace is other.namespace
             and self.namespace_id == other.namespace_id
             and self.backend_family == other.backend_family
-            and self.supports_einsum == other.supports_einsum
-            and self.supports_strict_view == other.supports_strict_view
         )
 
 
 @dataclass(frozen=True, slots=True)
 class BackendProfile:
-    """Resolved backend profile for one TensorOp call.
+    """Resolved backend namespace profile for one TensorOp call.
 
     Parameters
     ----------
     namespace
         Array namespace object selected for the runtime inputs.
-    supports_einsum
-        Whether the resolved execution policy permits einsum routes.
-    supports_strict_view
-        Whether the resolved execution policy permits strict view routes.
-
     Attributes
     ----------
     namespace_id
@@ -125,19 +126,13 @@ class BackendProfile:
     """
 
     namespace: ArrayNamespaceLike
-    supports_einsum: bool
-    supports_strict_view: bool
     execution_identity: BackendExecutionIdentity = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "execution_identity",
-            BackendExecutionIdentity(
-                namespace=self.namespace,
-                supports_einsum=self.supports_einsum,
-                supports_strict_view=self.supports_strict_view,
-            ),
+            BackendExecutionIdentity(namespace=self.namespace),
         )
 
     @property
@@ -166,36 +161,93 @@ class BackendProfile:
 class BackendPolicy:
     """Backend capability policy for operations and selected plans."""
 
-    def normalize_operation_name(self, op_name: str) -> str:
-        """Normalize and validate one operation name for backend checks."""
-        if not isinstance(op_name, str):
-            raise TypeError("op_name must be a non-empty string")
-
-        normalized_op_name = op_name.strip().lower()
-        if not normalized_op_name:
-            raise TypeError("op_name must be a non-empty string")
-
-        return normalized_op_name
-
-    def validate_profile(self, *, profile: BackendProfile, op_name: str) -> None:
-        """Validate one backend profile against operation-level requirements."""
-        normalized_op_name = self.normalize_operation_name(op_name)
-        if normalized_op_name in _EINSUM_REQUIRED_OPS and not profile.supports_einsum:
-            raise _missing_einsum_extension_error(normalized_op_name)
-
     def validate_einsum_capability(
         self,
         *,
         profile: BackendProfile,
         op_name: str,
     ) -> None:
-        """Validate a selected plan's einsum requirement."""
-        normalized_op_name = self.normalize_operation_name(op_name)
-        if not profile.supports_einsum:
-            raise _missing_einsum_extension_error(normalized_op_name)
+        """Validate a selected plan's einsum requirement.
 
-    def supports_einsum(self, backend_family: BackendFamily) -> bool:
-        """Return whether one backend family supports einsum execution."""
+        Parameters
+        ----------
+        profile
+            Resolved namespace profile for the runtime operands.
+        op_name
+            Public operation that selected the einsum plan.
+
+        Raises
+        ------
+        ValidationError
+            No namespace or ``opt_einsum`` route is available.
+        ExecutionError
+            Namespace capability lookup fails unexpectedly.
+        """
+        normalized_op_name = _normalize_operation_name(op_name)
+        if self.resolve_namespace_einsum(profile) is not None:
+            return
+        if self.supports_opt_einsum(profile.backend_family):
+            return
+        raise _missing_einsum_extension_error(normalized_op_name)
+
+    def resolve_namespace_einsum(
+        self,
+        profile: BackendProfile,
+        /,
+    ) -> Callable[..., TensorLike] | None:
+        """Resolve one namespace-provided einsum primitive.
+
+        Parameters
+        ----------
+        profile
+            Resolved namespace profile to inspect.
+
+        Returns
+        -------
+        Callable or None
+            Namespace ``einsum`` callable, or ``None`` when absent.
+
+        Raises
+        ------
+        ExecutionError
+            Namespace attribute lookup fails unexpectedly.
+        """
+        try:
+            candidate = getattr(profile.namespace, "einsum", None)
+        except TensorOpError:
+            raise
+        except AttributeError:
+            return None
+        except Exception as error:
+            raise ExecutionError(
+                code=ErrorCode.BACKEND_EXECUTION_FAILED,
+                message=(
+                    "backend execution failed: einsum capability lookup failed: "
+                    f"{error}"
+                ),
+                help="ensure the array namespace exposes stable operation attributes",
+                related=("einsum capability",),
+                data={"operation": "einsum"},
+            ) from error
+        if not callable(candidate):
+            return None
+        return cast(Callable[..., TensorLike], candidate)
+
+    def supports_opt_einsum(self, backend_family: BackendFamily | None) -> bool:
+        """Return whether ``opt_einsum`` admits one backend family.
+
+        Parameters
+        ----------
+        backend_family
+            Canonical backend family, if one was resolved.
+
+        Returns
+        -------
+        bool
+            Whether ``opt_einsum`` reports an einsum implementation.
+        """
+        if backend_family is None:
+            return False
         try:
             return bool(oe_backends.has_einsum(backend_family))
         except (
@@ -211,18 +263,25 @@ class BackendPolicy:
     def supports_strict_view(
         self,
         *,
-        namespace_id: str,
         backend_family: BackendFamily | None,
     ) -> bool:
-        """Return whether backend is strict zero-copy view capable."""
+        """Return whether a backend family supports strict views.
+
+        Parameters
+        ----------
+        backend_family
+            Canonical backend family, if one was resolved.
+
+        Returns
+        -------
+        bool
+            Whether the family has a supported storage-alias proof.
+        """
         return backend_family in _STRICT_VIEW_FAMILIES
 
 
 class BackendResolver:
-    """Resolve backend profile from runtime tensors and validate policy."""
-
-    def __init__(self, *, policy: BackendPolicy) -> None:
-        self.policy = policy
+    """Resolve canonical backend profiles from runtime tensors."""
 
     def lookup(self, *tensors: object, op_name: str) -> BackendProfile:
         """Lookup backend profile from runtime input tensors."""
@@ -296,35 +355,33 @@ class BackendResolver:
                 related=("backend dispatch",),
                 data={"operation": op_name},
             )
-        namespace = namespaces[0]
-        namespace_id = namespace_ids[0]
-        backend_family = infer_backend_family(namespace_id)
-        supports_einsum = backend_family is not None and self.policy.supports_einsum(
-            backend_family
-        )
-        supports_view = self.policy.supports_strict_view(
-            namespace_id=namespace_id,
-            backend_family=backend_family,
-        )
-        return BackendProfile(
-            namespace=namespace,
-            supports_einsum=supports_einsum,
-            supports_strict_view=supports_view,
-        )
-
-    def validate(self, *tensors: object, op_name: str) -> None:
-        """Validate backend dispatch and required capabilities for one call."""
-        normalized_op_name = self.policy.normalize_operation_name(op_name)
-        profile = self.lookup(*tensors, op_name=normalized_op_name)
-        self.policy.validate_profile(profile=profile, op_name=normalized_op_name)
+        return BackendProfile(namespace=namespaces[0])
 
     def resolve(self, *tensors: object, op_name: str) -> BackendProfile:
-        """Resolve and validate backend profile for one call."""
-        normalized_op_name = self.policy.normalize_operation_name(op_name)
-        profile = self.lookup(*tensors, op_name=normalized_op_name)
-        self.policy.validate_profile(profile=profile, op_name=normalized_op_name)
-        return profile
+        """Resolve one backend namespace profile for a call.
+
+        Parameters
+        ----------
+        *tensors
+            Runtime operands whose namespaces must be compatible.
+        op_name
+            Operation name used in validation diagnostics.
+
+        Returns
+        -------
+        BackendProfile
+            Canonical namespace profile for the operands.
+
+        Raises
+        ------
+        TypeError
+            ``op_name`` is not a non-empty string.
+        ValidationError
+            The operands do not provide one compatible namespace.
+        """
+        normalized_op_name = _normalize_operation_name(op_name)
+        return self.lookup(*tensors, op_name=normalized_op_name)
 
 
 BACKEND_POLICY = BackendPolicy()
-BACKEND_RESOLVER = BackendResolver(policy=BACKEND_POLICY)
+BACKEND_RESOLVER = BackendResolver()

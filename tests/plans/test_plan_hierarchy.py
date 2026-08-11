@@ -600,8 +600,6 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
 
     namespace_profile = BackendProfile(
         namespace=NamespaceReducer(),  # type: ignore[arg-type]
-        supports_einsum=False,
-        supports_strict_view=False,
     )
     monkeypatch.setattr(
         reduce_step_module, "get_backend_array_ops", lambda _family: None

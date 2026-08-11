@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover
     from typing_extensions import Never
 
-from einf.backend import ArrayNamespace, BackendArrayOps
+from einf.backend import BackendArrayOps
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.reduction.callable import ReducerResult
 from einf.reduction.schema import (
@@ -22,6 +22,7 @@ from einf.reduction.schema import (
     ReducerCallable,
     ReducerName,
 )
+from einf.steps.runtime import backend_specialization_error
 from einf.tensor_types import TensorLike
 
 from .callable_contract import ReducerCallMode, resolve_callable_reducer_mode
@@ -29,12 +30,108 @@ from .callable_contract import ReducerCallMode, resolve_callable_reducer_mode
 NamespaceReducer = Callable[..., ReducerResult]
 
 
+class ReducerArrayNamespace(Protocol):
+    """Array namespace surface required by reducer output normalization."""
+
+    __name__: str
+
+    def asarray(
+        self,
+        value: bool | complex,
+        /,
+    ) -> TensorLike:
+        """Convert a scalar reducer result to a backend tensor.
+
+        Parameters
+        ----------
+        value
+            Scalar reducer output.
+
+        Returns
+        -------
+        TensorLike
+            Scalar tensor owned by this namespace.
+        """
+        ...
+
+
+def bind_reducer_namespace(namespace: object, /) -> ReducerArrayNamespace:
+    """Bind the namespace surface required by reducer execution.
+
+    Parameters
+    ----------
+    namespace
+        Runtime namespace to normalize.
+
+    Returns
+    -------
+    ReducerArrayNamespace
+        Namespace with scalar output coercion support.
+
+    Raises
+    ------
+    ValidationError
+        The namespace does not expose a callable ``asarray`` primitive.
+    ExecutionError
+        Namespace attribute lookup fails unexpectedly.
+    """
+    try:
+        asarray = getattr(namespace, "asarray", None)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
+    if not callable(asarray):
+        raise ValidationError(
+            code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
+            message=(
+                "backend dispatch unsupported input: "
+                "reduce requires namespace scalar coercion"
+            ),
+            help="provide an array namespace with a callable asarray primitive",
+            related=("backend dispatch",),
+            data={"operation": "reduce"},
+        )
+    return cast(ReducerArrayNamespace, namespace)
+
+
 def resolve_namespace_reducer(
-    xp: ArrayNamespace,
+    xp: ReducerArrayNamespace,
     reducer_name: ReducerName,
 ) -> NamespaceReducer | None:
-    """Resolve one canonical reducer name to a callable namespace primitive."""
-    reducer_candidate = getattr(xp, reducer_name.value, None)
+    """Resolve one canonical reducer name to a namespace primitive.
+
+    Parameters
+    ----------
+    xp
+        Canonical reducer namespace.
+    reducer_name
+        Selected named reducer.
+
+    Returns
+    -------
+    Callable or None
+        Selected reducer callable, or ``None`` when unavailable.
+
+    Raises
+    ------
+    ExecutionError
+        Namespace attribute lookup fails unexpectedly.
+    """
+    try:
+        reducer_candidate = getattr(xp, reducer_name.value, None)
+    except TensorOpError:
+        raise
+    except AttributeError:
+        return None
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
     if not callable(reducer_candidate):
         return None
     return cast(NamespaceReducer, reducer_candidate)
@@ -44,7 +141,7 @@ def resolve_namespace_reducer(
 class ReducerRuntimeContext:
     """Runtime reducer execution context for one backend namespace."""
 
-    xp: ArrayNamespace
+    xp: ReducerArrayNamespace
     backend_ops: BackendArrayOps | None = None
 
     def apply_string_reducer(
@@ -363,9 +460,31 @@ class ReducerCompiler:
         *,
         reducer: CanonicalReducer,
         axes: tuple[int, ...],
-        xp: ArrayNamespace,
+        xp: ReducerArrayNamespace,
     ) -> CompiledReducer:
-        """Compile one reducer against runtime backend and call-shape."""
+        """Compile one reducer against a runtime namespace and call shape.
+
+        Parameters
+        ----------
+        reducer
+            Canonical named or callable reducer.
+        axes
+            Concrete axes reduced by the compiled invocation.
+        xp
+            Canonical reducer namespace.
+
+        Returns
+        -------
+        CompiledReducer
+            Runtime reducer bound to the selected call form.
+
+        Raises
+        ------
+        ValidationError
+            The selected reducer is unavailable or has an invalid call form.
+        ExecutionError
+            Namespace capability lookup fails unexpectedly.
+        """
         if isinstance(reducer, ReducerName):
             return self._compile_string_reducer(
                 reducer_name=reducer,
@@ -382,7 +501,7 @@ class ReducerCompiler:
         self,
         *,
         reducer_name: ReducerName,
-        xp: ArrayNamespace,
+        xp: ReducerArrayNamespace,
     ) -> CompiledStringReducer:
         """Compile one string reducer by resolving namespace callable."""
         reducer_fn = resolve_namespace_reducer(xp, reducer_name)
@@ -415,7 +534,9 @@ __all__ = [
     "CompiledCallableReducer",
     "CompiledReducer",
     "CompiledStringReducer",
+    "ReducerArrayNamespace",
     "ReducerCompiler",
     "ReducerRuntimeContext",
+    "bind_reducer_namespace",
     "resolve_namespace_reducer",
 ]

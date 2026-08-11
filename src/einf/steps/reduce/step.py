@@ -27,11 +27,11 @@ from ..base import AxisSideSymbolicStep
 from .build import (
     ReduceAxesResolver,
     build_reduce_compiled_program,
-    has_reduce_namespace_methods,
 )
 from .runtime import (
     NamespaceReducer,
     ReducerRuntimeContext,
+    bind_reducer_namespace,
     resolve_namespace_reducer,
 )
 
@@ -271,10 +271,9 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 data={"operation": "reduce"},
             )
         runtime_program: ReduceRuntimeProgram | None = None
-        runtime_xp_candidate = backend_profile.namespace
         try:
             runtime_backend_ops = get_backend_array_ops(backend_profile.backend_family)
-            has_runtime_namespace = has_reduce_namespace_methods(runtime_xp_candidate)
+            runtime_xp = bind_reducer_namespace(backend_profile.namespace)
         except TensorOpError:
             raise
         except Exception as error:
@@ -282,16 +281,15 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 operation="reduce",
                 error=error,
             ) from error
-        if has_runtime_namespace:
-            runtime_context = ReducerRuntimeContext(
-                xp=runtime_xp_candidate,
-                backend_ops=runtime_backend_ops,
-            )
-            runtime_program = _build_shape_invariant_reduce_runtime_program(
-                program=self.program,
-                runtime_context=runtime_context,
-                backend_family=backend_profile.backend_family,
-            )
+        runtime_context = ReducerRuntimeContext(
+            xp=runtime_xp,
+            backend_ops=runtime_backend_ops,
+        )
+        runtime_program = _build_shape_invariant_reduce_runtime_program(
+            program=self.program,
+            runtime_context=runtime_context,
+            backend_family=backend_profile.backend_family,
+        )
         if runtime_program is None:
             runtime_program = DynamicReduceRuntimeProgram(
                 signature=self.program.signature,

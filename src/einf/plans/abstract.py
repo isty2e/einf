@@ -475,7 +475,9 @@ class AbstractPlan:
     ) -> None:
         """Validate strict view backend capability before symbolic execution."""
         backend_profile = context.backend_profile
-        if backend_profile is None or backend_profile.supports_strict_view:
+        if backend_profile is None or BACKEND_POLICY.supports_strict_view(
+            backend_family=backend_profile.backend_family
+        ):
             return
         raise ValidationError(
             code=ErrorCode.NOT_A_VIEW,

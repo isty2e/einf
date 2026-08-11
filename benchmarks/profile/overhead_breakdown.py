@@ -166,7 +166,10 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
         "einf.plans.abstract.AbstractPlan.resolve_backend_profile",
         "einf.backend.dispatch.BackendResolver.resolve",
         "einf.backend.dispatch.BackendResolver.lookup",
-        "einf.backend.dispatch.BackendPolicy.validate_profile",
+        "einf.backend.dispatch.BackendPolicy.validate_einsum_capability",
+        "einf.backend.dispatch.BackendPolicy.resolve_namespace_einsum",
+        "einf.backend.dispatch.BackendPolicy.supports_opt_einsum",
+        "einf.backend.dispatch.BackendPolicy.supports_strict_view",
     ),
     "plan_select": (
         "einf.plans.abstract.AbstractPlan.select_symbolic_plan",

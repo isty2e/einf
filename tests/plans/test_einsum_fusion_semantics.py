@@ -7,7 +7,6 @@ import einf.steps.einsum.step as einsum_step_module
 from einf import ErrorCode, ExecutionError, ax, axes
 from einf.axis import AxisSide
 from einf.backend import BACKEND_RESOLVER
-from einf.backend.namespace import ArrayNamespaceLike
 from einf.plans.fusion import discover_step_fusion
 from einf.steps.axis_slice import (
     AxisSliceRuntimeStep,
@@ -18,14 +17,13 @@ from einf.steps.einsum.step import EinsumEquationExecutor
 from einf.tensor_types import TensorLike
 
 _EINSUM_EQUATION = "bnd,dj->bnj"
-_FALLBACK_TIERS = ("cached", "matmul", "module", "namespace", "native", "opt")
+_FALLBACK_TIERS = ("cached", "matmul", "module", "namespace", "opt")
 _EXPECTED_FALLBACK_EVENTS = {
     "cached": ("cached",),
     "matmul": ("matmul",),
     "module": ("cached", "module"),
     "namespace": ("cached", "module", "namespace"),
-    "native": ("cached", "module", "namespace", "native"),
-    "opt": ("cached", "module", "namespace", "native", "opt"),
+    "opt": ("cached", "module", "namespace", "opt"),
 }
 
 
@@ -131,18 +129,6 @@ def test_einsum_axis_slice_fusion_preserves_fallback_order(
     def module_matmul(_lhs: TensorLike, _rhs: TensorLike) -> TensorLike:
         return tier_result("matmul")
 
-    def native_contract(
-        *,
-        equation: str,
-        tensors: tuple[TensorLike, ...],
-        namespace: ArrayNamespaceLike,
-    ) -> TensorLike | None:
-        del equation, tensors, namespace
-        events.append("native")
-        if successful_tier == "native":
-            return expected
-        return None
-
     def opt_contract(
         _equation: str,
         *_operands: TensorLike,
@@ -156,16 +142,11 @@ def test_einsum_axis_slice_fusion_preserves_fallback_order(
         "_cached_contract_expression",
         cached_contract_expression,
     )
-    monkeypatch.setattr(
-        einsum_step_module,
-        "try_native_contract_einsum",
-        native_contract,
-    )
     monkeypatch.setattr(einsum_step_module.opt_einsum, "contract", opt_contract)
 
     executor = EinsumEquationExecutor(
         profile=profile,
-        native_namespace_einsum=namespace_einsum,
+        namespace_einsum=namespace_einsum,
         native_module_einsum=module_einsum,
         native_module_matmul=module_matmul,
     )
@@ -238,24 +219,10 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
         events.append("opt")
         raise RuntimeError("backend failure")
 
-    def no_native_contract(
-        *,
-        equation: str,
-        tensors: tuple[TensorLike, ...],
-        namespace: ArrayNamespaceLike,
-    ) -> None:
-        del equation, tensors, namespace
-        events.append("native")
-
     monkeypatch.setattr(
         einsum_step_module,
         "_cached_contract_expression",
         fail_cached_expression,
-    )
-    monkeypatch.setattr(
-        einsum_step_module,
-        "try_native_contract_einsum",
-        no_native_contract,
     )
     monkeypatch.setattr(
         einsum_step_module.opt_einsum,
@@ -265,7 +232,7 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
 
     executor = EinsumEquationExecutor(
         profile=profile,
-        native_namespace_einsum=fail_namespace_einsum,
+        namespace_einsum=fail_namespace_einsum,
         native_module_einsum=fail_module_einsum,
         native_module_matmul=None,
     )
@@ -283,7 +250,7 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
             tensors=tensors,
         )
     unfused_events = tuple(events)
-    assert unfused_events == ("cached", "module", "namespace", "native", "opt")
+    assert unfused_events == ("cached", "module", "namespace", "opt")
     events.clear()
     with pytest.raises(ExecutionError) as fused_error:
         _run_fused(

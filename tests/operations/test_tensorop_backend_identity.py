@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -158,11 +158,7 @@ def test_backend_profile_resolution_distinguishes_namespaces_for_one_tensor_type
 
     assert profile_a.namespace_id == "custom.backend_a"
     assert profile_b.namespace_id == "custom.backend_b"
-    changed_capability_profile = replace(
-        profile_a,
-        supports_strict_view=not profile_a.supports_strict_view,
-    )
-    assert changed_capability_profile.execution_identity != profile_a.execution_identity
+    assert profile_a.execution_identity != profile_b.execution_identity
 
 
 def test_shape_free_runner_cache_distinguishes_namespaces_for_one_tensor_type() -> None:
@@ -319,8 +315,6 @@ def test_shape_free_runner_cache_resolves_backend_once_per_call(
 def test_backend_profile_derives_identity_from_namespace() -> None:
     profile = BackendProfile(
         namespace=np,
-        supports_einsum=False,
-        supports_strict_view=False,
     )
 
     assert profile.namespace_id == "numpy"
@@ -330,12 +324,8 @@ def test_backend_profile_derives_identity_from_namespace() -> None:
     assert profile.execution_identity.backend_family == "numpy"
 
 
-def test_backend_profile_accepts_capability_override() -> None:
-    profile = BackendProfile(
-        namespace=np,
-        supports_einsum=False,
-        supports_strict_view=True,
-    )
+def test_backend_profile_excludes_route_capabilities() -> None:
+    profile = BackendProfile(namespace=np)
 
-    assert profile.supports_strict_view is True
-    assert profile.execution_identity.supports_strict_view is True
+    assert not hasattr(profile, "supports_einsum")
+    assert not hasattr(profile, "supports_strict_view")

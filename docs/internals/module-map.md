@@ -33,12 +33,12 @@ directory and sketches the dependency order.
   `Reducer` / `ReducerCallable` surface and the normalized reducer plan
   consumed by `reduce` and `einop`.
 - **`backend/`** — backend dispatch built on `array-api-compat`.
-  `BackendPolicy`, `BackendResolver`, and `BackendProfile` detect the
-  active namespace and expose it to steps. NumPy and PyTorch use explicit
-  runtime primitive adapters; other namespaces use the Array API protocol
-  fallback, checked against each step's required methods. The portable fallback
-  is tested with `array-api-strict`. Memory-alias policy for strict `view`
-  supports only NumPy and PyTorch.
+  `BackendResolver` and `BackendProfile` establish namespace identity;
+  `BackendPolicy` and runtime steps check only the primitives selected by the
+  active plan. NumPy and PyTorch use explicit runtime primitive adapters; other
+  namespaces use the Array API protocol fallback. The portable fallback is
+  tested with `array-api-strict`. Memory-alias policy for strict `view` supports
+  only NumPy and PyTorch.
 
 ## Operations surface
 
