@@ -4,9 +4,11 @@ from functools import lru_cache
 from typing import Literal, cast
 
 import opt_einsum
+from array_api_compat import array_namespace
 
 from einf.axis import AxisSide, ScalarAxisTerms
-from einf.backend import BackendProfile
+from einf.backend import BACKEND_POLICY, BackendProfile
+from einf.backend.namespace import output_namespace_matches
 from einf.backend.runtime import (
     BackendRuntimeUnavailable,
     is_backend_runtime_uninterposed,
@@ -29,10 +31,9 @@ from einf.steps.runtime import (
     validate_runtime_output_shape,
 )
 from einf.steps.scoring import einsum_output_shape, einsum_peak_numel
-from einf.tensor_types import TensorLike, trusted_tensor_family
+from einf.tensor_types import TensorLike, TrustedTensorFamily, trusted_tensor_family
 
 from .equation import build_contract_equation
-from .native import try_native_contract_einsum
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
@@ -486,12 +487,27 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
 
 @dataclass(frozen=True, slots=True)
 class EinsumEquationExecutor:
-    """Run one lowered einsum equation sequence under one backend profile."""
+    """Run lowered einsum equations through specialized backend routes.
+
+    Parameters
+    ----------
+    profile
+        Resolved namespace profile for the operands.
+    namespace_einsum
+        Einsum primitive provided by the resolved namespace, if available.
+    native_module_einsum
+        Einsum primitive from a supported native backend module, if available.
+    native_module_matmul
+        Matmul primitive from a supported native backend module, if available.
+    opt_einsum_supported
+        Whether ``opt_einsum`` routes are admitted for the backend family.
+    """
 
     profile: BackendProfile
-    native_namespace_einsum: Callable[..., TensorLike] | None = None
+    namespace_einsum: Callable[..., TensorLike] | None = None
     native_module_einsum: Callable[..., TensorLike] | None = None
     native_module_matmul: Callable[[TensorLike, TensorLike], TensorLike] | None = None
+    opt_einsum_supported: bool = True
 
     def run(
         self,
@@ -501,6 +517,16 @@ class EinsumEquationExecutor:
         allow_native_matmul: bool,
     ) -> TensorLike:
         """Execute one equation with native-fallback dispatch and error mapping."""
+        native_operand_family = self._trusted_native_operand_family(operands)
+        namespace_error: Exception | None = None
+        if native_operand_family is None:
+            namespace_output, namespace_error = self._try_namespace_einsum(
+                equation=equation,
+                operands=operands,
+            )
+            if namespace_output is not None:
+                return namespace_output
+
         operand_shapes = _operand_shapes_key(operands)
         if operand_shapes is not None:
             should_use_cached_expression = False
@@ -508,7 +534,7 @@ class EinsumEquationExecutor:
                 len(operands) == 2 and not allow_native_matmul
             ):
                 should_use_cached_expression = True
-            if should_use_cached_expression:
+            if should_use_cached_expression and self.opt_einsum_supported:
                 try:
                     expression = _cached_contract_expression(equation, operand_shapes)
                     output = expression(*operands)
@@ -523,10 +549,13 @@ class EinsumEquationExecutor:
                         equation=equation,
                         operands=operands,
                         output=output,
+                        profile=self.profile,
+                        native_operand_family=native_operand_family,
                     )
 
         if (
-            allow_native_matmul
+            native_operand_family is not None
+            and allow_native_matmul
             and len(operands) == 2
             and self.native_module_matmul is not None
             and _is_binary_matmul_equation(equation)
@@ -551,10 +580,11 @@ class EinsumEquationExecutor:
                     profile=self.profile,
                     route_callable=self.native_module_matmul,
                     module_op_name="matmul",
+                    native_operand_family=native_operand_family,
                 )
 
         module_einsum = self.native_module_einsum
-        if module_einsum is not None:
+        if native_operand_family is not None and module_einsum is not None:
             try:
                 output = module_einsum(equation, *operands)
             except TensorOpError:
@@ -571,33 +601,25 @@ class EinsumEquationExecutor:
                     profile=self.profile,
                     route_callable=module_einsum,
                     module_op_name="einsum",
+                    native_operand_family=native_operand_family,
                 )
 
-        namespace_einsum = self.native_namespace_einsum
-        if namespace_einsum is not None and len(operands) == 2:
-            try:
-                native_output = namespace_einsum(equation, *operands)
-            except TensorOpError:
-                raise
-            except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
-                try:
-                    native_output = try_native_contract_einsum(
-                        equation=equation,
-                        tensors=operands,
-                        namespace=self.profile.namespace,
-                    )
-                except TensorOpError:
-                    raise
-                except Exception as error:
-                    raise _project_einsum_route_error(error) from error
-            except Exception as error:
-                raise _project_einsum_route_error(error) from error
-            if native_output is not None:
-                return _validate_einsum_output(
-                    equation=equation,
-                    operands=operands,
-                    output=native_output,
-                )
+        if native_operand_family is not None:
+            namespace_output, namespace_error = self._try_namespace_einsum(
+                equation=equation,
+                operands=operands,
+            )
+            if namespace_output is not None:
+                return namespace_output
+
+        if not self.opt_einsum_supported:
+            if namespace_error is not None:
+                raise _project_einsum_route_error(namespace_error) from namespace_error
+            BACKEND_POLICY.validate_einsum_capability(
+                profile=self.profile,
+                op_name="einsum",
+            )
+            raise RuntimeError("einsum executor has no admitted execution route")
 
         try:
             output = opt_einsum.contract(
@@ -627,7 +649,56 @@ class EinsumEquationExecutor:
             equation=equation,
             operands=operands,
             output=output,
+            profile=self.profile,
+            native_operand_family=native_operand_family,
         )
+
+    def _try_namespace_einsum(
+        self,
+        *,
+        equation: str,
+        operands: tuple[TensorLike, ...],
+    ) -> tuple[TensorLike | None, Exception | None]:
+        """Run the selected namespace route once when it is available."""
+        namespace_einsum = self.namespace_einsum
+        if namespace_einsum is None:
+            return None, None
+        try:
+            output = namespace_einsum(equation, *operands)
+        except TensorOpError:
+            raise
+        except FALLBACK_ELIGIBLE_BACKEND_ERRORS as error:
+            return None, error
+        except Exception as error:
+            raise _project_einsum_route_error(error) from error
+        return (
+            _validate_einsum_output(
+                equation=equation,
+                operands=operands,
+                output=output,
+                profile=self.profile,
+                native_operand_family=None,
+            ),
+            None,
+        )
+
+    def _trusted_native_operand_family(
+        self,
+        operands: tuple[TensorLike, ...],
+        /,
+    ) -> TrustedTensorFamily | None:
+        """Return the native family proven by exact operands and runtime state."""
+        if not operands:
+            return None
+        operand_type = type(operands[0])
+        backend_family = trusted_tensor_family(operand_type)
+        if backend_family is None or self.profile.backend_family != backend_family:
+            return None
+        if any(type(operand) is not operand_type for operand in operands[1:]):
+            return None
+        if not is_backend_runtime_uninterposed(backend_family):
+            return None
+        return backend_family
 
 
 def _trust_or_validate_native_einsum_output(
@@ -638,32 +709,27 @@ def _trust_or_validate_native_einsum_output(
     profile: BackendProfile,
     route_callable: Callable[..., TensorLike],
     module_op_name: Literal["einsum", "matmul"],
+    native_operand_family: TrustedTensorFamily,
 ) -> TensorLike:
     """Skip semantic validation only for exact native tensor execution."""
-    output_type = type(output)
-    backend_family = trusted_tensor_family(output_type)
-    if backend_family is not None and profile.backend_family == backend_family:
-        for operand in operands:
-            if type(operand) is not output_type:
-                break
-        else:
-            try:
-                backend_module = load_backend_module(backend_family)
-                canonical_callable = getattr(
-                    backend_module,
-                    module_op_name,
-                    None,
-                )
-            except Exception:  # noqa: BLE001 - missing proof selects validation
-                canonical_callable = None
-            if route_callable is canonical_callable and is_backend_runtime_uninterposed(
-                backend_family
-            ):
-                return output
+    if operands and type(output) is type(operands[0]):
+        try:
+            backend_module = load_backend_module(native_operand_family)
+            canonical_callable = getattr(
+                backend_module,
+                module_op_name,
+                None,
+            )
+        except Exception:  # noqa: BLE001 - missing proof selects validation
+            canonical_callable = None
+        if route_callable is canonical_callable:
+            return output
     return _validate_einsum_output(
         equation=equation,
         operands=operands,
         output=output,
+        profile=profile,
+        native_operand_family=native_operand_family,
     )
 
 
@@ -672,6 +738,8 @@ def _validate_einsum_output(
     equation: str,
     operands: tuple[TensorLike, ...],
     output: TensorLike,
+    profile: BackendProfile,
+    native_operand_family: TrustedTensorFamily | None,
 ) -> TensorLike:
     """Validate one output from an untrusted einsum execution route."""
     operand_shapes = _operand_shapes_key(operands)
@@ -695,11 +763,44 @@ def _validate_einsum_output(
             related=("einsum execution", "einsum equation"),
             data={"operation": "einsum"},
         )
-    return validate_runtime_output_shape(
+    validated_output = validate_runtime_output_shape(
         output,
         expected_shape,
         operation="einsum",
     )
+    if (
+        native_operand_family is not None
+        and operands
+        and type(validated_output) is type(operands[0])
+    ):
+        return validated_output
+    try:
+        output_namespace = array_namespace(validated_output)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message=(
+                "einsum output protocol violation: output namespace could not "
+                f"be resolved: {error}"
+            ),
+            help="return an einsum output with a valid array namespace",
+            related=("einsum execution", "TensorOp output protocol"),
+            data={"operation": "einsum"},
+        ) from error
+    if not output_namespace_matches(profile.namespace, output_namespace):
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message=(
+                "einsum output protocol violation: output belongs to a different "
+                "backend namespace"
+            ),
+            help="return an einsum output from the selected input namespace",
+            related=("einsum execution", "TensorOp output protocol"),
+            data={"operation": "einsum"},
+        )
+    return validated_output
 
 
 def _project_einsum_route_error(error: Exception) -> ExecutionError:
@@ -746,24 +847,15 @@ def _build_einsum_executor(profile: BackendProfile, /) -> EinsumEquationExecutor
             except Exception as error:
                 raise _project_einsum_route_error(error) from error
 
-    try:
-        namespace_einsum_candidate = getattr(profile.namespace, "einsum", None)
-    except TensorOpError:
-        raise
-    except Exception as error:
-        raise _project_einsum_route_error(error) from error
-    if callable(namespace_einsum_candidate):
-        namespace_einsum = cast(
-            Callable[..., TensorLike],
-            namespace_einsum_candidate,
-        )
-    else:
+    namespace_einsum = BACKEND_POLICY.resolve_namespace_einsum(profile)
+    if namespace_einsum is module_einsum:
         namespace_einsum = None
     return EinsumEquationExecutor(
         profile=profile,
-        native_namespace_einsum=namespace_einsum,
+        namespace_einsum=namespace_einsum,
         native_module_einsum=module_einsum,
         native_module_matmul=module_matmul,
+        opt_einsum_supported=BACKEND_POLICY.supports_opt_einsum(profile.backend_family),
     )
 
 

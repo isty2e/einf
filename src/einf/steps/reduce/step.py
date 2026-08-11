@@ -3,7 +3,6 @@ from typing import Literal
 
 from einf.axis import AxisSide, AxisTerms, ScalarAxisTerms, term_size
 from einf.backend import (
-    BackendProfile,
     get_backend_array_ops,
 )
 from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
@@ -27,15 +26,16 @@ from ..base import AxisSideSymbolicStep
 from .build import (
     ReduceAxesResolver,
     build_reduce_compiled_program,
-    has_reduce_namespace_methods,
 )
 from .runtime import (
     NamespaceReducer,
+    ReducerRuntimeBinding,
     ReducerRuntimeContext,
+    bind_reducer_namespace,
     resolve_namespace_reducer,
 )
 
-_DIRECT_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
+_NATIVE_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.SUM: "sum",
     ReducerName.MEAN: "mean",
     ReducerName.MAX: "amax",
@@ -44,7 +44,7 @@ _DIRECT_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.ANY: "any",
 }
 
-_DIRECT_NUMPY_REDUCER_METHODS: dict[ReducerName, str] = {
+_NATIVE_NUMPY_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.SUM: "sum",
     ReducerName.PROD: "prod",
     ReducerName.MEAN: "mean",
@@ -91,25 +91,56 @@ class ReduceRuntimeProgram(UnaryRuntimeProgram):
 
 
 @dataclass(frozen=True, slots=True)
-class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
-    """Shape-invariant unary reduce program bound to one tensor method."""
+class NativePreferredReduceRuntimeProgram(ReduceRuntimeProgram):
+    """Shape-invariant reducer with a trusted native method fast path.
+
+    Parameters
+    ----------
+    reducer
+        Canonical named reducer.
+    axes
+        Concrete axis positions to reduce.
+    runtime_context
+        Backend bindings and output normalization policy.
+    reducer_fn
+        Namespace reducer used when the native route is not proven.
+    native_method_name
+        Tensor method used by the trusted native route.
+    native_axis_keyword
+        Axis keyword accepted by the native tensor method.
+    """
 
     reducer: ReducerName
     axes: tuple[int, ...]
     runtime_context: ReducerRuntimeContext
-    direct_method_name: str
-    direct_axis_keyword: Literal["axis", "dim"]
+    reducer_fn: NamespaceReducer
+    native_method_name: str
+    native_axis_keyword: Literal["axis", "dim"]
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
-        """Execute one direct-method unary reduce program."""
+        """Execute one native-preferred unary reduce program."""
         if not self.axes:
             return tensor
 
+        if self.runtime_context.native_reducer_ops(tensor) is None:
+            output = self.runtime_context.apply_namespace_reducer(
+                reducer_name=self.reducer,
+                reducer_fn=self.reducer_fn,
+                tensor=tensor,
+                axes=self.axes,
+            )
+            _validate_reduced_axis_output_shape(
+                output=output,
+                input_shape=tuple(tensor.shape),
+                reduced_axes=self.axes,
+            )
+            return output
+
         try:
-            if self.direct_axis_keyword == "dim":
-                output = getattr(tensor, self.direct_method_name)(dim=self.axes)
+            if self.native_axis_keyword == "dim":
+                output = getattr(tensor, self.native_method_name)(dim=self.axes)
             else:
-                output = getattr(tensor, self.direct_method_name)(axis=self.axes)
+                output = getattr(tensor, self.native_method_name)(axis=self.axes)
         except TensorOpError:
             raise
         except Exception as error:
@@ -158,13 +189,27 @@ class NamespaceReduceRuntimeProgram(ReduceRuntimeProgram):
 
 @dataclass(frozen=True, slots=True)
 class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
-    """Call-time unary reduce program that still depends on runtime context."""
+    """Shape-dynamic reduce program with specialization-bound capabilities.
+
+    Parameters
+    ----------
+    signature : Signature
+        Canonical reduce signature used for call-time shape resolution.
+    explicit_sizes : dict[str, int]
+        User-provided scalar-axis sizes.
+    reduce_axes : AxisTerms
+        Canonical terms selected for reduction.
+    reducer : CanonicalReducer
+        Canonical named or callable reducer.
+    runtime_binding : ReducerRuntimeBinding
+        Validated backend identity and reducer capability binding.
+    """
 
     signature: Signature
     explicit_sizes: dict[str, int]
     reduce_axes: AxisTerms
     reducer: CanonicalReducer
-    backend_profile: BackendProfile
+    runtime_binding: ReducerRuntimeBinding
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
         """Execute one dynamic unary reduce program."""
@@ -182,17 +227,13 @@ class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
             pack_ranks=context.pack_ranks,
             reduce_axes=self.reduce_axes,
             reducer=self.reducer,
-            backend_profile=self.backend_profile,
+            runtime_binding=self.runtime_binding,
         )
 
-        reducer_runtime_context = ReducerRuntimeContext(
-            xp=plan.xp,
-            backend_ops=plan.backend_ops,
-        )
         output = plan.compiled_reducer.apply(
             tensor=tensor,
             axes=plan.axes,
-            context=reducer_runtime_context,
+            context=self.runtime_binding.context,
         )
 
         _validate_reduce_output_shape(
@@ -271,10 +312,9 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 data={"operation": "reduce"},
             )
         runtime_program: ReduceRuntimeProgram | None = None
-        runtime_xp_candidate = backend_profile.namespace
         try:
             runtime_backend_ops = get_backend_array_ops(backend_profile.backend_family)
-            has_runtime_namespace = has_reduce_namespace_methods(runtime_xp_candidate)
+            runtime_xp = bind_reducer_namespace(backend_profile.namespace)
         except TensorOpError:
             raise
         except Exception as error:
@@ -282,23 +322,25 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 operation="reduce",
                 error=error,
             ) from error
-        if has_runtime_namespace:
-            runtime_context = ReducerRuntimeContext(
-                xp=runtime_xp_candidate,
-                backend_ops=runtime_backend_ops,
-            )
-            runtime_program = _build_shape_invariant_reduce_runtime_program(
-                program=self.program,
-                runtime_context=runtime_context,
-                backend_family=backend_profile.backend_family,
-            )
+        runtime_context = ReducerRuntimeContext(
+            xp=runtime_xp,
+            backend_ops=runtime_backend_ops,
+        )
+        runtime_binding = ReducerRuntimeBinding(
+            profile=backend_profile,
+            context=runtime_context,
+        )
+        runtime_program = _build_shape_invariant_reduce_runtime_program(
+            program=self.program,
+            runtime_binding=runtime_binding,
+        )
         if runtime_program is None:
             runtime_program = DynamicReduceRuntimeProgram(
                 signature=self.program.signature,
                 explicit_sizes=explicit_sizes,
                 reduce_axes=self.program.reduce_axes,
                 reducer=self.program.reducer,
-                backend_profile=backend_profile,
+                runtime_binding=runtime_binding,
             )
 
         return ReduceRuntimeStep(
@@ -371,10 +413,10 @@ def _validate_reduce_output_shape(
 def _build_shape_invariant_reduce_runtime_program(
     *,
     program: ReduceSymbolicProgram,
-    runtime_context: ReducerRuntimeContext,
-    backend_family: str | None,
+    runtime_binding: ReducerRuntimeBinding,
 ) -> ReduceRuntimeProgram | None:
     """Build one static unary reduce program when axis mapping is shape-invariant."""
+    runtime_context = runtime_binding.context
     reducer = program.reducer
     if not isinstance(reducer, ReducerName):
         return None
@@ -408,25 +450,27 @@ def _build_shape_invariant_reduce_runtime_program(
     reducer_fn = resolve_namespace_reducer(runtime_context.xp, reducer)
     if reducer_fn is None:
         return None
-    if backend_family == "torch":
-        direct_method_name = _DIRECT_TORCH_REDUCER_METHODS.get(reducer)
-        if isinstance(direct_method_name, str):
-            return DirectMethodReduceRuntimeProgram(
+    if runtime_binding.profile.backend_family == "torch":
+        native_method_name = _NATIVE_TORCH_REDUCER_METHODS.get(reducer)
+        if isinstance(native_method_name, str):
+            return NativePreferredReduceRuntimeProgram(
                 reducer=reducer,
                 axes=reduce_axes,
                 runtime_context=runtime_context,
-                direct_method_name=direct_method_name,
-                direct_axis_keyword="dim",
+                reducer_fn=reducer_fn,
+                native_method_name=native_method_name,
+                native_axis_keyword="dim",
             )
-    if backend_family == "numpy":
-        direct_method_name = _DIRECT_NUMPY_REDUCER_METHODS.get(reducer)
-        if isinstance(direct_method_name, str):
-            return DirectMethodReduceRuntimeProgram(
+    if runtime_binding.profile.backend_family == "numpy":
+        native_method_name = _NATIVE_NUMPY_REDUCER_METHODS.get(reducer)
+        if isinstance(native_method_name, str):
+            return NativePreferredReduceRuntimeProgram(
                 reducer=reducer,
                 axes=reduce_axes,
                 runtime_context=runtime_context,
-                direct_method_name=direct_method_name,
-                direct_axis_keyword="axis",
+                reducer_fn=reducer_fn,
+                native_method_name=native_method_name,
+                native_axis_keyword="axis",
             )
 
     return NamespaceReduceRuntimeProgram(

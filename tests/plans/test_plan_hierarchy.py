@@ -43,9 +43,9 @@ from einf.steps.permute import (
 )
 from einf.steps.reduce import ReduceSymbolicStep
 from einf.steps.reduce.step import (
-    DirectMethodReduceRuntimeProgram,
     DynamicReduceRuntimeProgram,
     NamespaceReduceRuntimeProgram,
+    NativePreferredReduceRuntimeProgram,
     ReduceRuntimeProgram,
     ReduceRuntimeStep,
     build_reduce_symbolic_program,
@@ -583,7 +583,7 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
     sum_runtime = sum_step.specialize(runtime_context)
     assert isinstance(sum_runtime, ReduceRuntimeStep)
     assert isinstance(sum_runtime.program, ReduceRuntimeProgram)
-    assert isinstance(sum_runtime.program, DirectMethodReduceRuntimeProgram)
+    assert isinstance(sum_runtime.program, NativePreferredReduceRuntimeProgram)
 
     class NamespaceReducer:
         def __init__(self) -> None:
@@ -600,8 +600,6 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
 
     namespace_profile = BackendProfile(
         namespace=NamespaceReducer(),  # type: ignore[arg-type]
-        supports_einsum=False,
-        supports_strict_view=False,
     )
     monkeypatch.setattr(
         reduce_step_module, "get_backend_array_ops", lambda _family: None

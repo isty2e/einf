@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
 import numpy as np
@@ -11,6 +12,7 @@ import einf.steps.einsum.step as einsum_step_impl
 import einf.steps.permute as permute_step_module
 from einf import (
     ErrorCode,
+    ExecutionError,
     ValidationError,
     ax,
     axes,
@@ -33,13 +35,81 @@ except ImportError:  # pragma: no cover
 _BinaryTensorFamily = TypeVar("_BinaryTensorFamily", bound=TensorLike)
 
 
-class _BinaryTensorOp(Protocol):
+class BinaryTensorOp(Protocol):
     def __call__(
         self,
         left: _BinaryTensorFamily,
         right: _BinaryTensorFamily,
         /,
     ) -> _BinaryTensorFamily: ...
+
+
+class _DirectEinsumNamespace:
+    __name__ = "custom.direct_einsum"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def einsum(
+        self,
+        equation: str,
+        *operands: "_DirectEinsumTensor",
+    ) -> "_DirectEinsumTensor":
+        self.calls += 1
+        output = np.einsum(equation, *(operand.value for operand in operands))
+        return _DirectEinsumTensor(np.asarray(output), self)
+
+
+class _KnownFamilyEinsumNamespace(_DirectEinsumNamespace):
+    __name__ = "numpy.custom"
+
+
+class _FailingEinsumNamespace(_DirectEinsumNamespace):
+    __name__ = "custom.failing_einsum"
+
+    def einsum(
+        self,
+        equation: str,
+        *operands: "_DirectEinsumTensor",
+    ) -> "_DirectEinsumTensor":
+        del equation, operands
+        self.calls += 1
+        raise TypeError("custom einsum rejected the operands")
+
+
+class _BrokenEinsumLookupNamespace(_DirectEinsumNamespace):
+    __name__ = "custom.broken_einsum_lookup"
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "einsum":
+            raise OSError("custom einsum lookup failed")
+        return super().__getattribute__(name)
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectEinsumTensor:
+    value: np.ndarray
+    namespace: _DirectEinsumNamespace
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.value.shape
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> _DirectEinsumNamespace:
+        del api_version
+        return self.namespace
+
+    def __array__(self, dtype: object = None) -> np.ndarray:
+        if dtype is None:
+            return self.value
+        return self.value.astype(dtype)
+
+    def __getitem__(self, key: object) -> "_DirectEinsumTensor":
+        del key
+        return self
 
 
 def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
@@ -50,6 +120,10 @@ def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
+
+
+def _explode_output_namespace_lookup(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("exact native output should not repeat namespace lookup")
 
 
 def _explode_build_tuple_runner(*_args: object, **_kwargs: object) -> None:
@@ -80,11 +154,105 @@ def test_contract_matrix_multiply_executes_with_numpy() -> None:
     np.testing.assert_array_equal(result, expected)
 
 
+def test_contract_uses_unknown_namespace_einsum_without_opt_einsum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    i, k, j = axes("direct_i", "direct_k", "direct_j")
+    namespace = _DirectEinsumNamespace()
+    left = _DirectEinsumTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+    right = _DirectEinsumTensor(np.arange(3 * 4).reshape(3, 4), namespace)
+
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        _explode_opt_einsum_contract,
+    )
+    result = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
+
+    assert isinstance(result, _DirectEinsumTensor)
+    np.testing.assert_array_equal(result.value, left.value @ right.value)
+    assert namespace.calls == 1
+
+
+def test_contract_uses_known_family_namespace_for_custom_tensor() -> None:
+    i, k, j = axes("known_family_i", "known_family_k", "known_family_j")
+    namespace = _KnownFamilyEinsumNamespace()
+    left = _DirectEinsumTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+    right = _DirectEinsumTensor(np.arange(3 * 4).reshape(3, 4), namespace)
+
+    result = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
+
+    assert isinstance(result, _DirectEinsumTensor)
+    np.testing.assert_array_equal(result.value, left.value @ right.value)
+    assert namespace.calls == 1
+
+
+def test_nary_contract_uses_unknown_namespace_einsum_without_opt_einsum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    i, j, k, out = axes("nary_i", "nary_j", "nary_k", "nary_out")
+    namespace = _DirectEinsumNamespace()
+    first = _DirectEinsumTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+    second = _DirectEinsumTensor(np.arange(3 * 4).reshape(3, 4), namespace)
+    third = _DirectEinsumTensor(np.arange(4 * 5).reshape(4, 5), namespace)
+
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        _explode_opt_einsum_contract,
+    )
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_opt_einsum_contract,
+    )
+    result = contract(
+        (ax[i, j], ax[j, k], ax[k, out]),
+        ax[i, out],
+    )(first, second, third)
+
+    assert isinstance(result, _DirectEinsumTensor)
+    expected = np.einsum(
+        "ij,jk,kl->il",
+        first.value,
+        second.value,
+        third.value,
+    )
+    np.testing.assert_array_equal(result.value, expected)
+    assert namespace.calls == 1
+
+
+def test_unknown_namespace_einsum_invocation_failure_is_not_retried() -> None:
+    i, k, j = axes("failing_i", "failing_k", "failing_j")
+    namespace = _FailingEinsumNamespace()
+    left = _DirectEinsumTensor(np.zeros((2, 3)), namespace)
+    right = _DirectEinsumTensor(np.zeros((3, 4)), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert namespace.calls == 1
+
+
+def test_unknown_namespace_einsum_lookup_failure_is_structured() -> None:
+    i, k, j = axes("lookup_i", "lookup_k", "lookup_j")
+    namespace = _BrokenEinsumLookupNamespace()
+    left = _DirectEinsumTensor(np.zeros((2, 3)), namespace)
+    right = _DirectEinsumTensor(np.zeros((3, 4)), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert "capability lookup failed" in error.value.message
+
+
 def test_einop_einsum_capability_validation_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_validate = BackendPolicy.validate_einsum_capability
-    validation_calls = 0
+    validation_calls: list[None] = []
 
     def count_validation(
         policy: BackendPolicy,
@@ -92,8 +260,7 @@ def test_einop_einsum_capability_validation_is_cached(
         profile: BackendProfile,
         op_name: str,
     ) -> None:
-        nonlocal validation_calls
-        validation_calls += 1
+        validation_calls.append(None)
         original_validate(policy, profile=profile, op_name=op_name)
 
     monkeypatch.setattr(
@@ -111,7 +278,40 @@ def test_einop_einsum_capability_validation_is_cached(
 
     np.testing.assert_array_equal(first, left @ right)
     np.testing.assert_array_equal(second, left @ right)
-    assert validation_calls == 1
+    assert len(validation_calls) == 1
+
+
+def test_einop_opt_einsum_route_probe_is_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_supports = BackendPolicy.supports_opt_einsum
+    probe_calls: list[None] = []
+
+    def count_probe(
+        policy: BackendPolicy,
+        backend_family: str | None,
+    ) -> bool:
+        probe_calls.append(None)
+        return original_supports(policy, backend_family)
+
+    monkeypatch.setattr(
+        BackendPolicy,
+        "supports_opt_einsum",
+        count_probe,
+    )
+    i, k, j = axes("probe_i", "probe_k", "probe_j")
+    op = einop((ax[i, k], ax[k, j]), ax[i, j])
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+
+    first = op(left, right)
+    calls_after_specialization = len(probe_calls)
+    second = op(left, right)
+
+    np.testing.assert_array_equal(first, left @ right)
+    np.testing.assert_array_equal(second, left @ right)
+    assert calls_after_specialization == 1
+    assert len(probe_calls) == calls_after_specialization
 
 
 def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
@@ -144,7 +344,7 @@ def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
 )
 def test_atomic_contract_equivalent_numpy_ops_prefer_native_matmul_path(
     monkeypatch: pytest.MonkeyPatch,
-    build_op: Callable[..., _BinaryTensorOp],
+    build_op: Callable[..., BinaryTensorOp],
 ) -> None:
     i, k, j = axes("i", "k", "j")
     op = build_op(i, k, j)
@@ -197,7 +397,7 @@ def test_contract_matrix_multiply_torch_uses_native_einsum_path(
 )
 def test_atomic_contract_equivalent_torch_ops_skip_opt_einsum_contract(
     monkeypatch: pytest.MonkeyPatch,
-    build_op: Callable[..., _BinaryTensorOp],
+    build_op: Callable[..., BinaryTensorOp],
 ) -> None:
     i, k, j = axes("i", "k", "j")
     op = build_op(i, k, j)
@@ -250,6 +450,11 @@ def test_contract_three_inputs_reuses_cached_contract_expression(
         einsum_step_module.opt_einsum,
         "contract",
         _explode_native_contract_einsum,
+    )
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "array_namespace",
+        _explode_output_namespace_lookup,
     )
 
     left = np.arange(2 * 5, dtype=np.float32).reshape(2, 5)

@@ -4,17 +4,15 @@ from typing import Protocol, TypeGuard, cast
 
 from array_api_compat import array_namespace
 
-from einf.backend.namespace import (
-    derive_namespace_id,
-    infer_backend_family,
-)
+from einf.backend.namespace import output_namespace_matches
 
 try:
     from typing import Never
 except ImportError:  # pragma: no cover
     from typing_extensions import Never
 
-from einf.backend import ArrayNamespace, BackendArrayOps
+from einf.backend import BackendArrayOps, BackendProfile
+from einf.backend.runtime import is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.reduction.callable import ReducerResult
 from einf.reduction.schema import (
@@ -22,6 +20,7 @@ from einf.reduction.schema import (
     ReducerCallable,
     ReducerName,
 )
+from einf.steps.runtime import backend_specialization_error
 from einf.tensor_types import TensorLike
 
 from .callable_contract import ReducerCallMode, resolve_callable_reducer_mode
@@ -29,12 +28,108 @@ from .callable_contract import ReducerCallMode, resolve_callable_reducer_mode
 NamespaceReducer = Callable[..., ReducerResult]
 
 
+class ReducerArrayNamespace(Protocol):
+    """Array namespace surface required by reducer output normalization."""
+
+    __name__: str
+
+    def asarray(
+        self,
+        value: bool | complex,
+        /,
+    ) -> TensorLike:
+        """Convert a scalar reducer result to a backend tensor.
+
+        Parameters
+        ----------
+        value
+            Scalar reducer output.
+
+        Returns
+        -------
+        TensorLike
+            Scalar tensor owned by this namespace.
+        """
+        ...
+
+
+def bind_reducer_namespace(namespace: object, /) -> ReducerArrayNamespace:
+    """Bind the namespace surface required by reducer execution.
+
+    Parameters
+    ----------
+    namespace
+        Runtime namespace to normalize.
+
+    Returns
+    -------
+    ReducerArrayNamespace
+        Namespace with scalar output coercion support.
+
+    Raises
+    ------
+    ValidationError
+        The namespace does not expose a callable ``asarray`` primitive.
+    ExecutionError
+        Namespace attribute lookup fails unexpectedly.
+    """
+    try:
+        asarray = getattr(namespace, "asarray", None)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
+    if not callable(asarray):
+        raise ValidationError(
+            code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
+            message=(
+                "backend dispatch unsupported input: "
+                "reduce requires namespace scalar coercion"
+            ),
+            help="provide an array namespace with a callable asarray primitive",
+            related=("backend dispatch",),
+            data={"operation": "reduce"},
+        )
+    return cast(ReducerArrayNamespace, namespace)
+
+
 def resolve_namespace_reducer(
-    xp: ArrayNamespace,
+    xp: ReducerArrayNamespace,
     reducer_name: ReducerName,
 ) -> NamespaceReducer | None:
-    """Resolve one canonical reducer name to a callable namespace primitive."""
-    reducer_candidate = getattr(xp, reducer_name.value, None)
+    """Resolve one canonical reducer name to a namespace primitive.
+
+    Parameters
+    ----------
+    xp
+        Canonical reducer namespace.
+    reducer_name
+        Selected named reducer.
+
+    Returns
+    -------
+    Callable or None
+        Selected reducer callable, or ``None`` when unavailable.
+
+    Raises
+    ------
+    ExecutionError
+        Namespace attribute lookup fails unexpectedly.
+    """
+    try:
+        reducer_candidate = getattr(xp, reducer_name.value, None)
+    except TensorOpError:
+        raise
+    except AttributeError:
+        return None
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
     if not callable(reducer_candidate):
         return None
     return cast(NamespaceReducer, reducer_candidate)
@@ -44,8 +139,33 @@ def resolve_namespace_reducer(
 class ReducerRuntimeContext:
     """Runtime reducer execution context for one backend namespace."""
 
-    xp: ArrayNamespace
+    xp: ReducerArrayNamespace
     backend_ops: BackendArrayOps | None = None
+
+    def native_reducer_ops(
+        self,
+        tensor: TensorLike,
+        /,
+    ) -> BackendArrayOps | None:
+        """Return the adapter when tensor and adapter prove a native route.
+
+        Parameters
+        ----------
+        tensor
+            Runtime tensor considered for native reducer execution.
+
+        Returns
+        -------
+        BackendArrayOps or None
+            Canonical adapter for a trusted native route, or ``None``.
+        """
+        backend_ops = self.backend_ops
+        if backend_ops is None or not is_trusted_backend_array_ops(
+            backend_ops=backend_ops,
+            tensor=tensor,
+        ):
+            return None
+        return backend_ops
 
     def apply_string_reducer(
         self,
@@ -59,9 +179,10 @@ class ReducerRuntimeContext:
         if not axes:
             return tensor
 
-        if self.backend_ops is not None:
+        backend_ops = self.native_reducer_ops(tensor)
+        if backend_ops is not None:
             try:
-                reduced = self.backend_ops.reduce(
+                reduced = backend_ops.reduce(
                     reducer_name=reducer_name.value,
                     tensor=tensor,
                     axes=axes,
@@ -75,18 +196,61 @@ class ReducerRuntimeContext:
                     axes=axes,
                     error=error,
                 ) from error
-        else:
-            try:
-                reduced = reducer_fn(tensor, axis=axes)
-            except TensorOpError:
-                raise
-            except Exception as error:
-                raise self.string_reducer_error(
-                    reducer_name=reducer_name,
-                    tensor=tensor,
-                    axes=axes,
-                    error=error,
-                ) from error
+            return self.coerce_output(reduced)
+
+        return self.apply_namespace_reducer(
+            reducer_name=reducer_name,
+            reducer_fn=reducer_fn,
+            tensor=tensor,
+            axes=axes,
+        )
+
+    def apply_namespace_reducer(
+        self,
+        *,
+        reducer_name: ReducerName,
+        reducer_fn: NamespaceReducer,
+        tensor: TensorLike,
+        axes: tuple[int, ...],
+    ) -> TensorLike:
+        """Apply the reducer selected from the resolved array namespace.
+
+        Parameters
+        ----------
+        reducer_name
+            Canonical reducer name used in diagnostics.
+        reducer_fn
+            Reducer callable selected from the resolved namespace.
+        tensor
+            Runtime tensor to reduce.
+        axes
+            Concrete axis positions to reduce. An empty tuple leaves the input
+            unchanged.
+
+        Returns
+        -------
+        TensorLike
+            Normalized reducer output.
+
+        Raises
+        ------
+        TensorOpError
+            The reducer or output normalization fails.
+        """
+        if not axes:
+            return tensor
+
+        try:
+            reduced = reducer_fn(tensor, axis=axes)
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise self.string_reducer_error(
+                reducer_name=reducer_name,
+                tensor=tensor,
+                axes=axes,
+                error=error,
+            ) from error
         return self.coerce_output(reduced)
 
     def coerce_output(
@@ -124,8 +288,6 @@ class ReducerRuntimeContext:
         """Reject reducer outputs owned by a different backend namespace."""
         try:
             output_namespace = array_namespace(output)
-            output_namespace_id = derive_namespace_id(output_namespace)
-            input_namespace_id = derive_namespace_id(self.xp)
         except TensorOpError:
             raise
         except Exception as error:
@@ -140,11 +302,7 @@ class ReducerRuntimeContext:
                 data={"operation": "reduce"},
             ) from error
 
-        input_family = infer_backend_family(input_namespace_id)
-        if (input_family is None and output_namespace is not self.xp) or (
-            input_family is not None
-            and infer_backend_family(output_namespace_id) != input_family
-        ):
+        if not output_namespace_matches(self.xp, output_namespace):
             raise ExecutionError(
                 code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
                 message=(
@@ -241,6 +399,41 @@ class ReducerRuntimeContext:
             raise
         except Exception:  # noqa: BLE001 - malformed user output is a type failure
             return False
+
+
+@dataclass(frozen=True, slots=True)
+class ReducerRuntimeBinding:
+    """Canonical backend identity and reducer capability binding.
+
+    Parameters
+    ----------
+    profile : BackendProfile
+        Backend identity selected for runtime specialization.
+    context : ReducerRuntimeContext
+        Reducer namespace and native adapter bound from ``profile``.
+
+    Raises
+    ------
+    ValueError
+        ``context`` was bound from a different backend namespace or family.
+    """
+
+    profile: BackendProfile
+    context: ReducerRuntimeContext
+
+    def __post_init__(self) -> None:
+        if self.context.xp is not self.profile.namespace:
+            raise ValueError(
+                "reducer runtime context namespace must match backend profile"
+            )
+        backend_ops = self.context.backend_ops
+        if (
+            backend_ops is not None
+            and backend_ops.backend_family != self.profile.backend_family
+        ):
+            raise ValueError(
+                "reducer runtime context family must match backend profile"
+            )
 
 
 class CompiledReducer(Protocol):
@@ -363,9 +556,31 @@ class ReducerCompiler:
         *,
         reducer: CanonicalReducer,
         axes: tuple[int, ...],
-        xp: ArrayNamespace,
+        xp: ReducerArrayNamespace,
     ) -> CompiledReducer:
-        """Compile one reducer against runtime backend and call-shape."""
+        """Compile one reducer against a runtime namespace and call shape.
+
+        Parameters
+        ----------
+        reducer
+            Canonical named or callable reducer.
+        axes
+            Concrete axes reduced by the compiled invocation.
+        xp
+            Canonical reducer namespace.
+
+        Returns
+        -------
+        CompiledReducer
+            Runtime reducer bound to the selected call form.
+
+        Raises
+        ------
+        ValidationError
+            The selected reducer is unavailable or has an invalid call form.
+        ExecutionError
+            Namespace capability lookup fails unexpectedly.
+        """
         if isinstance(reducer, ReducerName):
             return self._compile_string_reducer(
                 reducer_name=reducer,
@@ -382,7 +597,7 @@ class ReducerCompiler:
         self,
         *,
         reducer_name: ReducerName,
-        xp: ArrayNamespace,
+        xp: ReducerArrayNamespace,
     ) -> CompiledStringReducer:
         """Compile one string reducer by resolving namespace callable."""
         reducer_fn = resolve_namespace_reducer(xp, reducer_name)
@@ -415,7 +630,10 @@ __all__ = [
     "CompiledCallableReducer",
     "CompiledReducer",
     "CompiledStringReducer",
+    "ReducerArrayNamespace",
     "ReducerCompiler",
+    "ReducerRuntimeBinding",
     "ReducerRuntimeContext",
+    "bind_reducer_namespace",
     "resolve_namespace_reducer",
 ]

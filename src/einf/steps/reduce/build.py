@@ -1,34 +1,23 @@
 from dataclasses import dataclass
 from threading import RLock
-from typing import TypeGuard
 
 from einf.axis import AxisTerms, ScalarAxisTerms
 from einf.backend import (
-    ArrayNamespace,
-    BackendArrayOps,
     BackendExecutionIdentity,
-    BackendProfile,
-    get_backend_array_ops,
 )
-from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
+from einf.diagnostics import ErrorCode, ValidationError
 from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
-from einf.steps.runtime import backend_specialization_error
 
-from .runtime import REDUCER_COMPILER, CompiledReducer
+from .runtime import (
+    REDUCER_COMPILER,
+    CompiledReducer,
+    ReducerArrayNamespace,
+    ReducerRuntimeBinding,
+)
 
 _REDUCE_RUNTIME_CACHE_MAX_ENTRIES = 2_048
-_REDUCE_NAMESPACE_METHODS = (
-    "asarray",
-    "sum",
-    "prod",
-    "mean",
-    "max",
-    "min",
-    "all",
-    "any",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,12 +114,18 @@ class ReduceAxesResolver:
 
 @dataclass(frozen=True, slots=True)
 class ReduceCompiledProgram:
-    """Prevalidated runtime program for one unary reduce primitive."""
+    """Prevalidated shape-dependent facts for one unary reduce primitive.
+
+    Parameters
+    ----------
+    axes : tuple[int, ...]
+        Concrete input axes reduced by the program.
+    compiled_reducer : CompiledReducer
+        Reducer invocation strategy compiled for ``axes``.
+    """
 
     axes: tuple[int, ...]
     compiled_reducer: CompiledReducer
-    xp: ArrayNamespace
-    backend_ops: BackendArrayOps | None
 
 
 _REDUCE_RUNTIME_CACHE_ENTRIES: dict[
@@ -150,40 +145,46 @@ def build_reduce_compiled_program(
     pack_ranks: tuple[tuple[str, int], ...],
     reduce_axes: AxisTerms,
     reducer: CanonicalReducer,
-    backend_profile: BackendProfile,
+    runtime_binding: ReducerRuntimeBinding,
 ) -> ReduceCompiledProgram:
-    """Build one unary reduce runtime program from canonical terms and sizes."""
-    namespace_candidate = backend_profile.namespace
-    try:
-        has_runtime_namespace = has_reduce_namespace_methods(namespace_candidate)
-        backend_ops = get_backend_array_ops(backend_profile.backend_family)
-    except TensorOpError:
-        raise
-    except Exception as error:
-        raise backend_specialization_error(
-            operation="reduce",
-            error=error,
-        ) from error
-    if not has_runtime_namespace:
-        raise ValidationError(
-            code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
-            message=(
-                "backend dispatch unsupported input: "
-                "backend namespace is missing required Array API primitives"
-            ),
-            help="use tensors backed by a complete Array API namespace for this operation",
-            related=("backend dispatch",),
-            data={"operation": "reduce"},
-        )
+    """Compile shape-dependent reduce facts against stable backend capabilities.
 
+    Parameters
+    ----------
+    lhs_terms : ScalarAxisTerms
+        Concrete scalar terms on the input side.
+    expected_output_terms : ScalarAxisTerms
+        Scalar terms required after reduction.
+    axis_sizes : dict[str, int]
+        Resolved scalar-axis sizes.
+    pack_sizes : dict[str, tuple[int, ...]]
+        Resolved variadic pack expansions.
+    pack_ranks : tuple[tuple[str, int], ...]
+        Structural pack ranks used by the compile cache.
+    reduce_axes : AxisTerms
+        Canonical terms selected for reduction.
+    reducer : CanonicalReducer
+        Canonical named or callable reducer.
+    runtime_binding : ReducerRuntimeBinding
+        Validated backend identity and reducer capability binding.
+
+    Returns
+    -------
+    ReduceCompiledProgram
+        Concrete axes and reducer invocation strategy.
+
+    Raises
+    ------
+    ValidationError
+        Lowering terms or reducer configuration violate the reduce contract.
+    """
     normalized_reduce_axes = AxisTerms.from_spec(reduce_axes)
-    xp = namespace_candidate
     cache_key = _build_reduce_compile_key(
         lhs_terms=lhs_terms,
         reduce_axes=normalized_reduce_axes,
         pack_ranks=pack_ranks,
         reducer=reducer,
-        backend_identity=backend_profile.execution_identity,
+        backend_identity=runtime_binding.profile.execution_identity,
     )
     cached_plan = _get_cached_reduce_compiled_program(cache_key)
     if cached_plan is None:
@@ -193,7 +194,7 @@ def build_reduce_compiled_program(
             reducer=reducer,
             pack_sizes=pack_sizes,
             axis_sizes=axis_sizes,
-            xp=xp,
+            xp=runtime_binding.context.xp,
         )
         _put_cached_reduce_compiled_program(
             key=cache_key,
@@ -222,17 +223,7 @@ def build_reduce_compiled_program(
     return ReduceCompiledProgram(
         axes=axes,
         compiled_reducer=compiled_reducer,
-        xp=xp,
-        backend_ops=backend_ops,
     )
-
-
-def has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
-    """Return whether one namespace exposes required reducer methods."""
-    for method_name in _REDUCE_NAMESPACE_METHODS:
-        if not callable(getattr(namespace, method_name, None)):
-            return False
-    return True
 
 
 def _compile_reduce_runtime_phase(
@@ -242,7 +233,7 @@ def _compile_reduce_runtime_phase(
     reducer: CanonicalReducer,
     pack_sizes: dict[str, tuple[int, ...]],
     axis_sizes: dict[str, int],
-    xp: ArrayNamespace,
+    xp: ReducerArrayNamespace,
 ) -> tuple[tuple[int, ...], CompiledReducer, ScalarAxisTerms]:
     """Compile one unary reduce phase to concrete reducer execution."""
     reduce_terms = expand_pack_terms(

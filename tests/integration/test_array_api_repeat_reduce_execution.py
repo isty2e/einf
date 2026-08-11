@@ -1,5 +1,6 @@
 import functools
 import inspect
+from dataclasses import dataclass
 from functools import partial, partialmethod, wraps
 from types import MappingProxyType, MethodType
 from typing import NamedTuple
@@ -8,16 +9,169 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, reduce, repeat
+from einf import (
+    ErrorCode,
+    ExecutionError,
+    ValidationError,
+    ax,
+    axes,
+    packs,
+    reduce,
+    repeat,
+)
+from einf.backend import (
+    BACKEND_RESOLVER,
+    ArrayNamespaceLike,
+    BackendArrayOps,
+    BackendFamily,
+)
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
+from einf.steps.reduce import runtime as reduce_runtime_module
 from einf.steps.reduce import step as reduce_step_module
 
 try:
     import torch
 except ImportError:  # pragma: no cover
     torch = None
+
+
+class _SelectedReducerNamespace:
+    __name__ = "custom.selected_reducer"
+
+    def __init__(self) -> None:
+        self.sum_calls = 0
+        self.asarray_calls = 0
+
+    def asarray(self, value: bool | complex) -> "_SelectedReducerTensor":
+        self.asarray_calls += 1
+        return _SelectedReducerTensor(np.asarray(value), self)
+
+    def sum(
+        self,
+        tensor: "_SelectedReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> int | float | complex:
+        self.sum_calls += 1
+        return np.asarray(np.sum(tensor.value, axis=axis)).item()
+
+
+class _NoInventoryReducerNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.no_inventory_reducer"
+
+    def __getattribute__(self, name: str) -> object:
+        if name in {"all", "any", "max", "mean", "min", "prod"}:
+            raise AssertionError(f"unselected reducer {name!r} was inspected")
+        return super().__getattribute__(name)
+
+
+class _BrokenReducerLookupNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.broken_reducer_lookup"
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "sum":
+            raise OSError("selected reducer lookup failed")
+        return super().__getattribute__(name)
+
+
+class _FailingSelectedReducerNamespace(_SelectedReducerNamespace):
+    __name__ = "custom.failing_selected_reducer"
+
+    def sum(
+        self,
+        tensor: "_SelectedReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> int | float | complex:
+        del tensor, axis
+        self.sum_calls += 1
+        raise OSError("selected reducer invocation failed")
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectedReducerTensor:
+    value: np.ndarray
+    namespace: _SelectedReducerNamespace
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.value.shape
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> _SelectedReducerNamespace:
+        del api_version
+        return self.namespace
+
+    def __getitem__(self, key: object) -> "_SelectedReducerTensor":
+        del key
+        return self
+
+
+class _KnownFamilyReducerNamespace:
+    __name__ = "array_api_compat.numpy.custom"
+
+    def __init__(self) -> None:
+        self.sum_calls = 0
+
+    def asarray(self, value: bool | complex) -> "_KnownFamilyReducerTensor":
+        return _KnownFamilyReducerTensor(np.asarray(value), self)
+
+    def sum(
+        self,
+        tensor: "_KnownFamilyReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> "_KnownFamilyReducerTensor":
+        self.sum_calls += 1
+        return _KnownFamilyReducerTensor(np.sum(tensor.value, axis=axis), self)
+
+
+class _ForeignOutputReducerNamespace(_KnownFamilyReducerNamespace):
+    __name__ = "numpy.custom"
+
+    def sum(
+        self,
+        tensor: "_KnownFamilyReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> np.ndarray:
+        self.sum_calls += 1
+        return np.sum(tensor.value, axis=axis)
+
+
+class _KnownFamilyReducerTensor:
+    def __init__(
+        self,
+        value: np.ndarray,
+        namespace: _KnownFamilyReducerNamespace,
+    ) -> None:
+        self.value = value
+        self.namespace = namespace
+        self.method_calls: list[None] = []
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.value.shape
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> _KnownFamilyReducerNamespace:
+        del api_version
+        return self.namespace
+
+    def __getitem__(self, key: object) -> "_KnownFamilyReducerTensor":
+        return _KnownFamilyReducerTensor(self.value[key], self.namespace)
+
+    def sum(self, *, axis: tuple[int, ...]) -> "_KnownFamilyReducerTensor":
+        del axis
+        self.method_calls.append(None)
+        wrong = np.full((self.shape[0],), -100)
+        return _KnownFamilyReducerTensor(wrong, self.namespace)
 
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
@@ -31,6 +185,162 @@ def test_inflate_rejects_multi_input_lhs_with_diagnostic_code() -> None:
         _ = repeat.__call__((ax[b], ax[b]), ax[b])
 
     assert error.value.code == ErrorCode.MULTI_INPUT_NOT_ALLOWED.value
+
+
+def test_reduce_requires_only_scalar_coercion_and_selected_reducer() -> None:
+    b, h = axes("selected_b", "selected_h")
+    namespace = _NoInventoryReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    result = reduce(ax[b, h], ax[()]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _SelectedReducerTensor)
+    assert result.shape == ()
+    assert result.value.item() == 15
+    assert namespace.sum_calls == 1
+    assert namespace.asarray_calls == 1
+
+
+def test_reduce_reports_missing_selected_reducer() -> None:
+    b, h = axes("missing_b", "missing_h")
+    namespace = _SelectedReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ValidationError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("prod")(tensor)
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert "backend reducer 'prod' is unavailable" in error.value.message
+
+
+def test_reduce_projects_selected_reducer_lookup_failure() -> None:
+    b, h = axes("lookup_b", "lookup_h")
+    namespace = _BrokenReducerLookupNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert "selected reducer lookup failed" in error.value.message
+
+
+def test_reduce_projects_selected_reducer_invocation_failure() -> None:
+    b, h = axes("invocation_b", "invocation_h")
+    namespace = _FailingSelectedReducerNamespace()
+    tensor = _SelectedReducerTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+
+    with pytest.raises(ExecutionError) as error:
+        _ = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
+    assert "selected reducer invocation failed" in error.value.message
+    assert namespace.sum_calls == 1
+
+
+def test_reduce_known_family_custom_tensor_uses_selected_namespace_reducer() -> None:
+    b, h = axes("known_family_b", "known_family_h")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    result = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _KnownFamilyReducerTensor)
+    np.testing.assert_array_equal(result.value, np.array([3, 12]))
+    assert namespace.sum_calls == 1
+    assert tensor.method_calls == []
+
+
+def test_dynamic_reduce_known_family_tensor_uses_selected_namespace_reducer() -> None:
+    (batch_axes,) = packs("known_family_dynamic_batch")
+    (feature,) = axes("known_family_dynamic_feature")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3 * 4).reshape(2, 3, 4),
+        namespace,
+    )
+
+    result = reduce(ax[batch_axes, feature], ax[batch_axes]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _KnownFamilyReducerTensor)
+    np.testing.assert_array_equal(result.value, np.sum(tensor.value, axis=2))
+    assert namespace.sum_calls == 1
+    assert tensor.method_calls == []
+
+
+def test_static_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    b, h = axes("foreign_static_b", "foreign_static_h")
+    namespace = _ForeignOutputReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+    assert namespace.sum_calls == 1
+
+
+def test_dynamic_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    (batch_axes,) = packs("foreign_dynamic_batch")
+    (feature,) = axes("foreign_dynamic_feature")
+    namespace = _ForeignOutputReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3 * 4).reshape(2, 3, 4),
+        namespace,
+    )
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[batch_axes, feature], ax[batch_axes]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+    assert namespace.sum_calls == 1
+
+
+def test_callable_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    b, h = axes("foreign_callable_b", "foreign_callable_h")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    def foreign_sum(
+        value: _KnownFamilyReducerTensor,
+        *,
+        axis: tuple[int, ...],
+    ) -> np.ndarray:
+        return np.sum(value.value, axis=axis)
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[b, h], ax[b]).reduce_by(foreign_sum)(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+
+
+def test_reduce_exact_numpy_tensor_keeps_native_method_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b, h = axes("native_route_b", "native_route_h")
+    tensor = np.arange(2 * 3).reshape(2, 3)
+    profile = BACKEND_RESOLVER.resolve(tensor, op_name="reduce")
+    namespace_calls: list[None] = []
+
+    def wrong_namespace_sum(*_args: object, **_kwargs: object) -> np.ndarray:
+        namespace_calls.append(None)
+        return np.full((2,), -100)
+
+    monkeypatch.setattr(profile.namespace, "sum", wrong_namespace_sum)
+
+    result = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    np.testing.assert_array_equal(result, np.array([3, 12]))
+    assert namespace_calls == []
 
 
 def test_inflate_appends_axis_and_broadcasts_values() -> None:
@@ -279,6 +589,59 @@ def test_reduce_reuses_cached_compiled_runtime_plan(
     np.testing.assert_array_equal(op(tensor), expected)
 
 
+def test_dynamic_reduce_binds_backend_capabilities_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (batch_axes,) = packs("binding_batch")
+    (feature,) = axes("binding_feature")
+    op = reduce(ax[batch_axes, feature], ax[batch_axes])
+    tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    capability_calls = {"namespace": 0, "adapter": 0}
+    original_bind = reduce_step_module.bind_reducer_namespace
+    original_get_backend_ops = reduce_step_module.get_backend_array_ops
+
+    def count_bind(
+        namespace: ArrayNamespaceLike,
+    ) -> reduce_runtime_module.ReducerArrayNamespace:
+        capability_calls["namespace"] += 1
+        return original_bind(namespace)
+
+    def count_backend_ops(
+        backend_family: BackendFamily | None,
+    ) -> BackendArrayOps | None:
+        capability_calls["adapter"] += 1
+        return original_get_backend_ops(backend_family)
+
+    monkeypatch.setattr(
+        reduce_step_module,
+        "bind_reducer_namespace",
+        count_bind,
+    )
+    monkeypatch.setattr(
+        reduce_build_module,
+        "bind_reducer_namespace",
+        count_bind,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reduce_step_module,
+        "get_backend_array_ops",
+        count_backend_ops,
+    )
+    monkeypatch.setattr(
+        reduce_build_module,
+        "get_backend_array_ops",
+        count_backend_ops,
+        raising=False,
+    )
+
+    expected = np.sum(tensor, axis=2)
+    for _ in range(3):
+        np.testing.assert_array_equal(op(tensor), expected)
+
+    assert capability_calls == {"namespace": 1, "adapter": 1}
+
+
 def test_reduce_compile_invariant_rejects_mismatched_output_terms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,7 +662,7 @@ def test_reduce_compile_invariant_rejects_mismatched_output_terms(
         reducer: CanonicalReducer,
         pack_sizes: dict[str, tuple[int, ...]],
         axis_sizes: dict[str, int],
-        xp: reduce_build_module.ArrayNamespace,
+        xp: reduce_runtime_module.ReducerArrayNamespace,
     ) -> tuple[
         tuple[int, ...],
         reduce_build_module.CompiledReducer,
