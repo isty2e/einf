@@ -27,6 +27,32 @@ _EXPECTED_FALLBACK_EVENTS = {
 }
 
 
+def test_runtime_program_rejects_unresolved_native_matmul_admission() -> None:
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must belong to the runtime equations",
+    ):
+        EinsumRuntimeProgram(
+            equations=("ij,jk->ik",),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({"ik,kj->ij"}),
+        )
+
+
+def test_runtime_program_rejects_invalid_native_matmul_admission() -> None:
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must be semantically matmul-shaped",
+    ):
+        EinsumRuntimeProgram(
+            equations=("ij,jkl->ikl",),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({"ij,jkl->ikl"}),
+        )
+
+
 def _build_runtime_steps(
     *,
     executor: EinsumEquationExecutor,
@@ -42,7 +68,9 @@ def _build_runtime_steps(
             equations=(_EINSUM_EQUATION,),
             chain_order=(1,) if chain_mode else (),
             carrier_index=0 if chain_mode else None,
-            allow_native_matmul=allow_native_matmul,
+            native_matmul_equations=(
+                frozenset({_EINSUM_EQUATION}) if allow_native_matmul else frozenset()
+            ),
         ),
         backend_profile=executor.profile,
         executor=executor,
