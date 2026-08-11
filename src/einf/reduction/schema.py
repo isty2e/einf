@@ -1,14 +1,11 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 
 from ..axis import AxisTermBase, AxisTerms
 from ..diagnostics import ErrorCode, ValidationError
-from ..tensor_types import TensorLike
+from .callable import CallableReducerBinding, ReducerCallable
 
-ReducerResult: TypeAlias = TensorLike | bool | int | float | complex
-ReducerCallable: TypeAlias = Callable[..., ReducerResult]
 Reducer: TypeAlias = str | ReducerCallable
 
 
@@ -24,7 +21,7 @@ class ReducerName(str, Enum):
     ANY = "any"
 
 
-CanonicalReducer: TypeAlias = ReducerName | ReducerCallable
+CanonicalReducer: TypeAlias = ReducerName | CallableReducerBinding
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -37,7 +34,7 @@ class ReducerPhase:
     def __init__(
         self,
         axes: AxisTerms | tuple[AxisTermBase | int, ...],
-        reducer: Reducer,
+        reducer: Reducer | CallableReducerBinding,
     ) -> None:
         normalized_reducer: CanonicalReducer
         if isinstance(reducer, str):
@@ -52,8 +49,10 @@ class ReducerPhase:
                     related=("reduce reducer",),
                     data={"reducer": reducer},
                 ) from error
-        elif callable(reducer):
+        elif isinstance(reducer, CallableReducerBinding):
             normalized_reducer = reducer
+        elif callable(reducer):
+            normalized_reducer = CallableReducerBinding(reducer)
         else:
             raise TypeError("reducer must be a string or callable")
 

@@ -1,14 +1,19 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import cast
+from typing import Literal, cast
 
 import opt_einsum
 
 from einf.axis import AxisSide, ScalarAxisTerms
 from einf.backend import BackendProfile
-from einf.backend.runtime import load_backend_module
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.backend.runtime import (
+    BackendRuntimeUnavailable,
+    is_backend_runtime_uninterposed,
+    load_backend_module,
+    supports_native_array_ops,
+)
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeProgram,
@@ -19,11 +24,15 @@ from einf.steps.base import (
     SymbolicStepScore,
 )
 from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
+from einf.steps.runtime import (
+    FALLBACK_ELIGIBLE_BACKEND_ERRORS,
+    validate_runtime_output_shape,
+)
 from einf.steps.scoring import einsum_output_shape, einsum_peak_numel
-from einf.tensor_types import TensorLike
+from einf.tensor_types import TensorLike, trusted_tensor_family
 
 from .equation import build_contract_equation
-from .native import EINSUM_FALLBACK_ERRORS, try_native_contract_einsum
+from .native import try_native_contract_einsum
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
@@ -476,7 +485,7 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
 
 
 @dataclass(frozen=True, slots=True)
-class _EinsumEquationExecutor:
+class EinsumEquationExecutor:
     """Run one lowered einsum equation sequence under one backend profile."""
 
     profile: BackendProfile
@@ -502,9 +511,19 @@ class _EinsumEquationExecutor:
             if should_use_cached_expression:
                 try:
                     expression = _cached_contract_expression(equation, operand_shapes)
-                    return expression(*operands)
-                except EINSUM_FALLBACK_ERRORS:
+                    output = expression(*operands)
+                except TensorOpError:
+                    raise
+                except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
                     pass
+                except Exception as error:
+                    raise _project_einsum_route_error(error) from error
+                else:
+                    return _validate_einsum_output(
+                        equation=equation,
+                        operands=operands,
+                        output=output,
+                    )
 
         if (
             allow_native_matmul
@@ -514,82 +533,225 @@ class _EinsumEquationExecutor:
             and _prefer_native_matmul(operands=operands)
         ):
             try:
-                return self.native_module_matmul(
+                output = self.native_module_matmul(
                     operands[0],
                     operands[1],
                 )
-            except EINSUM_FALLBACK_ERRORS:
+            except TensorOpError:
+                raise
+            except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
                 pass
+            except Exception as error:
+                raise _project_einsum_route_error(error) from error
+            else:
+                return _trust_or_validate_native_einsum_output(
+                    equation=equation,
+                    operands=operands,
+                    output=output,
+                    profile=self.profile,
+                    route_callable=self.native_module_matmul,
+                    module_op_name="matmul",
+                )
 
         module_einsum = self.native_module_einsum
         if module_einsum is not None:
             try:
-                return module_einsum(equation, *operands)
-            except EINSUM_FALLBACK_ERRORS:
+                output = module_einsum(equation, *operands)
+            except TensorOpError:
+                raise
+            except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
                 pass
+            except Exception as error:
+                raise _project_einsum_route_error(error) from error
+            else:
+                return _trust_or_validate_native_einsum_output(
+                    equation=equation,
+                    operands=operands,
+                    output=output,
+                    profile=self.profile,
+                    route_callable=module_einsum,
+                    module_op_name="einsum",
+                )
 
         namespace_einsum = self.native_namespace_einsum
         if namespace_einsum is not None and len(operands) == 2:
             try:
                 native_output = namespace_einsum(equation, *operands)
-            except EINSUM_FALLBACK_ERRORS:
-                native_output = try_native_contract_einsum(
-                    equation=equation,
-                    tensors=operands,
-                    namespace=self.profile.namespace,
-                )
+            except TensorOpError:
+                raise
+            except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
+                try:
+                    native_output = try_native_contract_einsum(
+                        equation=equation,
+                        tensors=operands,
+                        namespace=self.profile.namespace,
+                    )
+                except TensorOpError:
+                    raise
+                except Exception as error:
+                    raise _project_einsum_route_error(error) from error
+            except Exception as error:
+                raise _project_einsum_route_error(error) from error
             if native_output is not None:
-                return native_output
+                return _validate_einsum_output(
+                    equation=equation,
+                    operands=operands,
+                    output=native_output,
+                )
 
         try:
-            return opt_einsum.contract(
+            output = opt_einsum.contract(
                 equation,
                 *operands,
                 optimize="auto",
             )
+        except TensorOpError:
+            raise
         except Exception as error:
             if chain_mode:
-                message = f"inconsistent dims: chain einsum execution failed: {error}"
+                message = f"backend execution failed: chain einsum failed: {error}"
                 help_message = (
                     "ensure input shapes satisfy chain einsum lowering constraints"
                 )
             else:
-                message = f"inconsistent dims: einsum execution failed: {error}"
+                message = f"backend execution failed: einsum failed: {error}"
                 help_message = "ensure input shapes satisfy einsum lowering constraints"
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
+            raise ExecutionError(
+                code=ErrorCode.BACKEND_EXECUTION_FAILED,
                 message=message,
                 help=help_message,
                 related=("einsum execution",),
                 data={"operation": "einsum"},
             ) from error
+        return _validate_einsum_output(
+            equation=equation,
+            operands=operands,
+            output=output,
+        )
 
 
-def _build_einsum_executor(profile: BackendProfile, /) -> _EinsumEquationExecutor:
+def _trust_or_validate_native_einsum_output(
+    *,
+    equation: str,
+    operands: tuple[TensorLike, ...],
+    output: TensorLike,
+    profile: BackendProfile,
+    route_callable: Callable[..., TensorLike],
+    module_op_name: Literal["einsum", "matmul"],
+) -> TensorLike:
+    """Skip semantic validation only for exact native tensor execution."""
+    output_type = type(output)
+    backend_family = trusted_tensor_family(output_type)
+    if backend_family is not None and profile.backend_family == backend_family:
+        for operand in operands:
+            if type(operand) is not output_type:
+                break
+        else:
+            try:
+                backend_module = load_backend_module(backend_family)
+                canonical_callable = getattr(
+                    backend_module,
+                    module_op_name,
+                    None,
+                )
+            except Exception:  # noqa: BLE001 - missing proof selects validation
+                canonical_callable = None
+            if route_callable is canonical_callable and is_backend_runtime_uninterposed(
+                backend_family
+            ):
+                return output
+    return _validate_einsum_output(
+        equation=equation,
+        operands=operands,
+        output=output,
+    )
+
+
+def _validate_einsum_output(
+    *,
+    equation: str,
+    operands: tuple[TensorLike, ...],
+    output: TensorLike,
+) -> TensorLike:
+    """Validate one output from an untrusted einsum execution route."""
+    operand_shapes = _operand_shapes_key(operands)
+    if operand_shapes is None:
+        raise ExecutionError(
+            code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
+            message="einsum output protocol violation: operand shapes are not canonical",
+            help="use TensorLike operands with tuple[int, ...] shape",
+            related=("einsum execution", "TensorLike input protocol"),
+            data={"operation": "einsum"},
+        )
+    expected_shape = einsum_output_shape(
+        equation=equation,
+        operand_shapes=operand_shapes,
+    )
+    if expected_shape is None:
+        raise ExecutionError(
+            code=ErrorCode.INCONSISTENT_DIMS,
+            message="inconsistent dims: einsum output shape could not be derived",
+            help="ensure the lowered equation matches all operand shapes",
+            related=("einsum execution", "einsum equation"),
+            data={"operation": "einsum"},
+        )
+    return validate_runtime_output_shape(
+        output,
+        expected_shape,
+        operation="einsum",
+    )
+
+
+def _project_einsum_route_error(error: Exception) -> ExecutionError:
+    """Build one structured error for an unexpected einsum route failure."""
+    return ExecutionError(
+        code=ErrorCode.BACKEND_EXECUTION_FAILED,
+        message=f"backend execution failed: einsum execution failed: {error}",
+        help="ensure input shapes satisfy einsum lowering constraints",
+        related=("einsum execution",),
+        data={"operation": "einsum"},
+    )
+
+
+def _build_einsum_executor(profile: BackendProfile, /) -> EinsumEquationExecutor:
     """Build one runtime einsum executor for one backend profile."""
     module_einsum: Callable[..., TensorLike] | None = None
     module_matmul: Callable[[TensorLike, TensorLike], TensorLike] | None = None
     backend_family = profile.backend_family
-    if backend_family is not None:
+    if backend_family is not None and supports_native_array_ops(backend_family):
         try:
             backend_module = load_backend_module(backend_family)
-        except (ModuleNotFoundError, ValueError):
+        except BackendRuntimeUnavailable:
             backend_module = None
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise _project_einsum_route_error(error) from error
         if backend_module is not None:
-            module_einsum_candidate = getattr(backend_module, "einsum", None)
-            if callable(module_einsum_candidate):
-                module_einsum = cast(
-                    Callable[..., TensorLike],
-                    module_einsum_candidate,
-                )
-            module_matmul_candidate = getattr(backend_module, "matmul", None)
-            if callable(module_matmul_candidate):
-                module_matmul = cast(
-                    Callable[[TensorLike, TensorLike], TensorLike],
-                    module_matmul_candidate,
-                )
+            try:
+                module_einsum_candidate = getattr(backend_module, "einsum", None)
+                if callable(module_einsum_candidate):
+                    module_einsum = cast(
+                        Callable[..., TensorLike],
+                        module_einsum_candidate,
+                    )
+                module_matmul_candidate = getattr(backend_module, "matmul", None)
+                if callable(module_matmul_candidate):
+                    module_matmul = cast(
+                        Callable[[TensorLike, TensorLike], TensorLike],
+                        module_matmul_candidate,
+                    )
+            except TensorOpError:
+                raise
+            except Exception as error:
+                raise _project_einsum_route_error(error) from error
 
-    namespace_einsum_candidate = getattr(profile.namespace, "einsum", None)
+    try:
+        namespace_einsum_candidate = getattr(profile.namespace, "einsum", None)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise _project_einsum_route_error(error) from error
     if callable(namespace_einsum_candidate):
         namespace_einsum = cast(
             Callable[..., TensorLike],
@@ -597,7 +759,7 @@ def _build_einsum_executor(profile: BackendProfile, /) -> _EinsumEquationExecuto
         )
     else:
         namespace_einsum = None
-    return _EinsumEquationExecutor(
+    return EinsumEquationExecutor(
         profile=profile,
         native_namespace_einsum=namespace_einsum,
         native_module_einsum=module_einsum,
@@ -614,16 +776,16 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
     output_arity: int
     program: EinsumRuntimeProgram
     backend_profile: BackendProfile | None
-    executor: _EinsumEquationExecutor | None = None
+    executor: EinsumEquationExecutor | None = None
 
-    def _build_executor(self, profile: BackendProfile, /) -> _EinsumEquationExecutor:
+    def _build_executor(self, profile: BackendProfile, /) -> EinsumEquationExecutor:
         """Build one runtime einsum executor for one backend profile."""
         return _build_einsum_executor(profile)
 
     def _resolve_executor(
         self,
         /,
-    ) -> _EinsumEquationExecutor:
+    ) -> EinsumEquationExecutor:
         executor = self.executor
         if executor is not None:
             return executor

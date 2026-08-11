@@ -8,7 +8,7 @@ from einf.axis import (
     term_size,
 )
 from einf.backend import BackendProfile
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -16,6 +16,7 @@ from einf.steps.base import (
     SymbolicProgram,
 )
 from einf.steps.context import build_runtime_execution_context
+from einf.steps.runtime import validate_runtime_output_shape
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
@@ -118,16 +119,11 @@ def _try_run_direct_axis_slice(
     if sum(split_sizes) != tensor.shape[split_axis]:
         return None
 
-    prefix = (slice(None),) * split_axis
-    suffix = (slice(None),) * (input_rank - split_axis - 1)
-    outputs: list[TensorLike] = []
-    offset = 0
-    for size in split_sizes:
-        next_offset = offset + size
-        index = prefix + (slice(offset, next_offset),) + suffix
-        outputs.append(tensor[index])
-        offset = next_offset
-    return tuple(outputs)
+    return _run_direct_axis_slice_by_sizes(
+        tensor=tensor,
+        split_axis=split_axis,
+        split_sizes=split_sizes,
+    )
 
 
 def _run_direct_axis_slice_by_sizes(
@@ -147,12 +143,23 @@ def _run_direct_axis_slice_by_sizes(
 
     prefix = (slice(None),) * split_axis
     suffix = (slice(None),) * (input_rank - split_axis - 1)
+    shape_prefix = tensor.shape[:split_axis]
+    shape_suffix = tensor.shape[split_axis + 1 :]
     outputs: list[TensorLike] = []
     offset = 0
-    for size in split_sizes:
+    for output_index, size in enumerate(split_sizes):
         next_offset = offset + size
         index = prefix + (slice(offset, next_offset),) + suffix
-        outputs.append(tensor[index])
+        output = tensor[index]
+        expected_shape = shape_prefix + (size,) + shape_suffix
+        outputs.append(
+            validate_runtime_output_shape(
+                output,
+                expected_shape,
+                operation="axis_slice",
+                output_index=output_index,
+            )
+        )
         offset = next_offset
     return tuple(outputs)
 
@@ -186,48 +193,65 @@ class AxisSliceRuntimeStep(RuntimeStep[AxisSliceSymbolicProgram]):
         split_axis = self.program.split_axis
         direct_outputs: tuple[TensorLike, ...] | None = None
         if split_axis >= 0:
-            precomputed_split_sizes = self.precomputed_split_sizes
-            if precomputed_split_sizes is not None:
-                direct_outputs = _run_direct_axis_slice_by_sizes(
-                    tensor=tensor,
-                    split_axis=split_axis,
-                    split_sizes=precomputed_split_sizes,
-                )
-            else:
-                context = build_runtime_execution_context(
-                    signature=self.program.signature,
-                    tensors=tensors,
-                    explicit_sizes=self.explicit_sizes,
-                )
-                direct_outputs = _try_run_direct_axis_slice(
-                    tensor=tensor,
-                    rhs_terms=context.rhs_terms,
-                    axis_sizes=context.axis_sizes,
-                    split_axis=split_axis,
-                )
-            if direct_outputs is not None:
-                if self.program.strict_view:
-                    backend_profile = self.backend_profile
-                    if backend_profile is None:
-                        raise ValidationError(
-                            code=ErrorCode.NOT_A_VIEW,
-                            message=(
-                                "not a view: strict view validation requires "
-                                "backend profile"
-                            ),
-                            help=(
-                                "run view execution through TensorOp call path "
-                                "to resolve backend profile"
-                            ),
-                            related=("view affine mapping",),
-                            data={"operation": "view"},
-                        )
-                    validate_view_outputs(
-                        input_tensor=tensor,
-                        outputs=direct_outputs,
-                        profile=backend_profile,
+            try:
+                precomputed_split_sizes = self.precomputed_split_sizes
+                if precomputed_split_sizes is not None:
+                    direct_outputs = _run_direct_axis_slice_by_sizes(
+                        tensor=tensor,
+                        split_axis=split_axis,
+                        split_sizes=precomputed_split_sizes,
                     )
-                return direct_outputs
+                else:
+                    context = build_runtime_execution_context(
+                        signature=self.program.signature,
+                        tensors=tensors,
+                        explicit_sizes=self.explicit_sizes,
+                    )
+                    direct_outputs = _try_run_direct_axis_slice(
+                        tensor=tensor,
+                        rhs_terms=context.rhs_terms,
+                        axis_sizes=context.axis_sizes,
+                        split_axis=split_axis,
+                    )
+                if direct_outputs is not None:
+                    if self.program.strict_view:
+                        backend_profile = self.backend_profile
+                        if backend_profile is None:
+                            raise ValidationError(
+                                code=ErrorCode.NOT_A_VIEW,
+                                message=(
+                                    "not a view: strict view validation requires "
+                                    "backend profile"
+                                ),
+                                help=(
+                                    "run view execution through TensorOp call path "
+                                    "to resolve backend profile"
+                                ),
+                                related=("view affine mapping",),
+                                data={"operation": "view"},
+                            )
+                        validate_view_outputs(
+                            input_tensor=tensor,
+                            outputs=direct_outputs,
+                            profile=backend_profile,
+                        )
+                    return direct_outputs
+            except TensorOpError:
+                raise
+            except Exception as error:
+                raise ExecutionError(
+                    code=ErrorCode.BACKEND_EXECUTION_FAILED,
+                    message=(
+                        "backend execution failed: axis_slice backend slicing "
+                        f"failed: {error}"
+                    ),
+                    help=(
+                        "ensure the tensor backend supports the required "
+                        "slicing operation"
+                    ),
+                    related=("axis_slice runtime",),
+                    data={"operation": "axis_slice"},
+                ) from error
             if self.program.strict_view:
                 raise ValidationError(
                     code=ErrorCode.NOT_A_VIEW,

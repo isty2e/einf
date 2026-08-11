@@ -6,7 +6,7 @@ from einf.axis import (
     ScalarAxisTermBase,
 )
 from einf.backend import ArrayNamespace, BackendArrayOps
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.signature import Signature
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -19,7 +19,7 @@ from einf.steps.scoring import numel_from_shape
 from einf.tensor_types import TensorLike
 
 from .base import AxisSideSymbolicStep
-from .runtime import bind_runtime_backend, coerce_step_outputs
+from .runtime import bind_runtime_backend, validate_runtime_output_shape
 
 _CONCAT_REQUIRED_METHODS = ("concat",)
 
@@ -120,22 +120,37 @@ class ConcatRuntimeStep(RuntimeStep[ConcatSymbolicProgram]):
                 data={"operation": "concat"},
             )
         concat_axis = self.program.concat_axis
+        first_shape = tensors[0].shape
+        expected_shape = tuple(
+            sum(tensor.shape[axis] for tensor in tensors)
+            if axis == concat_axis
+            else size
+            for axis, size in enumerate(first_shape)
+        )
         runtime_backend_ops = self.runtime_backend_ops
         if runtime_backend_ops is not None:
             try:
                 output = runtime_backend_ops.concat(list(tensors), concat_axis)
+            except TensorOpError:
+                raise
             except Exception as error:
-                raise ValidationError(
-                    code=ErrorCode.INCONSISTENT_DIMS,
+                raise ExecutionError(
+                    code=ErrorCode.BACKEND_EXECUTION_FAILED,
                     message=(
-                        "inconsistent dims: concat runtime failed during backend concat "
+                        "backend execution failed: concat primitive failed during "
                         f"execution: {error}"
                     ),
                     help="ensure non-concat axes are shape-compatible across concat inputs",
                     related=("concat runtime",),
                     data={"operation": "concat"},
                 ) from error
-            return coerce_step_outputs(output)
+            return (
+                validate_runtime_output_shape(
+                    output,
+                    expected_shape,
+                    operation="concat",
+                ),
+            )
 
         runtime_xp = self.runtime_xp
         if runtime_xp is None:
@@ -151,18 +166,26 @@ class ConcatRuntimeStep(RuntimeStep[ConcatSymbolicProgram]):
             )
         try:
             output = runtime_xp.concat(list(tensors), axis=concat_axis)
+        except TensorOpError:
+            raise
         except Exception as error:
-            raise ValidationError(
-                code=ErrorCode.INCONSISTENT_DIMS,
+            raise ExecutionError(
+                code=ErrorCode.BACKEND_EXECUTION_FAILED,
                 message=(
-                    "inconsistent dims: concat runtime failed during backend concat "
+                    "backend execution failed: concat primitive failed during "
                     f"execution: {error}"
                 ),
                 help="ensure non-concat axes are shape-compatible across concat inputs",
                 related=("concat runtime",),
                 data={"operation": "concat"},
             ) from error
-        return coerce_step_outputs(output)
+        return (
+            validate_runtime_output_shape(
+                output,
+                expected_shape,
+                operation="concat",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -192,6 +215,7 @@ class ConcatSymbolicStep(AxisSideSymbolicStep[ConcatSymbolicProgram]):
     ) -> RuntimeStep:
         backend_binding = bind_runtime_backend(
             context,
+            operation="concat",
             required_namespace_methods=_CONCAT_REQUIRED_METHODS,
             bind_namespace_when_backend_ops_available=False,
         )

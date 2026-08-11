@@ -11,6 +11,8 @@ exact contract.
 ## Setup
 
 ```python
+from functools import partial
+
 import numpy as np
 from einf import ax, axes, view, rearrange, repeat, reduce, contract, einop
 
@@ -109,6 +111,70 @@ Array API namespace. A callable receives that namespace's tensor directly, so
 the `np.max` example above is NumPy-specific; use a callable implemented with
 the active namespace's operations if the same `TensorOp` must run across
 implementations.
+
+Callable reducers must accept one of these call forms: `(tensor)`,
+`(tensor, axes)`, or `(tensor, *, axis=...)`. The name `tensor` is illustrative;
+parameter spelling does not determine the tensor slot. Axes parameters must be
+named `axis`, `axes`, or `reducer_axes`. `axis` accepts keyword injection, while
+`axes` and `reducer_axes` receive the axes positionally.
+
+Leading configuration is supported through `functools.partial`:
+
+```python
+def scaled_sum(scale, values, *, axis):
+    return np.sum(values, axis=axis) * scale
+
+
+double_sum = partial(scaled_sum, 2)
+```
+
+For a `partial`, einf combines the configured arguments with each supported
+call form and accepts the reducer only when Python can bind the runtime tensor
+and axes to explicit parameters. This allows configuration such as
+`partial(np.quantile, q=0.5)` without guessing which original parameter is the
+tensor.
+
+`.reduce_by(...)` captures the complete chain of standard partials. Later edits
+to any partial's `keywords` mapping do not change the operation. The capture is
+shallow: argument positions and keyword bindings are fixed, but referenced
+objects such as masks and arrays are not copied. Mutable containers and live
+mapping proxies or views may be bound only to an explicit parameter after the
+axes parameter. einf rejects them elsewhere because later structural mutation
+could invalidate checks performed before the reducer first runs.
+
+Tensor-like values are allowed only for explicit parameters declared after the
+axes parameter. This rule also applies when a tuple, named tuple, or frozenset
+contains the tensor-like value. Elsewhere, einf cannot distinguish
+configuration from a stale input and rejects the partial. Partial subclasses
+are rejected when they remain visible in the callable passed to
+`.reduce_by(...)`. Python may flatten a nested subclass into an exact
+`functools.partial` before einf sees it. The subclass-specific rejection does
+not apply after flattening; the resulting callable must still satisfy the rest
+of the reducer contract.
+Python 3.14 `functools.Placeholder` bindings may be filled by an outer partial,
+but every placeholder must be resolved before `.reduce_by(...)` builds the
+operation.
+
+If a partial supplies the axes parameter, the value must be the exact
+`tuple[int, ...]` selected by the operation; einf then calls the reducer with
+the tensor alone. A regular default value does not configure the axes, so einf
+still passes the selected axes.
+
+Ordinary bound methods may be passed directly. Access a `partialmethod` reducer
+through its instance, such as `reducers.configured_sum`. Do not bind a
+class-level `partialmethod` with `partial`, `MethodType`, or a manual `__get__`
+call; these forms hide configuration that einf must capture.
+
+Functions, callable objects, bound methods, and partials are supported when
+their visible call contract matches one of the forms above. An entirely
+unconfigured partial chain may carry `__wrapped__` or `__signature__` metadata.
+Once any partial in the chain binds an argument, no partial in that chain may
+own signature metadata. Put the metadata on an explicit non-partial wrapper
+before applying `partial`; otherwise it cannot establish whether the signature
+describes the surface before or after binding. `singledispatchmethod` also
+needs an explicit wrapper. einf rejects ambiguous or invalid signatures before
+running user code instead of trying several call forms and risking repeated
+side effects.
 
 ## contract — pure tensor contraction
 

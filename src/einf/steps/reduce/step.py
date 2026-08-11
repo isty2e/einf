@@ -6,7 +6,7 @@ from einf.backend import (
     BackendProfile,
     get_backend_array_ops,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
 from einf.reduction.plan import infer_unary_reduced_terms
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.signature import Signature
@@ -17,13 +17,17 @@ from einf.steps.base import (
     UnaryRuntimeProgram,
 )
 from einf.steps.context import build_runtime_execution_context
+from einf.steps.runtime import (
+    backend_specialization_error,
+    validate_runtime_output_shape,
+)
 from einf.tensor_types import TensorLike
 
 from ..base import AxisSideSymbolicStep
 from .build import (
     ReduceAxesResolver,
-    _has_reduce_namespace_methods,
     build_reduce_compiled_program,
+    has_reduce_namespace_methods,
 )
 from .runtime import (
     NamespaceReducer,
@@ -103,13 +107,25 @@ class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
 
         try:
             if self.direct_axis_keyword == "dim":
-                return getattr(tensor, self.direct_method_name)(dim=self.axes)
-            return getattr(tensor, self.direct_method_name)(axis=self.axes)
+                output = getattr(tensor, self.direct_method_name)(dim=self.axes)
+            else:
+                output = getattr(tensor, self.direct_method_name)(axis=self.axes)
+        except TensorOpError:
+            raise
         except Exception as error:
             raise self.runtime_context.string_reducer_error(
                 reducer_name=self.reducer,
+                tensor=tensor,
+                axes=self.axes,
                 error=error,
             ) from error
+        output = self.runtime_context.coerce_output(output)
+        _validate_reduced_axis_output_shape(
+            output=output,
+            input_shape=tuple(tensor.shape),
+            reduced_axes=self.axes,
+        )
+        return output
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,12 +142,18 @@ class NamespaceReduceRuntimeProgram(ReduceRuntimeProgram):
         if not self.axes:
             return tensor
 
-        return self.runtime_context.apply_string_reducer(
+        output = self.runtime_context.apply_string_reducer(
             reducer_name=self.reducer,
             reducer_fn=self.reducer_fn,
             tensor=tensor,
             axes=self.axes,
         )
+        _validate_reduced_axis_output_shape(
+            output=output,
+            input_shape=tuple(tensor.shape),
+            reduced_axes=self.axes,
+        )
+        return output
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +175,6 @@ class DynamicReduceRuntimeProgram(ReduceRuntimeProgram):
         )
 
         plan = build_reduce_compiled_program(
-            tensor=tensor,
             lhs_terms=context.lhs_terms[0],
             expected_output_terms=context.rhs_terms[0],
             axis_sizes=context.axis_sizes,
@@ -206,10 +227,6 @@ class ReduceRuntimeStep(RuntimeStep[ReduceRuntimeProgram]):
             )
         return self.program(tensors)
 
-    def run_unary(self, tensor: TensorLike, /) -> TensorLike:
-        """Execute one unary reduce runtime step."""
-        return self.program.run_unary(tensor)
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
@@ -254,9 +271,18 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
                 data={"operation": "reduce"},
             )
         runtime_program: ReduceRuntimeProgram | None = None
-        runtime_backend_ops = get_backend_array_ops(backend_profile.backend_family)
         runtime_xp_candidate = backend_profile.namespace
-        if _has_reduce_namespace_methods(runtime_xp_candidate):
+        try:
+            runtime_backend_ops = get_backend_array_ops(backend_profile.backend_family)
+            has_runtime_namespace = has_reduce_namespace_methods(runtime_xp_candidate)
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise backend_specialization_error(
+                operation="reduce",
+                error=error,
+            ) from error
+        if has_runtime_namespace:
             runtime_context = ReducerRuntimeContext(
                 xp=runtime_xp_candidate,
                 backend_ops=runtime_backend_ops,
@@ -293,6 +319,30 @@ class ReduceSymbolicStep(AxisSideSymbolicStep[ReduceSymbolicProgram]):
         return "callable"
 
 
+def _validate_reduced_axis_output_shape(
+    *,
+    output: TensorLike,
+    input_shape: tuple[int, ...],
+    reduced_axes: tuple[int, ...],
+) -> None:
+    """Validate reducer output shape against reduced-axis contract.
+
+    For shape-invariant reduce strategies the declared RHS equals the
+    unreduced input axes, so the expected shape is the input shape minus
+    the reduced positions; this derivation avoids per-call context
+    normalization on the static path.
+    """
+    reduced_positions = set(reduced_axes)
+    expected_shape = tuple(
+        dim for index, dim in enumerate(input_shape) if index not in reduced_positions
+    )
+    _ = validate_runtime_output_shape(
+        output,
+        expected_shape,
+        operation="reduce",
+    )
+
+
 def _validate_reduce_output_shape(
     *,
     tensor: TensorLike,
@@ -311,20 +361,10 @@ def _validate_reduce_output_shape(
             data={"operation": "reduce"},
         ) from error
 
-    actual_shape = tuple(tensor.shape)
-    if actual_shape == expected_shape:
-        return
-
-    raise ValidationError(
-        code=ErrorCode.INCONSISTENT_DIMS,
-        message="inconsistent dims: reducer output shape does not match reduced-axis contract",
-        help="return tensors whose shape matches unreduced rhs terms",
-        related=("reduce reducer output",),
-        data={
-            "operation": "reduce",
-            "expected_rank": len(expected_shape),
-            "actual_rank": len(actual_shape),
-        },
+    _ = validate_runtime_output_shape(
+        tensor,
+        expected_shape,
+        operation="reduce",
     )
 
 

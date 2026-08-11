@@ -24,9 +24,10 @@ class ErrorCode(str, Enum):
     BACKEND_DISPATCH_UNSUPPORTED_INPUT = "backend_dispatch_unsupported_input"
     BACKEND_DISPATCH_MIXED_FAMILY = "backend_dispatch_mixed_family"
     BACKEND_REQUIRED_EXTENSION_MISSING = "backend_required_extension_missing"
+    BACKEND_EXECUTION_FAILED = "backend_execution_failed"
 
 
-class TensorOpError(ValueError):
+class TensorOpError(Exception):
     """Structured base error for validation/runtime diagnostics."""
 
     channel = "error"

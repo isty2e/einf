@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from unittest.mock import patch
 
 import numpy as np
@@ -224,6 +225,51 @@ def test_tensorop_reduce_by_reuses_cached_configured_instance() -> None:
     second = base.reduce_by((ax[h], "sum"), (ax[d], "prod"))
 
     assert first is second
+
+
+def test_tensorop_reduce_by_reuses_unchanged_partial_configuration() -> None:
+    b, h = axes("cached_partial_b", "cached_partial_h")
+    base = reduce(ax[b, h], ax[b])
+    reducer = partial(np.sum, axis=(1,))
+
+    first = base.reduce_by(reducer)
+    second = base.reduce_by(reducer)
+
+    assert first is second
+
+
+def test_tensorop_reduce_by_separates_changed_partial_configuration() -> None:
+    def scaled_sum(
+        values: np.ndarray,
+        *,
+        axis: tuple[int, ...],
+        scale: int,
+    ) -> np.ndarray:
+        return np.sum(values, axis=axis) * scale
+
+    b, h = axes("changed_partial_b", "changed_partial_h")
+    base = reduce(ax[b, h], ax[b])
+    reducer = partial(scaled_sum, scale=2)
+    first = base.reduce_by(reducer)
+
+    assert reducer.keywords is not None
+    reducer.keywords["scale"] = 3
+    second = base.reduce_by(reducer)
+    tensor = np.arange(2 * 3).reshape(2, 3)
+
+    assert second is not first
+    np.testing.assert_array_equal(first(tensor), np.sum(tensor, axis=1) * 2)
+    np.testing.assert_array_equal(second(tensor), np.sum(tensor, axis=1) * 3)
+
+
+def test_tensorop_reducer_plan_does_not_expose_mutable_partial_authority() -> None:
+    b, h = axes("immutable_plan_b", "immutable_plan_h")
+    reducer = partial(np.sum, axis=(1,))
+    op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
+
+    assert op.reducer_plan is not None
+    assert not isinstance(op.reducer_plan[0].reducer, partial)
+    assert not hasattr(op.reducer_plan[0].reducer, "keywords")
 
 
 def test_tensorop_sizes_property_returns_detached_copy() -> None:

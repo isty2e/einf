@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from einf.backend import BACKEND_RESOLVER
+from einf.backend import BACKEND_RESOLVER, runtime
 from einf.diagnostics import ErrorCode, ValidationError
 
 
@@ -528,6 +528,21 @@ def test_backend_dispatch_einsum_probe_runtime_error_maps_to_missing_extension(
     assert error.value.code == ErrorCode.BACKEND_REQUIRED_EXTENSION_MISSING.value
 
 
+def test_backend_dispatch_einsum_probe_os_error_maps_to_missing_extension(
+    monkeypatch: pytest.MonkeyPatch,
+    numpy_tensor: np.ndarray,
+) -> None:
+    def broken_probe(_backend_name: str) -> bool:
+        raise OSError("backend shared library is unavailable")
+
+    monkeypatch.setattr("einf.backend.dispatch.oe_backends.has_einsum", broken_probe)
+
+    with pytest.raises(ValidationError) as error:
+        _ = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="contract")
+
+    assert error.value.code == ErrorCode.BACKEND_REQUIRED_EXTENSION_MISSING.value
+
+
 def test_backend_dispatch_einsum_probe_runtime_error_does_not_break_non_einsum_ops(
     monkeypatch: pytest.MonkeyPatch,
     numpy_tensor: np.ndarray,
@@ -732,3 +747,136 @@ def test_backend_dispatch_normalizes_namespace_module_lookup_failures() -> None:
         )
 
     assert error.value.code == ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT.value
+
+
+def test_backend_dispatch_rejects_distinct_custom_namespaces_with_same_id() -> None:
+    from einf.backend import BACKEND_RESOLVER
+    from einf.diagnostics import ErrorCode, ValidationError
+
+    class CustomTensor:
+        def __init__(self, namespace: object) -> None:
+            self._namespace = namespace
+            self.shape = (2, 3)
+
+        def __getitem__(self, key: object) -> "CustomTensor":
+            _ = key
+            return self
+
+        def __array__(self, dtype: object = None) -> np.ndarray:
+            _ = dtype
+            return np.zeros((2, 3))
+
+        def __array_namespace__(self, api_version: object = None) -> object:
+            _ = api_version
+            return self._namespace
+
+    def make_namespace() -> object:
+        class CustomNamespace:
+            __name__ = "custom.same"
+
+        return CustomNamespace()
+
+    with pytest.raises(ValidationError) as error:
+        _ = BACKEND_RESOLVER.resolve(
+            CustomTensor(make_namespace()),
+            CustomTensor(make_namespace()),
+            op_name="rearrange",
+        )
+
+    assert error.value.code == ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT.value
+
+
+def test_optional_backend_import_oserror_is_normalized(monkeypatch) -> None:
+    def fail_import(_name: str) -> object:
+        raise OSError("shared library missing")
+
+    monkeypatch.setattr(runtime, "import_module", fail_import)
+    runtime.load_backend_module.cache_clear()
+
+    with pytest.raises(runtime.BackendRuntimeUnavailable, match="unavailable"):
+        runtime.load_backend_module("torch")
+
+    runtime.load_backend_module.cache_clear()
+
+
+def test_optional_backend_import_runtime_error_is_preserved(monkeypatch) -> None:
+    original = RuntimeError("backend initialization failed")
+
+    def fail_import(_name: str) -> object:
+        raise original
+
+    monkeypatch.setattr(runtime, "import_module", fail_import)
+    runtime.load_backend_module.cache_clear()
+
+    with pytest.raises(RuntimeError) as error:
+        runtime.load_backend_module("torch")
+
+    assert error.value is original
+    runtime.load_backend_module.cache_clear()
+
+
+def test_incomplete_optional_backend_module_falls_back(monkeypatch) -> None:
+    class IncompleteModule:
+        __name__ = "fake_backend"
+
+    monkeypatch.setattr(
+        runtime, "load_backend_module", lambda _family: IncompleteModule()
+    )
+    runtime.resolve_backend_array_ops.cache_clear()
+
+    assert runtime.get_backend_array_ops("numpy") is None
+
+    runtime.resolve_backend_array_ops.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "attribute_error",
+    (ImportError("lazy import missing"), OSError("lazy shared library missing")),
+)
+def test_lazy_optional_backend_attribute_failure_falls_back(
+    monkeypatch,
+    attribute_error: Exception,
+) -> None:
+    class LazyModule:
+        __name__ = "lazy_backend"
+
+        def __getattr__(self, _name: str) -> object:
+            raise attribute_error
+
+    monkeypatch.setattr(runtime, "load_backend_module", lambda _family: LazyModule())
+    runtime.resolve_backend_array_ops.cache_clear()
+
+    assert runtime.get_backend_array_ops("numpy") is None
+
+    runtime.resolve_backend_array_ops.cache_clear()
+
+
+def test_lazy_optional_backend_initialization_failure_is_preserved(
+    monkeypatch,
+) -> None:
+    original = RuntimeError("lazy backend initialization failed")
+
+    class BrokenModule:
+        __name__ = "broken_backend"
+
+        def __getattr__(self, _name: str) -> object:
+            raise original
+
+    monkeypatch.setattr(runtime, "load_backend_module", lambda _family: BrokenModule())
+    runtime.resolve_backend_array_ops.cache_clear()
+
+    with pytest.raises(RuntimeError) as error:
+        runtime.get_backend_array_ops("numpy")
+
+    assert error.value is original
+    runtime.resolve_backend_array_ops.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "backend_family",
+    ("jax", "cupy", "dask", "tensorflow", "mlx.core"),
+)
+def test_backend_without_native_adapter_uses_namespace_fallback(
+    backend_family: str,
+) -> None:
+    assert runtime.get_backend_array_ops(backend_family) is None

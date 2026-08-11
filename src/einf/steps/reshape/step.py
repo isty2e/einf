@@ -7,7 +7,7 @@ from einf.backend import (
     BackendArrayOps,
     BackendProfile,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
@@ -15,6 +15,10 @@ from einf.steps.base import (
     SymbolicStepScore,
 )
 from einf.steps.context import PlanSelectionContext, build_runtime_execution_context
+from einf.steps.runtime import (
+    FALLBACK_ELIGIBLE_BACKEND_ERRORS,
+    runtime_output_has_shape,
+)
 from einf.tensor_types import TensorLike
 
 from ..runtime import bind_runtime_backend
@@ -76,8 +80,23 @@ class ReshapeRuntimeStep(RuntimeStep[ReshapeSymbolicProgram]):
         if compiled_unary_runner is not None:
             try:
                 compiled_output = compiled_unary_runner(tensor)
-            except (TypeError, ValueError, RuntimeError):
+            except TensorOpError:
+                raise
+            except FALLBACK_ELIGIBLE_BACKEND_ERRORS:
                 compiled_output = None
+            except Exception as error:
+                raise ExecutionError(
+                    code=ErrorCode.BACKEND_EXECUTION_FAILED,
+                    message=(
+                        f"backend execution failed: reshape backend failed: {error}"
+                    ),
+                    help=(
+                        "ensure the backend supports the required reshape "
+                        "operation on the given tensor layout"
+                    ),
+                    related=("reshape runtime",),
+                    data={"operation": "reshape"},
+                ) from error
             if compiled_output is not None:
                 return compiled_output
 
@@ -126,16 +145,17 @@ class ReshapeRuntimeStep(RuntimeStep[ReshapeSymbolicProgram]):
             target_shape = target_shape_evaluator(tensor.shape)
 
         if target_shape is not None:
-            try:
-                return run_reshape_program(
-                    tensor=tensor,
-                    target_shape=target_shape,
-                    backend_ops=self.runtime_backend_ops,
-                    xp=self.runtime_xp,
-                    zero_copy_mode=self.zero_copy_mode,
-                )
-            except (TypeError, ValueError, RuntimeError):
-                pass
+            validate_rearrange_numel(
+                input_shape=tensor.shape,
+                target_shape=target_shape,
+            )
+            return run_reshape_program(
+                tensor=tensor,
+                target_shape=target_shape,
+                backend_ops=self.runtime_backend_ops,
+                xp=self.runtime_xp,
+                zero_copy_mode=self.zero_copy_mode,
+            )
 
         symbolic_output = try_run_reshape_program(
             tensor=tensor,
@@ -161,13 +181,27 @@ class ReshapeRuntimeStep(RuntimeStep[ReshapeSymbolicProgram]):
             input_shape=tensor.shape,
             target_shape=target_shape,
         )
-        return run_reshape_program(
-            tensor=tensor,
-            target_shape=target_shape,
-            backend_ops=self.runtime_backend_ops,
-            xp=self.runtime_xp,
-            zero_copy_mode=self.zero_copy_mode,
-        )
+        try:
+            return run_reshape_program(
+                tensor=tensor,
+                target_shape=target_shape,
+                backend_ops=self.runtime_backend_ops,
+                xp=self.runtime_xp,
+                zero_copy_mode=self.zero_copy_mode,
+            )
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise ExecutionError(
+                code=ErrorCode.BACKEND_EXECUTION_FAILED,
+                message=(f"backend execution failed: reshape backend failed: {error}"),
+                help=(
+                    "ensure the backend supports the required reshape "
+                    "operation on the given tensor layout"
+                ),
+                related=("reshape runtime",),
+                data={"operation": "reshape"},
+            ) from error
 
     def _run_unary_zero_copy(self, tensor: TensorLike, /) -> TensorLike:
         """Execute reshape runtime and require output aliasing to input."""
@@ -264,6 +298,7 @@ class ReshapeSymbolicStep(SymbolicStep[ReshapeSymbolicProgram]):
         backend_profile = context.backend_profile
         backend_binding = bind_runtime_backend(
             context,
+            operation="reshape",
             required_namespace_methods=RESHAPE_REQUIRED_NAMESPACE_METHODS,
             bind_namespace_when_backend_ops_available=True,
         )
@@ -292,7 +327,14 @@ class ReshapeSymbolicStep(SymbolicStep[ReshapeSymbolicProgram]):
                         return None
                     if compiled_rank_may_stay_equal and tensor.shape == target_shape:
                         return tensor
-                    return reshape_fn(tensor, target_shape)
+                    output = reshape_fn(tensor, target_shape)
+                    if runtime_output_has_shape(
+                        output,
+                        target_shape,
+                        operation="reshape",
+                    ):
+                        return output
+                    return None
 
                 compiled_unary_runner = run_compiled_with_backend_ops
             elif backend_binding.xp is not None:
@@ -306,7 +348,14 @@ class ReshapeSymbolicStep(SymbolicStep[ReshapeSymbolicProgram]):
                         return None
                     if compiled_rank_may_stay_equal and tensor.shape == target_shape:
                         return tensor
-                    return xp_reshape(tensor, target_shape)
+                    output = xp_reshape(tensor, target_shape)
+                    if runtime_output_has_shape(
+                        output,
+                        target_shape,
+                        operation="reshape",
+                    ):
+                        return output
+                    return None
 
                 compiled_unary_runner = run_compiled_with_namespace
         return ReshapeRuntimeStep(

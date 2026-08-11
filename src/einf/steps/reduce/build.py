@@ -10,10 +10,11 @@ from einf.backend import (
     BackendProfile,
     get_backend_array_ops,
 )
-from einf.diagnostics import ErrorCode, ValidationError
+from einf.diagnostics import ErrorCode, TensorOpError, ValidationError
+from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import CanonicalReducer, ReducerName
 from einf.steps.context import expand_pack_terms
-from einf.tensor_types import TensorLike
+from einf.steps.runtime import backend_specialization_error
 
 from .runtime import REDUCER_COMPILER, CompiledReducer
 
@@ -39,7 +40,7 @@ class _ReduceCompileKey:
     pack_ranks: tuple[tuple[str, int], ...]
     backend_identity: BackendExecutionIdentity | None
     reducer_kind: str
-    reducer_token: str | int
+    reducer_token: str | CallableReducerBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +143,6 @@ _REDUCE_RUNTIME_CACHE_LOCK = RLock()
 
 def build_reduce_compiled_program(
     *,
-    tensor: TensorLike,
     lhs_terms: ScalarAxisTerms,
     expected_output_terms: ScalarAxisTerms,
     axis_sizes: dict[str, int],
@@ -154,7 +154,17 @@ def build_reduce_compiled_program(
 ) -> ReduceCompiledProgram:
     """Build one unary reduce runtime program from canonical terms and sizes."""
     namespace_candidate = backend_profile.namespace
-    if not _has_reduce_namespace_methods(namespace_candidate):
+    try:
+        has_runtime_namespace = has_reduce_namespace_methods(namespace_candidate)
+        backend_ops = get_backend_array_ops(backend_profile.backend_family)
+    except TensorOpError:
+        raise
+    except Exception as error:
+        raise backend_specialization_error(
+            operation="reduce",
+            error=error,
+        ) from error
+    if not has_runtime_namespace:
         raise ValidationError(
             code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
             message=(
@@ -168,7 +178,6 @@ def build_reduce_compiled_program(
 
     normalized_reduce_axes = AxisTerms.from_spec(reduce_axes)
     xp = namespace_candidate
-    backend_ops = get_backend_array_ops(backend_profile.backend_family)
     cache_key = _build_reduce_compile_key(
         lhs_terms=lhs_terms,
         reduce_axes=normalized_reduce_axes,
@@ -184,7 +193,6 @@ def build_reduce_compiled_program(
             reducer=reducer,
             pack_sizes=pack_sizes,
             axis_sizes=axis_sizes,
-            tensor=tensor,
             xp=xp,
         )
         _put_cached_reduce_compiled_program(
@@ -219,7 +227,7 @@ def build_reduce_compiled_program(
     )
 
 
-def _has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
+def has_reduce_namespace_methods(namespace: object) -> TypeGuard[ArrayNamespace]:
     """Return whether one namespace exposes required reducer methods."""
     for method_name in _REDUCE_NAMESPACE_METHODS:
         if not callable(getattr(namespace, method_name, None)):
@@ -234,7 +242,6 @@ def _compile_reduce_runtime_phase(
     reducer: CanonicalReducer,
     pack_sizes: dict[str, tuple[int, ...]],
     axis_sizes: dict[str, int],
-    tensor: TensorLike,
     xp: ArrayNamespace,
 ) -> tuple[tuple[int, ...], CompiledReducer, ScalarAxisTerms]:
     """Compile one unary reduce phase to concrete reducer execution."""
@@ -250,7 +257,6 @@ def _compile_reduce_runtime_phase(
     compiled_reducer = REDUCER_COMPILER.compile(
         reducer=reducer,
         axes=resolved.axes,
-        tensor=tensor,
         xp=xp,
     )
     return resolved.axes, compiled_reducer, resolved.output_terms
@@ -278,11 +284,13 @@ def _build_reduce_compile_key(
     )
 
 
-def _reducer_cache_token(reducer: CanonicalReducer) -> tuple[str, str | int]:
+def _reducer_cache_token(
+    reducer: CanonicalReducer,
+) -> tuple[str, str | CallableReducerBinding]:
     """Build stable cache token for one reducer."""
     if isinstance(reducer, ReducerName):
         return "string", reducer.value
-    return "callable", id(reducer)
+    return "callable", reducer
 
 
 def _get_cached_reduce_compiled_program(

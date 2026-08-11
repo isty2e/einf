@@ -5,9 +5,9 @@ from threading import RLock
 from typing import Generic, TypeVar
 
 from ..axis import AxisSide, AxisTerms
+from ..reduction.callable import CallableReducerBinding
 from ..reduction.schema import (
     CanonicalReducer,
-    ReducerCallable,
     ReducerName,
     ReducerPlan,
 )
@@ -26,24 +26,7 @@ class BaseOpCacheKey:
     rhs: AxisSide
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class ReducerCallableToken:
-    """Identity token for callable reducers in configured-op cache keys."""
-
-    reducer: ReducerCallable
-
-    def __hash__(self) -> int:
-        """Hash by callable identity to keep key stable while object is alive."""
-        return id(self.reducer)
-
-    def __eq__(self, other: object) -> bool:
-        """Compare callable reducer tokens by identity."""
-        if not isinstance(other, ReducerCallableToken):
-            return False
-        return self.reducer is other.reducer
-
-
-ReducerToken = ReducerName | ReducerCallableToken
+ReducerToken = ReducerName | CallableReducerBinding
 ReducerPlanKey = tuple[tuple[AxisTerms, ReducerToken], ...]
 
 
@@ -78,7 +61,7 @@ def _reducer_to_cache_token(reducer: CanonicalReducer, /) -> ReducerToken:
     """Build stable configured-cache token for one reducer."""
     if isinstance(reducer, ReducerName):
         return reducer
-    return ReducerCallableToken(reducer)
+    return reducer
 
 
 class BoundedTensorOpCache(Generic[KeyT, ValueT]):

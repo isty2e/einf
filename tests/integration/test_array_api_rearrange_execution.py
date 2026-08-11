@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import einf.plans.routing as plan_routing_module
-from einf import ErrorCode, ValidationError, ax, axes, packs, rearrange
+from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, packs, rearrange
 
 try:
     import torch
@@ -378,10 +378,10 @@ def test_rearrange_exploding_backend_primitive_is_normalized() -> None:
     b, c = axes("b", "c")
     op = rearrange(ax[b, c], ax[c, b])
 
-    with pytest.raises(ValidationError) as error:
+    with pytest.raises(ExecutionError) as error:
         _ = op(ExplodingOpsTensor(shape=(2, 3)))
 
-    assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
     assert "backend primitive failed during reindex execution" in str(error.value)
 
 

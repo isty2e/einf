@@ -3,14 +3,13 @@ from dataclasses import dataclass, field
 import opt_einsum.backends as oe_backends
 from array_api_compat import array_namespace
 
-from ..diagnostics import ErrorCode, ValidationError
+from ..diagnostics import ErrorCode, TensorOpError, ValidationError
 from .namespace import (
     ArrayNamespaceLike,
     BackendFamily,
     derive_family_key,
     derive_namespace_id,
     infer_backend_family,
-    is_namespace_family,
 )
 
 _STRICT_VIEW_FAMILIES = frozenset(("numpy", "torch"))
@@ -35,13 +34,44 @@ def _missing_einsum_extension_error(operation: str) -> ValidationError:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class BackendExecutionIdentity:
-    """Canonical backend facts that determine runtime specialization."""
+    """Canonical backend facts that determine runtime specialization.
+
+    Parameters
+    ----------
+    namespace
+        Array namespace object selected for the runtime inputs.
+    supports_einsum
+        Whether the resolved execution policy permits einsum routes.
+    supports_strict_view
+        Whether the resolved execution policy permits strict view routes.
+
+    Attributes
+    ----------
+    namespace_id
+        Stable identifier derived from ``namespace``.
+    backend_family
+        Built-in backend family derived from ``namespace_id``, if known.
+
+    Raises
+    ------
+    TypeError
+        ``namespace`` has no canonical namespace identifier.
+    """
 
     namespace: ArrayNamespaceLike
-    namespace_id: str
-    backend_family: BackendFamily | None
     supports_einsum: bool
     supports_strict_view: bool
+    namespace_id: str = field(init=False)
+    backend_family: BackendFamily | None = field(init=False)
+
+    def __post_init__(self) -> None:
+        namespace_id = derive_namespace_id(self.namespace)
+        object.__setattr__(self, "namespace_id", namespace_id)
+        object.__setattr__(
+            self,
+            "backend_family",
+            infer_backend_family(namespace_id),
+        )
 
     def __hash__(self) -> int:
         return hash(
@@ -68,11 +98,33 @@ class BackendExecutionIdentity:
 
 @dataclass(frozen=True, slots=True)
 class BackendProfile:
-    """Resolved backend profile for one TensorOp call."""
+    """Resolved backend profile for one TensorOp call.
+
+    Parameters
+    ----------
+    namespace
+        Array namespace object selected for the runtime inputs.
+    supports_einsum
+        Whether the resolved execution policy permits einsum routes.
+    supports_strict_view
+        Whether the resolved execution policy permits strict view routes.
+
+    Attributes
+    ----------
+    namespace_id
+        Stable identifier derived from ``namespace``.
+    backend_family
+        Built-in backend family derived from ``namespace_id``, if known.
+    execution_identity
+        Hashable canonical facts used by runtime specialization caches.
+
+    Raises
+    ------
+    TypeError
+        ``namespace`` has no canonical namespace identifier.
+    """
 
     namespace: ArrayNamespaceLike
-    namespace_id: str
-    backend_family: BackendFamily | None
     supports_einsum: bool
     supports_strict_view: bool
     execution_identity: BackendExecutionIdentity = field(init=False)
@@ -83,12 +135,32 @@ class BackendProfile:
             "execution_identity",
             BackendExecutionIdentity(
                 namespace=self.namespace,
-                namespace_id=self.namespace_id,
-                backend_family=self.backend_family,
                 supports_einsum=self.supports_einsum,
                 supports_strict_view=self.supports_strict_view,
             ),
         )
+
+    @property
+    def namespace_id(self) -> str:
+        """Return the namespace-derived backend identifier.
+
+        Returns
+        -------
+        str
+            Canonical identifier derived from ``namespace``.
+        """
+        return self.execution_identity.namespace_id
+
+    @property
+    def backend_family(self) -> BackendFamily | None:
+        """Return the namespace-derived built-in backend family.
+
+        Returns
+        -------
+        BackendFamily or None
+            Registered family for ``namespace_id``, if one exists.
+        """
+        return self.execution_identity.backend_family
 
 
 class BackendPolicy:
@@ -126,7 +198,14 @@ class BackendPolicy:
         """Return whether one backend family supports einsum execution."""
         try:
             return bool(oe_backends.has_einsum(backend_family))
-        except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        except (
+            AttributeError,
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
             return False
 
     def supports_strict_view(
@@ -136,11 +215,7 @@ class BackendPolicy:
         backend_family: BackendFamily | None,
     ) -> bool:
         """Return whether backend is strict zero-copy view capable."""
-        if backend_family in _STRICT_VIEW_FAMILIES:
-            return True
-        if is_namespace_family(namespace_id, "numpy"):
-            return True
-        return bool(is_namespace_family(namespace_id, "torch"))
+        return backend_family in _STRICT_VIEW_FAMILIES
 
 
 class BackendResolver:
@@ -167,6 +242,8 @@ class BackendResolver:
             try:
                 namespace = array_namespace(tensor)
                 namespace_id = derive_namespace_id(namespace)
+            except TensorOpError:
+                raise
             except Exception as exc:
                 raise ValidationError(
                     code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
@@ -202,6 +279,23 @@ class BackendResolver:
                     "namespace_ids": ",".join(tuple(dict.fromkeys(namespace_ids))),
                 },
             )
+        if infer_backend_family(namespace_ids[0]) is None and any(
+            namespace is not namespaces[0] for namespace in namespaces
+        ):
+            raise ValidationError(
+                code=ErrorCode.BACKEND_DISPATCH_UNSUPPORTED_INPUT,
+                message=(
+                    "backend dispatch unsupported input: "
+                    "inputs must resolve to one namespace object for "
+                    "unknown backend families"
+                ),
+                help=(
+                    "pass tensors from the same backend namespace instance "
+                    "in one TensorOp call"
+                ),
+                related=("backend dispatch",),
+                data={"operation": op_name},
+            )
         namespace = namespaces[0]
         namespace_id = namespace_ids[0]
         backend_family = infer_backend_family(namespace_id)
@@ -214,8 +308,6 @@ class BackendResolver:
         )
         return BackendProfile(
             namespace=namespace,
-            namespace_id=namespace_id,
-            backend_family=backend_family,
             supports_einsum=supports_einsum,
             supports_strict_view=supports_view,
         )

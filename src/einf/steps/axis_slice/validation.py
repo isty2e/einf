@@ -3,9 +3,9 @@ from typing import Protocol, TypeGuard
 
 from einf.backend import BackendProfile
 from einf.backend.memory_alias import (
-    numpy_shares_memory,
+    numpy_shares_storage,
     tensor_numel,
-    torch_storage_ptr,
+    torch_shares_storage,
 )
 from einf.backend.namespace import is_namespace_family
 from einf.diagnostics import ErrorCode, ValidationError
@@ -101,20 +101,13 @@ def _shares_memory(
     *, lhs: TensorLike, rhs: TensorLike, profile: BackendProfile
 ) -> bool | None:
     """Return whether tensors share memory under one backend profile."""
-    if tensor_numel(rhs) == 0:
-        return True
-
     if is_namespace_family(profile.namespace_id, "numpy"):
-        numpy_shares = numpy_shares_memory(lhs=lhs, rhs=rhs)
+        numpy_shares = numpy_shares_storage(lhs=lhs, rhs=rhs)
         if numpy_shares is not None:
             return numpy_shares
 
     if is_namespace_family(profile.namespace_id, "torch"):
-        lhs_ptr = torch_storage_ptr(lhs)
-        rhs_ptr = torch_storage_ptr(rhs)
-        if lhs_ptr is None or rhs_ptr is None:
-            return None
-        return lhs_ptr == rhs_ptr
+        return torch_shares_storage(lhs=lhs, rhs=rhs)
 
     return None
 
@@ -127,16 +120,15 @@ def _outputs_overlap(
         return False
 
     if is_namespace_family(profile.namespace_id, "numpy"):
-        numpy_shares = numpy_shares_memory(lhs=lhs, rhs=rhs)
+        numpy_shares = numpy_shares_storage(lhs=lhs, rhs=rhs)
         if numpy_shares is not None:
             return numpy_shares
 
     if is_namespace_family(profile.namespace_id, "torch"):
-        lhs_ptr = torch_storage_ptr(lhs)
-        rhs_ptr = torch_storage_ptr(rhs)
-        if lhs_ptr is None or rhs_ptr is None:
+        shares_storage = torch_shares_storage(lhs=lhs, rhs=rhs)
+        if shares_storage is None:
             return None
-        if lhs_ptr != rhs_ptr:
+        if not shares_storage:
             return False
 
         lhs_offsets = _torch_storage_offsets(lhs)
