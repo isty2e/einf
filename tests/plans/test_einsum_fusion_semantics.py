@@ -53,6 +53,56 @@ def test_runtime_program_rejects_invalid_native_matmul_admission() -> None:
         )
 
 
+def test_runtime_program_rejects_malformed_native_matmul_admission() -> None:
+    malformed_equation = "i.,.j->ij"
+
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must be semantically matmul-shaped",
+    ):
+        EinsumRuntimeProgram(
+            equations=(malformed_equation,),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({malformed_equation}),
+        )
+
+
+def test_runtime_step_does_not_route_malformed_equation_to_matmul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malformed_equation = "i.,.j->ij"
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+        matmul_calls.append(None)
+        return native_matmul(lhs, rhs)
+
+    monkeypatch.setattr(np, "matmul", record_matmul)
+    runtime_step = EinsumRuntimeStep(
+        name="einsum",
+        input_arity=2,
+        output_arity=1,
+        program=EinsumRuntimeProgram(
+            equations=(malformed_equation,),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset(),
+        ),
+        backend_profile=profile,
+    )
+
+    with pytest.raises(ExecutionError) as error:
+        runtime_step.run((left, right))
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED
+    assert matmul_calls == []
+
+
 def _build_runtime_steps(
     *,
     executor: EinsumEquationExecutor,

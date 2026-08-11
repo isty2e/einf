@@ -483,6 +483,10 @@ def test_non_matmul_binary_contract_uses_one_specialized_einsum_expression(
         ("mk,kk->mk", False),
         ("mk,kn", False),
         ("mk,kn,np->mp", False),
+        ("i.,.j->ij", False),
+        ("i\tj,jk->ik", False),
+        ("iα,αj->ij", False),
+        ("i_,_j->ij", False),
     ),
 )
 def test_binary_matmul_admission_requires_proven_equation_form(
@@ -522,26 +526,35 @@ def test_atomic_contract_equivalent_numpy_ops_prefer_native_matmul_path(
 
 
 @pytest.mark.skipif(torch is None, reason="requires torch")
-def test_contract_matrix_multiply_torch_uses_native_einsum_path(
+def test_contract_matrix_multiply_torch_uses_native_matmul_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    i, k, j = axes("i", "k", "j")
+    i, k, j = axes("torch_native_i", "torch_native_k", "torch_native_j")
     op = contract((ax[i, k], ax[k, j]), ax[i, j])
 
-    monkeypatch.setattr(
-        einsum_step_module.opt_einsum,
-        "contract",
-        _explode_opt_einsum_contract,
-    )
-
     assert torch is not None
+    native_matmul = torch.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+        matmul_calls.append(None)
+        return native_matmul(left, right)
+
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_cached_contract_expression,
+    )
+    monkeypatch.setattr(torch, "matmul", record_matmul)
+
     left = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3)
     right = torch.arange(3 * 4, dtype=torch.float32).reshape(3, 4)
     result = _single_tensor_output(op(left, right))
     assert isinstance(result, torch.Tensor)
 
-    expected = left @ right
+    expected = native_matmul(left, right)
     assert torch.equal(result, expected)
+    assert len(matmul_calls) == 1
 
 
 @pytest.mark.skipif(torch is None, reason="requires torch")

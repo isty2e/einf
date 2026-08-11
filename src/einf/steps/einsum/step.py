@@ -55,6 +55,12 @@ def _parse_binary_einsum_equation(
     lhs_subscript, rhs_subscript = input_subscripts
     if not lhs_subscript or not rhs_subscript or not output_subscript:
         return None
+    if any(
+        symbol not in _EINSUM_SYMBOLS
+        for subscript in (lhs_subscript, rhs_subscript, output_subscript)
+        for symbol in subscript
+    ):
+        return None
     return lhs_subscript, rhs_subscript, output_subscript
 
 
