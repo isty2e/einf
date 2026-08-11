@@ -5,12 +5,12 @@ from typing import cast
 import numpy as np
 import pytest
 
-import einf.steps.einsum.native as native_module
 import einf.steps.einsum.step as einsum_step_module
+import einf.steps.reduce.runtime as reduce_runtime_module
 import einf.steps.reshape.runtime as reshape_runtime_module
 import einf.steps.runtime as steps_runtime_module
 from einf.axis import AxisTerms
-from einf.backend import BackendProfile, get_backend_array_ops
+from einf.backend import BACKEND_RESOLVER, BackendProfile, get_backend_array_ops
 from einf.backend.memory_alias import numpy_shares_storage, torch_shares_storage
 from einf.backend.runtime import BackendArrayOps, is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, ValidationError
@@ -18,7 +18,6 @@ from einf.reduction.schema import ReducerName
 from einf.steps.axis_slice.step import AxisSliceRuntimeStep
 from einf.steps.base import RuntimeSpecializationContext
 from einf.steps.concat import ConcatRuntimeStep
-from einf.steps.einsum.native import try_native_contract_einsum
 from einf.steps.einsum.step import EinsumEquationExecutor
 from einf.steps.expand import build_expand_symbolic_program
 from einf.steps.expand.runtime import run_expand_program
@@ -26,8 +25,8 @@ from einf.steps.expand.step import ExpandRuntimeStep
 from einf.steps.permute import PermuteRuntimeStep
 from einf.steps.reduce.runtime import CallableReducerInvoker, ReducerRuntimeContext
 from einf.steps.reduce.step import (
-    DirectMethodReduceRuntimeProgram,
     NamespaceReduceRuntimeProgram,
+    NativePreferredReduceRuntimeProgram,
 )
 from einf.steps.reshape.constants import ZERO_COPY_REQUIRED_RESHAPE_MODE
 from einf.steps.reshape.runtime import run_reshape_program
@@ -363,7 +362,9 @@ def test_reducer_rejects_shape_only_output() -> None:
     assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
 
 
-def test_direct_method_reducer_rejects_wrong_output_shape() -> None:
+def test_direct_method_reducer_rejects_wrong_output_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class WrongShapeTensor:
         shape = (2, 3)
 
@@ -379,12 +380,23 @@ def test_direct_method_reducer_rejects_wrong_output_shape() -> None:
             _ = api_version
             return np
 
-    program = DirectMethodReduceRuntimeProgram(
+    backend_ops = get_backend_array_ops("numpy")
+    assert backend_ops is not None
+    monkeypatch.setattr(
+        reduce_runtime_module,
+        "is_trusted_backend_array_ops",
+        lambda **_kwargs: True,
+    )
+    program = NativePreferredReduceRuntimeProgram(
         reducer=ReducerName("sum"),
         axes=(1,),
-        runtime_context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        direct_method_name="sum",
-        direct_axis_keyword="axis",
+        runtime_context=ReducerRuntimeContext(  # type: ignore[arg-type]
+            xp=np,
+            backend_ops=backend_ops,
+        ),
+        reducer_fn=np.sum,
+        native_method_name="sum",
+        native_axis_keyword="axis",
     )
 
     with pytest.raises(ExecutionError, match="output shape does not match") as error:
@@ -422,7 +434,9 @@ def test_namespace_reducer_rejects_wrong_output_shape() -> None:
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
 
-def test_direct_method_reducer_routes_output_through_coercion() -> None:
+def test_direct_method_reducer_routes_output_through_coercion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class NoGetitemOutput:
         shape = (2,)
 
@@ -437,12 +451,23 @@ def test_direct_method_reducer_routes_output_through_coercion() -> None:
             _ = key
             return self
 
-    program = DirectMethodReduceRuntimeProgram(
+    backend_ops = get_backend_array_ops("numpy")
+    assert backend_ops is not None
+    monkeypatch.setattr(
+        reduce_runtime_module,
+        "is_trusted_backend_array_ops",
+        lambda **_kwargs: True,
+    )
+    program = NativePreferredReduceRuntimeProgram(
         reducer=ReducerName("sum"),
         axes=(1,),
-        runtime_context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
-        direct_method_name="sum",
-        direct_axis_keyword="axis",
+        runtime_context=ReducerRuntimeContext(  # type: ignore[arg-type]
+            xp=np,
+            backend_ops=backend_ops,
+        ),
+        reducer_fn=np.sum,
+        native_method_name="sum",
+        native_axis_keyword="axis",
     )
 
     with pytest.raises(ExecutionError, match="must be tensor-like") as error:
@@ -757,7 +782,9 @@ def test_reducer_output_ownership_rejects_foreign_namespace() -> None:
     assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
 
 
-def test_reducer_preserves_structured_errors_from_all_boundaries() -> None:
+def test_reducer_preserves_structured_errors_from_all_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     reducer_name = ReducerName("sum")
     tensor = np.zeros((2, 3))
     execution_error = ExecutionError(
@@ -772,6 +799,11 @@ def test_reducer_preserves_structured_errors_from_all_boundaries() -> None:
     backend_context = ReducerRuntimeContext(
         xp=np,  # type: ignore[arg-type]
         backend_ops=BadBackendOps(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        reduce_runtime_module,
+        "is_trusted_backend_array_ops",
+        lambda **_kwargs: True,
     )
     with pytest.raises(ExecutionError) as backend_failure:
         backend_context.apply_string_reducer(
@@ -1085,6 +1117,39 @@ def test_namespace_einsum_fallback_runs_once_and_validates_opt_output(
     assert len(namespace_calls) == 1
 
 
+def test_einsum_builder_deduplicates_identical_module_and_namespace_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def unavailable_einsum(*_args: object, **_kwargs: object) -> TensorLike:
+        calls.append("einsum")
+        raise RuntimeError("einsum route unavailable")
+
+    operand = np.zeros((2,))
+    profile = BACKEND_RESOLVER.resolve(operand, op_name="einsum")
+    monkeypatch.setattr(np, "einsum", unavailable_einsum)
+    monkeypatch.setattr(profile.namespace, "einsum", unavailable_einsum)
+    monkeypatch.setattr(
+        einsum_step_module.opt_einsum,
+        "contract",
+        lambda *_args, **_kwargs: operand,
+    )
+
+    executor = einsum_step_module._build_einsum_executor(profile)
+    output = executor.run(
+        equation="i->i",
+        operands=(operand,),
+        chain_mode=False,
+        allow_native_matmul=False,
+    )
+
+    assert executor.native_module_einsum is unavailable_einsum
+    assert executor.namespace_einsum is None
+    assert output is operand
+    assert calls == ["einsum"]
+
+
 def test_final_opt_einsum_route_validates_output_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1108,40 +1173,6 @@ def test_final_opt_einsum_route_validates_output_shape(
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
-
-
-def test_native_einsum_projects_unexpected_fallback_error() -> None:
-    class BadNamespace:
-        def einsum(self, *_args: object) -> object:
-            raise IndexError("native namespace index failure")
-
-    with pytest.raises(ExecutionError, match="native einsum failed") as error:
-        try_native_contract_einsum(
-            equation="i->i",
-            tensors=(np.zeros((2,)),),
-            namespace=BadNamespace(),  # type: ignore[arg-type]
-        )
-
-    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
-
-
-def test_native_einsum_projects_capability_lookup_failure() -> None:
-    class BadNamespace:
-        __name__ = "custom.bad_lookup"
-
-        def __getattribute__(self, name: str) -> object:
-            if name == "einsum":
-                raise IndexError("einsum lookup failed")
-            return object.__getattribute__(self, name)
-
-    with pytest.raises(ExecutionError, match="einsum lookup failed") as error:
-        try_native_contract_einsum(
-            equation="i->i",
-            tensors=(np.zeros((2,)),),
-            namespace=BadNamespace(),  # type: ignore[arg-type]
-        )
-
-    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
 
 
 def test_namespace_reshape_projects_unexpected_error() -> None:
@@ -1172,53 +1203,6 @@ def test_reshape_rejects_wrong_backend_output_shape() -> None:
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
-
-
-def test_native_einsum_projects_backend_initialization_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_load(_family: str) -> object:
-        raise RuntimeError("backend initialization failed")
-
-    class NamespaceWithoutEinsum:
-        def __init__(self) -> None:
-            self.__name__ = "torch.array_api"
-
-    monkeypatch.setattr(native_module, "load_backend_module", fail_load)
-
-    with pytest.raises(
-        ExecutionError,
-        match="backend initialization failed",
-    ) as error:
-        try_native_contract_einsum(
-            equation="i->i",
-            tensors=(np.zeros((2,)),),
-            namespace=NamespaceWithoutEinsum(),  # type: ignore[arg-type]
-        )
-
-    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
-
-
-def test_native_einsum_does_not_load_torch_for_foreign_namespace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_load(_family: str) -> object:
-        raise AssertionError("torch route must not be selected")
-
-    class ForeignNamespace:
-        def __init__(self) -> None:
-            self.__name__ = "custom.foreign"
-
-    monkeypatch.setattr(native_module, "load_backend_module", fail_load)
-
-    assert (
-        try_native_contract_einsum(
-            equation="i->i",
-            tensors=(np.zeros((2,)),),
-            namespace=ForeignNamespace(),  # type: ignore[arg-type]
-        )
-        is None
-    )
 
 
 def test_scalar_reducer_ownership_rejects_foreign_coerced_output() -> None:
@@ -1590,6 +1574,7 @@ def test_torch_alias_proof_ignores_instance_storage_shadow() -> None:
 
 @pytest.mark.parametrize("raw_error", (OSError("io failed"), IndexError("bad index")))
 def test_named_reducer_unexpected_fault_is_execution_error(
+    monkeypatch: pytest.MonkeyPatch,
     raw_error: Exception,
 ) -> None:
     class BadBackendOps:
@@ -1599,6 +1584,11 @@ def test_named_reducer_unexpected_fault_is_execution_error(
     context = ReducerRuntimeContext(
         xp=np,  # type: ignore[arg-type]
         backend_ops=BadBackendOps(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        reduce_runtime_module,
+        "is_trusted_backend_array_ops",
+        lambda **_kwargs: True,
     )
 
     with pytest.raises(ExecutionError) as error:

@@ -9,7 +9,17 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, reduce, repeat
+from einf import (
+    ErrorCode,
+    ExecutionError,
+    ValidationError,
+    ax,
+    axes,
+    packs,
+    reduce,
+    repeat,
+)
+from einf.backend import BACKEND_RESOLVER
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
@@ -96,6 +106,56 @@ class _SelectedReducerTensor:
         return self
 
 
+class _KnownFamilyReducerNamespace:
+    __name__ = "array_api_compat.numpy.custom"
+
+    def __init__(self) -> None:
+        self.sum_calls = 0
+
+    def asarray(self, value: bool | complex) -> "_KnownFamilyReducerTensor":
+        return _KnownFamilyReducerTensor(np.asarray(value), self)
+
+    def sum(
+        self,
+        tensor: "_KnownFamilyReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> "_KnownFamilyReducerTensor":
+        self.sum_calls += 1
+        return _KnownFamilyReducerTensor(np.sum(tensor.value, axis=axis), self)
+
+
+class _KnownFamilyReducerTensor:
+    def __init__(
+        self,
+        value: np.ndarray,
+        namespace: _KnownFamilyReducerNamespace,
+    ) -> None:
+        self.value = value
+        self.namespace = namespace
+        self.method_calls: list[None] = []
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.value.shape
+
+    def __array_namespace__(
+        self,
+        api_version: str | None = None,
+    ) -> _KnownFamilyReducerNamespace:
+        del api_version
+        return self.namespace
+
+    def __getitem__(self, key: object) -> "_KnownFamilyReducerTensor":
+        return _KnownFamilyReducerTensor(self.value[key], self.namespace)
+
+    def sum(self, *, axis: tuple[int, ...]) -> "_KnownFamilyReducerTensor":
+        del axis
+        self.method_calls.append(None)
+        wrong = np.full((self.shape[0],), -100)
+        return _KnownFamilyReducerTensor(wrong, self.namespace)
+
+
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
 
@@ -158,6 +218,59 @@ def test_reduce_projects_selected_reducer_invocation_failure() -> None:
     assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
     assert "selected reducer invocation failed" in error.value.message
     assert namespace.sum_calls == 1
+
+
+def test_reduce_known_family_custom_tensor_uses_selected_namespace_reducer() -> None:
+    b, h = axes("known_family_b", "known_family_h")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    result = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _KnownFamilyReducerTensor)
+    np.testing.assert_array_equal(result.value, np.array([3, 12]))
+    assert namespace.sum_calls == 1
+    assert tensor.method_calls == []
+
+
+def test_dynamic_reduce_known_family_tensor_uses_selected_namespace_reducer() -> None:
+    (batch_axes,) = packs("known_family_dynamic_batch")
+    (feature,) = axes("known_family_dynamic_feature")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3 * 4).reshape(2, 3, 4),
+        namespace,
+    )
+
+    result = reduce(ax[batch_axes, feature], ax[batch_axes]).reduce_by("sum")(tensor)
+
+    assert isinstance(result, _KnownFamilyReducerTensor)
+    np.testing.assert_array_equal(result.value, np.sum(tensor.value, axis=2))
+    assert namespace.sum_calls == 1
+    assert tensor.method_calls == []
+
+
+def test_reduce_exact_numpy_tensor_keeps_native_method_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b, h = axes("native_route_b", "native_route_h")
+    tensor = np.arange(2 * 3).reshape(2, 3)
+    profile = BACKEND_RESOLVER.resolve(tensor, op_name="reduce")
+    namespace_calls: list[None] = []
+
+    def wrong_namespace_sum(*_args: object, **_kwargs: object) -> np.ndarray:
+        namespace_calls.append(None)
+        return np.full((2,), -100)
+
+    monkeypatch.setattr(profile.namespace, "sum", wrong_namespace_sum)
+
+    result = reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    np.testing.assert_array_equal(result, np.array([3, 12]))
+    assert namespace_calls == []
 
 
 def test_inflate_appends_axis_and_broadcasts_values() -> None:

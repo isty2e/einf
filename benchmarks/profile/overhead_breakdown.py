@@ -237,7 +237,7 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
         "einf.steps.reshape.runtime.try_run_reshape_program",
         "einf.steps.reduce.step.ReduceRuntimeStep.run",
         "einf.steps.reduce.step.ReduceRuntimeStep.run_unary",
-        "einf.steps.reduce.step.DirectMethodReduceRuntimeProgram.run_unary",
+        "einf.steps.reduce.step.NativePreferredReduceRuntimeProgram.run_unary",
         "einf.steps.reduce.step.NamespaceReduceRuntimeProgram.run_unary",
         "einf.steps.reduce.step.DynamicReduceRuntimeProgram.run_unary",
         "einf.steps.reduce.build.build_reduce_compiled_program",
@@ -248,7 +248,6 @@ STAGE_TARGETS: dict[str, tuple[str, ...]] = {
     ),
     "kernel": (
         "einf.steps.einsum.step.opt_einsum.contract",
-        "einf.steps.einsum.native.try_native_contract_einsum",
         "einf.steps.reduce.runtime.ReducerRuntimeContext.apply_string_reducer",
         "einf.backend.runtime.BackendArrayOps.reduce",
     ),

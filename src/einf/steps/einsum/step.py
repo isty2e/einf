@@ -762,6 +762,8 @@ def _build_einsum_executor(profile: BackendProfile, /) -> EinsumEquationExecutor
                 raise _project_einsum_route_error(error) from error
 
     namespace_einsum = BACKEND_POLICY.resolve_namespace_einsum(profile)
+    if namespace_einsum is module_einsum:
+        namespace_einsum = None
     return EinsumEquationExecutor(
         profile=profile,
         namespace_einsum=namespace_einsum,

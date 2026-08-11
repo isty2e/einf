@@ -55,6 +55,26 @@ prove that the result shares storage with the input. NumPy and PyTorch have
 explicit implementations for that proof; other backends fail rather than
 silently copy.
 
+### Migrating low-level backend integrations
+
+Most users do not need `einf.backend` directly. If you build tooling around
+that module, backend profiles now describe identity only. Operation
+capabilities are resolved at the route that uses them, rather than being stored
+as profile flags.
+
+| Previous integration | Current integration |
+| --- | --- |
+| Construct `BackendProfile` or `BackendExecutionIdentity` with capability fields | Construct `BackendProfile(namespace=...)`; its execution identity is derived from the namespace |
+| Construct `BackendResolver(policy=...)` | Construct `BackendResolver()`; resolver identity and operation policy are separate |
+| Call `BackendResolver.validate(...)` | Call `BackendResolver.resolve(..., op_name=...)` |
+| Call `BackendPolicy.validate_profile(...)` | Resolve a profile first, then call the operation-specific policy such as `validate_einsum_capability(...)` |
+| Call `BackendPolicy.supports_einsum(...)` | Use `resolve_namespace_einsum(profile)` for the namespace route and `supports_opt_einsum(profile.backend_family)` for the optional fallback |
+| Call `BackendPolicy.normalize_operation_name(...)` | Pass the operation name to `BackendResolver.resolve(...)`; normalization stays inside the boundary |
+| Call `try_native_contract_einsum(...)` | Execute the public `contract` operation; einsum route selection is internal |
+
+No compatibility aliases are provided. Each capability decision has one
+authority, and a family label is not proof that a callable or tensor is native.
+
 ## Optional extras
 
 `einf` splits non-runtime dependencies into named extras so you only install

@@ -35,7 +35,7 @@ from .runtime import (
     resolve_namespace_reducer,
 )
 
-_DIRECT_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
+_NATIVE_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.SUM: "sum",
     ReducerName.MEAN: "mean",
     ReducerName.MAX: "amax",
@@ -44,7 +44,7 @@ _DIRECT_TORCH_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.ANY: "any",
 }
 
-_DIRECT_NUMPY_REDUCER_METHODS: dict[ReducerName, str] = {
+_NATIVE_NUMPY_REDUCER_METHODS: dict[ReducerName, str] = {
     ReducerName.SUM: "sum",
     ReducerName.PROD: "prod",
     ReducerName.MEAN: "mean",
@@ -91,25 +91,56 @@ class ReduceRuntimeProgram(UnaryRuntimeProgram):
 
 
 @dataclass(frozen=True, slots=True)
-class DirectMethodReduceRuntimeProgram(ReduceRuntimeProgram):
-    """Shape-invariant unary reduce program bound to one tensor method."""
+class NativePreferredReduceRuntimeProgram(ReduceRuntimeProgram):
+    """Shape-invariant reducer with a trusted native method fast path.
+
+    Parameters
+    ----------
+    reducer
+        Canonical named reducer.
+    axes
+        Concrete axis positions to reduce.
+    runtime_context
+        Backend bindings and output normalization policy.
+    reducer_fn
+        Namespace reducer used when the native route is not proven.
+    native_method_name
+        Tensor method used by the trusted native route.
+    native_axis_keyword
+        Axis keyword accepted by the native tensor method.
+    """
 
     reducer: ReducerName
     axes: tuple[int, ...]
     runtime_context: ReducerRuntimeContext
-    direct_method_name: str
-    direct_axis_keyword: Literal["axis", "dim"]
+    reducer_fn: NamespaceReducer
+    native_method_name: str
+    native_axis_keyword: Literal["axis", "dim"]
 
     def run_unary(self, tensor: TensorLike, /) -> TensorLike:
-        """Execute one direct-method unary reduce program."""
+        """Execute one native-preferred unary reduce program."""
         if not self.axes:
             return tensor
 
+        if self.runtime_context.native_reducer_ops(tensor) is None:
+            output = self.runtime_context.apply_namespace_reducer(
+                reducer_name=self.reducer,
+                reducer_fn=self.reducer_fn,
+                tensor=tensor,
+                axes=self.axes,
+            )
+            _validate_reduced_axis_output_shape(
+                output=output,
+                input_shape=tuple(tensor.shape),
+                reduced_axes=self.axes,
+            )
+            return output
+
         try:
-            if self.direct_axis_keyword == "dim":
-                output = getattr(tensor, self.direct_method_name)(dim=self.axes)
+            if self.native_axis_keyword == "dim":
+                output = getattr(tensor, self.native_method_name)(dim=self.axes)
             else:
-                output = getattr(tensor, self.direct_method_name)(axis=self.axes)
+                output = getattr(tensor, self.native_method_name)(axis=self.axes)
         except TensorOpError:
             raise
         except Exception as error:
@@ -407,24 +438,26 @@ def _build_shape_invariant_reduce_runtime_program(
     if reducer_fn is None:
         return None
     if backend_family == "torch":
-        direct_method_name = _DIRECT_TORCH_REDUCER_METHODS.get(reducer)
-        if isinstance(direct_method_name, str):
-            return DirectMethodReduceRuntimeProgram(
+        native_method_name = _NATIVE_TORCH_REDUCER_METHODS.get(reducer)
+        if isinstance(native_method_name, str):
+            return NativePreferredReduceRuntimeProgram(
                 reducer=reducer,
                 axes=reduce_axes,
                 runtime_context=runtime_context,
-                direct_method_name=direct_method_name,
-                direct_axis_keyword="dim",
+                reducer_fn=reducer_fn,
+                native_method_name=native_method_name,
+                native_axis_keyword="dim",
             )
     if backend_family == "numpy":
-        direct_method_name = _DIRECT_NUMPY_REDUCER_METHODS.get(reducer)
-        if isinstance(direct_method_name, str):
-            return DirectMethodReduceRuntimeProgram(
+        native_method_name = _NATIVE_NUMPY_REDUCER_METHODS.get(reducer)
+        if isinstance(native_method_name, str):
+            return NativePreferredReduceRuntimeProgram(
                 reducer=reducer,
                 axes=reduce_axes,
                 runtime_context=runtime_context,
-                direct_method_name=direct_method_name,
-                direct_axis_keyword="axis",
+                reducer_fn=reducer_fn,
+                native_method_name=native_method_name,
+                native_axis_keyword="axis",
             )
 
     return NamespaceReduceRuntimeProgram(

@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover
     from typing_extensions import Never
 
 from einf.backend import BackendArrayOps
+from einf.backend.runtime import is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.reduction.callable import ReducerResult
 from einf.reduction.schema import (
@@ -144,6 +145,31 @@ class ReducerRuntimeContext:
     xp: ReducerArrayNamespace
     backend_ops: BackendArrayOps | None = None
 
+    def native_reducer_ops(
+        self,
+        tensor: TensorLike,
+        /,
+    ) -> BackendArrayOps | None:
+        """Return the adapter when tensor and adapter prove a native route.
+
+        Parameters
+        ----------
+        tensor
+            Runtime tensor considered for native reducer execution.
+
+        Returns
+        -------
+        BackendArrayOps or None
+            Canonical adapter for a trusted native route, or ``None``.
+        """
+        backend_ops = self.backend_ops
+        if backend_ops is None or not is_trusted_backend_array_ops(
+            backend_ops=backend_ops,
+            tensor=tensor,
+        ):
+            return None
+        return backend_ops
+
     def apply_string_reducer(
         self,
         *,
@@ -156,9 +182,10 @@ class ReducerRuntimeContext:
         if not axes:
             return tensor
 
-        if self.backend_ops is not None:
+        backend_ops = self.native_reducer_ops(tensor)
+        if backend_ops is not None:
             try:
-                reduced = self.backend_ops.reduce(
+                reduced = backend_ops.reduce(
                     reducer_name=reducer_name.value,
                     tensor=tensor,
                     axes=axes,
@@ -172,18 +199,61 @@ class ReducerRuntimeContext:
                     axes=axes,
                     error=error,
                 ) from error
-        else:
-            try:
-                reduced = reducer_fn(tensor, axis=axes)
-            except TensorOpError:
-                raise
-            except Exception as error:
-                raise self.string_reducer_error(
-                    reducer_name=reducer_name,
-                    tensor=tensor,
-                    axes=axes,
-                    error=error,
-                ) from error
+            return self.coerce_output(reduced)
+
+        return self.apply_namespace_reducer(
+            reducer_name=reducer_name,
+            reducer_fn=reducer_fn,
+            tensor=tensor,
+            axes=axes,
+        )
+
+    def apply_namespace_reducer(
+        self,
+        *,
+        reducer_name: ReducerName,
+        reducer_fn: NamespaceReducer,
+        tensor: TensorLike,
+        axes: tuple[int, ...],
+    ) -> TensorLike:
+        """Apply the reducer selected from the resolved array namespace.
+
+        Parameters
+        ----------
+        reducer_name
+            Canonical reducer name used in diagnostics.
+        reducer_fn
+            Reducer callable selected from the resolved namespace.
+        tensor
+            Runtime tensor to reduce.
+        axes
+            Concrete axis positions to reduce. An empty tuple leaves the input
+            unchanged.
+
+        Returns
+        -------
+        TensorLike
+            Normalized reducer output.
+
+        Raises
+        ------
+        TensorOpError
+            The reducer or output normalization fails.
+        """
+        if not axes:
+            return tensor
+
+        try:
+            reduced = reducer_fn(tensor, axis=axes)
+        except TensorOpError:
+            raise
+        except Exception as error:
+            raise self.string_reducer_error(
+                reducer_name=reducer_name,
+                tensor=tensor,
+                axes=axes,
+                error=error,
+            ) from error
         return self.coerce_output(reduced)
 
     def coerce_output(
