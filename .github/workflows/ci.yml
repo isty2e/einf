@@ -98,6 +98,7 @@ jobs:
           tests/integration/test_array_api_rearrange_execution.py
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py
+          tests/steps/test_backend_exception_projection.py
       - name: Test optional PyTorch integration
         run: >-
           pytest
@@ -105,6 +106,7 @@ jobs:
           tests/integration/test_array_api_rearrange_execution.py
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py
+          tests/steps/test_backend_exception_projection.py
       - name: Test PyTorch benchmark input integrity
         run: >-
           pytest

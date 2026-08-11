@@ -2,8 +2,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from array_api_compat import array_namespace
 
 from einf.backend import BACKEND_POLICY, BACKEND_RESOLVER, runtime
+from einf.backend.namespace import output_namespace_matches
 from einf.diagnostics import ErrorCode, ValidationError
 
 
@@ -18,6 +20,10 @@ class _FakeNamespaceA:
 
 class _FakeNamespaceB:
     __name__ = "fake.b"
+
+
+class _NumpyCompatNameSpoof:
+    __name__ = "array_api_compat.numpy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,13 @@ class FakeArrayB:
     ) -> type[_FakeNamespaceB]:
         _ = api_version
         return _FakeNamespaceB
+
+
+def test_output_namespace_alias_requires_canonical_module_identity() -> None:
+    compat_namespace = array_namespace(np.zeros((1,)))
+
+    assert output_namespace_matches(np, compat_namespace)
+    assert not output_namespace_matches(np, _NumpyCompatNameSpoof())
 
 
 @dataclass(frozen=True, slots=True)

@@ -68,7 +68,8 @@ route it intends to use.
 
 | Previous integration | Current integration |
 | --- | --- |
-| Construct `BackendProfile` or `BackendExecutionIdentity` with capability fields | Construct `BackendProfile(namespace=...)`; its execution identity is derived from the namespace |
+| Construct `BackendProfile` with capability fields | Construct `BackendProfile(namespace=...)`; its execution identity is derived from the namespace |
+| Construct `BackendExecutionIdentity` with capability fields | Construct `BackendExecutionIdentity(namespace=...)`; `namespace_id` and `backend_family` are derived from the namespace |
 | Construct `BackendResolver(policy=...)` | Construct `BackendResolver()`; resolver identity and operation policy are separate |
 | Call `BackendResolver.validate(...)` | Call `BackendResolver.resolve(..., op_name=...)`, then the selected route's validator when capability validation is required, such as `BackendPolicy.validate_einsum_capability(...)` |
 | Call `BackendPolicy.validate_profile(...)` | Resolve a profile first, then call the operation-specific policy such as `validate_einsum_capability(...)` |

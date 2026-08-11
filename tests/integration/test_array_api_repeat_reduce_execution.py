@@ -130,6 +130,19 @@ class _KnownFamilyReducerNamespace:
         return _KnownFamilyReducerTensor(np.sum(tensor.value, axis=axis), self)
 
 
+class _ForeignOutputReducerNamespace(_KnownFamilyReducerNamespace):
+    __name__ = "numpy.custom"
+
+    def sum(
+        self,
+        tensor: "_KnownFamilyReducerTensor",
+        *,
+        axis: tuple[int, ...],
+    ) -> np.ndarray:
+        self.sum_calls += 1
+        return np.sum(tensor.value, axis=axis)
+
+
 class _KnownFamilyReducerTensor:
     def __init__(
         self,
@@ -256,6 +269,58 @@ def test_dynamic_reduce_known_family_tensor_uses_selected_namespace_reducer() ->
     np.testing.assert_array_equal(result.value, np.sum(tensor.value, axis=2))
     assert namespace.sum_calls == 1
     assert tensor.method_calls == []
+
+
+def test_static_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    b, h = axes("foreign_static_b", "foreign_static_h")
+    namespace = _ForeignOutputReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[b, h], ax[b]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+    assert namespace.sum_calls == 1
+
+
+def test_dynamic_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    (batch_axes,) = packs("foreign_dynamic_batch")
+    (feature,) = axes("foreign_dynamic_feature")
+    namespace = _ForeignOutputReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3 * 4).reshape(2, 3, 4),
+        namespace,
+    )
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[batch_axes, feature], ax[batch_axes]).reduce_by("sum")(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+    assert namespace.sum_calls == 1
+
+
+def test_callable_reduce_rejects_same_family_foreign_namespace_output() -> None:
+    b, h = axes("foreign_callable_b", "foreign_callable_h")
+    namespace = _KnownFamilyReducerNamespace()
+    tensor = _KnownFamilyReducerTensor(
+        np.arange(2 * 3).reshape(2, 3),
+        namespace,
+    )
+
+    def foreign_sum(
+        value: _KnownFamilyReducerTensor,
+        *,
+        axis: tuple[int, ...],
+    ) -> np.ndarray:
+        return np.sum(value.value, axis=axis)
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        reduce(ax[b, h], ax[b]).reduce_by(foreign_sum)(tensor)
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
 
 
 def test_reduce_exact_numpy_tensor_keeps_native_method_route(

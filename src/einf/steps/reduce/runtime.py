@@ -4,10 +4,7 @@ from typing import Protocol, TypeGuard, cast
 
 from array_api_compat import array_namespace
 
-from einf.backend.namespace import (
-    derive_namespace_id,
-    infer_backend_family,
-)
+from einf.backend.namespace import output_namespace_matches
 
 try:
     from typing import Never
@@ -291,8 +288,6 @@ class ReducerRuntimeContext:
         """Reject reducer outputs owned by a different backend namespace."""
         try:
             output_namespace = array_namespace(output)
-            output_namespace_id = derive_namespace_id(output_namespace)
-            input_namespace_id = derive_namespace_id(self.xp)
         except TensorOpError:
             raise
         except Exception as error:
@@ -307,11 +302,7 @@ class ReducerRuntimeContext:
                 data={"operation": "reduce"},
             ) from error
 
-        input_family = infer_backend_family(input_namespace_id)
-        if (input_family is None and output_namespace is not self.xp) or (
-            input_family is not None
-            and infer_backend_family(output_namespace_id) != input_family
-        ):
+        if not output_namespace_matches(self.xp, output_namespace):
             raise ExecutionError(
                 code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
                 message=(

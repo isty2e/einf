@@ -1,3 +1,4 @@
+import sys
 from typing import Protocol, TypeAlias
 
 BackendFamily: TypeAlias = str
@@ -70,3 +71,46 @@ def derive_family_key(namespace_id: str) -> str:
 def is_namespace_family(namespace_id: str, backend_family: BackendFamily) -> bool:
     """Return whether namespace id belongs to one canonical backend family."""
     return infer_backend_family(namespace_id) == backend_family
+
+
+def output_namespace_matches(
+    selected_namespace: ArrayNamespaceLike,
+    output_namespace: ArrayNamespaceLike,
+    /,
+) -> bool:
+    """Return whether an output namespace matches the selected authority.
+
+    Parameters
+    ----------
+    selected_namespace : ArrayNamespaceLike
+        Namespace selected from the operation inputs.
+    output_namespace : ArrayNamespaceLike
+        Namespace resolved from the operation output.
+
+    Returns
+    -------
+    bool
+        Whether both namespaces have the same output authority.
+
+    Notes
+    -----
+    Distinct objects match only when they are the canonical NumPy or Torch
+    module and its ``array_api_compat`` wrapper.
+    """
+    if output_namespace is selected_namespace:
+        return True
+
+    for native_name in ("numpy", "torch"):
+        native_namespace = sys.modules.get(native_name)
+        compat_namespace = sys.modules.get(f"array_api_compat.{native_name}")
+        if native_namespace is None or compat_namespace is None:
+            continue
+        if (
+            selected_namespace is native_namespace
+            and output_namespace is compat_namespace
+        ) or (
+            selected_namespace is compat_namespace
+            and output_namespace is native_namespace
+        ):
+            return True
+    return False

@@ -8,7 +8,7 @@ from array_api_compat import array_namespace
 
 from einf.axis import AxisSide, ScalarAxisTerms
 from einf.backend import BACKEND_POLICY, BackendProfile
-from einf.backend.namespace import ArrayNamespaceLike, derive_namespace_id
+from einf.backend.namespace import output_namespace_matches
 from einf.backend.runtime import (
     BackendRuntimeUnavailable,
     is_backend_runtime_uninterposed,
@@ -789,10 +789,7 @@ def _validate_einsum_output(
             related=("einsum execution", "TensorOp output protocol"),
             data={"operation": "einsum"},
         ) from error
-    if not _output_namespace_matches_profile(
-        profile=profile,
-        output_namespace=output_namespace,
-    ):
+    if not output_namespace_matches(profile.namespace, output_namespace):
         raise ExecutionError(
             code=ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION,
             message=(
@@ -804,26 +801,6 @@ def _validate_einsum_output(
             data={"operation": "einsum"},
         )
     return validated_output
-
-
-def _output_namespace_matches_profile(
-    *,
-    profile: BackendProfile,
-    output_namespace: ArrayNamespaceLike,
-) -> bool:
-    """Return whether an output namespace belongs to the selected profile."""
-    if output_namespace is profile.namespace:
-        return True
-
-    # array_api_compat wraps the canonical NumPy and Torch modules. Keep this
-    # narrow: family equivalence alone would let custom namespaces claim output.
-    if profile.namespace_id not in {"numpy", "torch"}:
-        return False
-    try:
-        output_namespace_id = derive_namespace_id(output_namespace)
-    except TypeError:
-        return False
-    return output_namespace_id == f"array_api_compat.{profile.namespace_id}"
 
 
 def _project_einsum_route_error(error: Exception) -> ExecutionError:

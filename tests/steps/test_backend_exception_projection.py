@@ -1026,25 +1026,15 @@ def test_numpy_family_einsum_rejects_foreign_namespace_output() -> None:
     assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
 
 
-def test_raw_native_profile_accepts_its_array_api_compat_namespace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class ArrayApiCompatNumpyNamespace:
-        __name__ = "array_api_compat.numpy"
-
-    class Output:
+def test_raw_native_profile_accepts_its_array_api_compat_namespace() -> None:
+    class Operand:
         shape = (2, 4)
 
-        def __getitem__(self, key: object) -> "Output":
+        def __getitem__(self, key: object) -> "Operand":
             del key
             return self
 
-    output = Output()
-    monkeypatch.setattr(
-        einsum_step_module,
-        "array_namespace",
-        lambda _output: ArrayApiCompatNumpyNamespace(),
-    )
+    output = np.zeros((2, 4))
     executor = EinsumEquationExecutor(
         profile=BackendProfile(namespace=np),
         namespace_einsum=lambda *_args: output,
@@ -1052,7 +1042,33 @@ def test_raw_native_profile_accepts_its_array_api_compat_namespace(
 
     result = executor.run(
         equation="ij,ij->ij",
-        operands=(Output(), Output()),
+        operands=(Operand(), Operand()),
+        chain_mode=False,
+        allow_native_matmul=True,
+    )
+
+    assert result is output
+
+
+def test_raw_torch_profile_accepts_its_array_api_compat_namespace() -> None:
+    torch = pytest.importorskip("torch")
+
+    class Operand:
+        shape = (2, 4)
+
+        def __getitem__(self, key: object) -> "Operand":
+            del key
+            return self
+
+    output = torch.zeros((2, 4))
+    executor = EinsumEquationExecutor(
+        profile=BackendProfile(namespace=torch),
+        namespace_einsum=lambda *_args: output,
+    )
+
+    result = executor.run(
+        equation="ij,ij->ij",
+        operands=(Operand(), Operand()),
         chain_mode=False,
         allow_native_matmul=True,
     )
