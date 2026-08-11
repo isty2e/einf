@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover
     from typing_extensions import Never
 
-from einf.backend import BackendArrayOps
+from einf.backend import BackendArrayOps, BackendProfile
 from einf.backend.runtime import is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.reduction.callable import ReducerResult
@@ -410,6 +410,41 @@ class ReducerRuntimeContext:
             return False
 
 
+@dataclass(frozen=True, slots=True)
+class ReducerRuntimeBinding:
+    """Canonical backend identity and reducer capability binding.
+
+    Parameters
+    ----------
+    profile : BackendProfile
+        Backend identity selected for runtime specialization.
+    context : ReducerRuntimeContext
+        Reducer namespace and native adapter bound from ``profile``.
+
+    Raises
+    ------
+    ValueError
+        ``context`` was bound from a different backend namespace or family.
+    """
+
+    profile: BackendProfile
+    context: ReducerRuntimeContext
+
+    def __post_init__(self) -> None:
+        if self.context.xp is not self.profile.namespace:
+            raise ValueError(
+                "reducer runtime context namespace must match backend profile"
+            )
+        backend_ops = self.context.backend_ops
+        if (
+            backend_ops is not None
+            and backend_ops.backend_family != self.profile.backend_family
+        ):
+            raise ValueError(
+                "reducer runtime context family must match backend profile"
+            )
+
+
 class CompiledReducer(Protocol):
     """Compiled reducer protocol for runtime phase execution."""
 
@@ -606,6 +641,7 @@ __all__ = [
     "CompiledStringReducer",
     "ReducerArrayNamespace",
     "ReducerCompiler",
+    "ReducerRuntimeBinding",
     "ReducerRuntimeContext",
     "bind_reducer_namespace",
     "resolve_namespace_reducer",

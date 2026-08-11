@@ -62,15 +62,22 @@ that module, backend profiles now describe identity only. Operation
 capabilities are resolved at the route that uses them, rather than being stored
 as profile flags.
 
+`BackendResolver.resolve(...)` now answers only the identity question. Code
+that relied on the old capability check must also call the validator for the
+route it intends to use.
+
 | Previous integration | Current integration |
 | --- | --- |
 | Construct `BackendProfile` or `BackendExecutionIdentity` with capability fields | Construct `BackendProfile(namespace=...)`; its execution identity is derived from the namespace |
 | Construct `BackendResolver(policy=...)` | Construct `BackendResolver()`; resolver identity and operation policy are separate |
-| Call `BackendResolver.validate(...)` | Call `BackendResolver.resolve(..., op_name=...)` |
+| Call `BackendResolver.validate(...)` | Call `BackendResolver.resolve(..., op_name=...)`, then the selected route's validator when capability validation is required, such as `BackendPolicy.validate_einsum_capability(...)` |
 | Call `BackendPolicy.validate_profile(...)` | Resolve a profile first, then call the operation-specific policy such as `validate_einsum_capability(...)` |
 | Call `BackendPolicy.supports_einsum(...)` | Use `resolve_namespace_einsum(profile)` for the namespace route and `supports_opt_einsum(profile.backend_family)` for the optional fallback |
+| Call `BackendPolicy.supports_strict_view(namespace_id=..., backend_family=...)` | Call `BackendPolicy.supports_strict_view(backend_family=...)`; namespace spelling no longer participates in strict-view policy |
 | Call `BackendPolicy.normalize_operation_name(...)` | Pass the operation name to `BackendResolver.resolve(...)`; normalization stays inside the boundary |
 | Call `try_native_contract_einsum(...)` | Execute the public `contract` operation; einsum route selection is internal |
+| Call `build_reduce_compiled_program(..., backend_profile=...)` | Bind reducer capabilities once with `ReducerRuntimeBinding(profile=..., context=...)`, then pass `runtime_binding=...` |
+| Read `ReduceCompiledProgram.xp` or `.backend_ops` | Read the specialization-bound `ReducerRuntimeBinding.context`; the compiled program now contains shape-dependent facts only |
 
 No compatibility aliases are provided. Each capability decision has one
 authority, and a family label is not proof that a callable or tensor is native.

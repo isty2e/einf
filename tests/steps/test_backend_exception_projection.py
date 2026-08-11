@@ -23,7 +23,11 @@ from einf.steps.expand import build_expand_symbolic_program
 from einf.steps.expand.runtime import run_expand_program
 from einf.steps.expand.step import ExpandRuntimeStep
 from einf.steps.permute import PermuteRuntimeStep
-from einf.steps.reduce.runtime import CallableReducerInvoker, ReducerRuntimeContext
+from einf.steps.reduce.runtime import (
+    CallableReducerInvoker,
+    ReducerRuntimeBinding,
+    ReducerRuntimeContext,
+)
 from einf.steps.reduce.step import (
     NamespaceReduceRuntimeProgram,
     NativePreferredReduceRuntimeProgram,
@@ -32,6 +36,35 @@ from einf.steps.reshape.constants import ZERO_COPY_REQUIRED_RESHAPE_MODE
 from einf.steps.reshape.runtime import run_reshape_program
 from einf.steps.runtime import bind_runtime_backend
 from einf.tensor_types import TensorLike, is_trusted_tensor_type
+
+
+def test_reducer_runtime_binding_rejects_mismatched_namespace() -> None:
+    profile = BACKEND_RESOLVER.resolve(np.zeros((2,)), op_name="reduce")
+    context = ReducerRuntimeContext(
+        xp=cast(reduce_runtime_module.ReducerArrayNamespace, np),
+    )
+
+    with pytest.raises(ValueError, match="namespace must match backend profile"):
+        ReducerRuntimeBinding(profile=profile, context=context)
+
+
+def test_reducer_runtime_binding_rejects_mismatched_backend_family() -> None:
+    profile = BackendProfile(namespace=np)
+    context = ReducerRuntimeContext(
+        xp=cast(reduce_runtime_module.ReducerArrayNamespace, np),
+        backend_ops=BackendArrayOps(
+            backend_family="torch",
+            reshape=lambda tensor, _shape: tensor,
+            permute=lambda tensor, _axes: tensor,
+            expand_dims=lambda tensor, _axis: tensor,
+            broadcast_to=lambda tensor, _shape: tensor,
+            concat=lambda tensors, _axis: tensors[0],
+            reducers={},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="family must match"):
+        ReducerRuntimeBinding(profile=profile, context=context)
 
 
 class _PermuteProgram:
@@ -958,6 +991,75 @@ def test_numpy_family_einsum_validates_namespace_fallback_output() -> None:
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
 
 
+def test_numpy_family_einsum_rejects_foreign_namespace_output() -> None:
+    class NumpyFamilyTensor:
+        shape: tuple[int, ...]
+
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            self.shape = shape
+
+        def __getitem__(self, key: object) -> "NumpyFamilyTensor":
+            _ = key
+            return self
+
+    class NumpyFamilyNamespace:
+        __name__ = "numpy.custom"
+
+        @staticmethod
+        def einsum(*_args: object) -> np.ndarray:
+            return np.zeros((2, 4))
+
+    executor = einsum_step_module._build_einsum_executor(
+        BackendProfile(
+            namespace=NumpyFamilyNamespace(),
+        )
+    )
+
+    with pytest.raises(ExecutionError, match="different backend namespace") as error:
+        executor.run(
+            equation="ij,jk->ik",
+            operands=(NumpyFamilyTensor((2, 3)), NumpyFamilyTensor((3, 4))),
+            chain_mode=False,
+            allow_native_matmul=True,
+        )
+
+    assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
+
+
+def test_raw_native_profile_accepts_its_array_api_compat_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ArrayApiCompatNumpyNamespace:
+        __name__ = "array_api_compat.numpy"
+
+    class Output:
+        shape = (2, 4)
+
+        def __getitem__(self, key: object) -> "Output":
+            del key
+            return self
+
+    output = Output()
+    monkeypatch.setattr(
+        einsum_step_module,
+        "array_namespace",
+        lambda _output: ArrayApiCompatNumpyNamespace(),
+    )
+    executor = EinsumEquationExecutor(
+        profile=BackendProfile(namespace=np),
+        namespace_einsum=lambda *_args: output,
+    )
+
+    result = executor.run(
+        equation="ij,ij->ij",
+        operands=(Output(), Output()),
+        chain_mode=False,
+        allow_native_matmul=True,
+    )
+
+    assert result is output
+
+
 def test_exact_native_einsum_skips_semantic_shape_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1043,12 +1145,12 @@ def test_torch_override_mode_disables_native_validation_bypass() -> None:
 
     backend_ops = get_backend_array_ops("torch")
     assert backend_ops is not None
-    executor = einsum_step_module._build_einsum_executor(
-        BackendProfile(
-            namespace=torch,
-        )
-    )
     operands = (torch.zeros((2, 3)), torch.zeros((3, 4)))
+    profile = BACKEND_RESOLVER.resolve(*operands, op_name="contract")
+    executor = replace(
+        einsum_step_module._build_einsum_executor(profile),
+        namespace_einsum=lambda *_args: wrong_output,
+    )
 
     with (
         WrongMatmulMode(),

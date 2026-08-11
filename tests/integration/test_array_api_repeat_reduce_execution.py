@@ -19,7 +19,12 @@ from einf import (
     reduce,
     repeat,
 )
-from einf.backend import BACKEND_RESOLVER
+from einf.backend import (
+    BACKEND_RESOLVER,
+    ArrayNamespaceLike,
+    BackendArrayOps,
+    BackendFamily,
+)
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
@@ -517,6 +522,59 @@ def test_reduce_reuses_cached_compiled_runtime_plan(
         _explode_native_contract_einsum,
     )
     np.testing.assert_array_equal(op(tensor), expected)
+
+
+def test_dynamic_reduce_binds_backend_capabilities_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (batch_axes,) = packs("binding_batch")
+    (feature,) = axes("binding_feature")
+    op = reduce(ax[batch_axes, feature], ax[batch_axes])
+    tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    capability_calls = {"namespace": 0, "adapter": 0}
+    original_bind = reduce_step_module.bind_reducer_namespace
+    original_get_backend_ops = reduce_step_module.get_backend_array_ops
+
+    def count_bind(
+        namespace: ArrayNamespaceLike,
+    ) -> reduce_runtime_module.ReducerArrayNamespace:
+        capability_calls["namespace"] += 1
+        return original_bind(namespace)
+
+    def count_backend_ops(
+        backend_family: BackendFamily | None,
+    ) -> BackendArrayOps | None:
+        capability_calls["adapter"] += 1
+        return original_get_backend_ops(backend_family)
+
+    monkeypatch.setattr(
+        reduce_step_module,
+        "bind_reducer_namespace",
+        count_bind,
+    )
+    monkeypatch.setattr(
+        reduce_build_module,
+        "bind_reducer_namespace",
+        count_bind,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reduce_step_module,
+        "get_backend_array_ops",
+        count_backend_ops,
+    )
+    monkeypatch.setattr(
+        reduce_build_module,
+        "get_backend_array_ops",
+        count_backend_ops,
+        raising=False,
+    )
+
+    expected = np.sum(tensor, axis=2)
+    for _ in range(3):
+        np.testing.assert_array_equal(op(tensor), expected)
+
+    assert capability_calls == {"namespace": 1, "adapter": 1}
 
 
 def test_reduce_compile_invariant_rejects_mismatched_output_terms(

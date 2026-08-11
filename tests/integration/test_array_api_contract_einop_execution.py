@@ -60,6 +60,10 @@ class _DirectEinsumNamespace:
         return _DirectEinsumTensor(np.asarray(output), self)
 
 
+class _KnownFamilyEinsumNamespace(_DirectEinsumNamespace):
+    __name__ = "numpy.custom"
+
+
 class _FailingEinsumNamespace(_DirectEinsumNamespace):
     __name__ = "custom.failing_einsum"
 
@@ -98,6 +102,11 @@ class _DirectEinsumTensor:
         del api_version
         return self.namespace
 
+    def __array__(self, dtype: object = None) -> np.ndarray:
+        if dtype is None:
+            return self.value
+        return self.value.astype(dtype)
+
     def __getitem__(self, key: object) -> "_DirectEinsumTensor":
         del key
         return self
@@ -111,6 +120,10 @@ def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
 
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
+
+
+def _explode_output_namespace_lookup(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("exact native output should not repeat namespace lookup")
 
 
 def _explode_build_tuple_runner(*_args: object, **_kwargs: object) -> None:
@@ -154,6 +167,19 @@ def test_contract_uses_unknown_namespace_einsum_without_opt_einsum(
         "contract",
         _explode_opt_einsum_contract,
     )
+    result = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
+
+    assert isinstance(result, _DirectEinsumTensor)
+    np.testing.assert_array_equal(result.value, left.value @ right.value)
+    assert namespace.calls == 1
+
+
+def test_contract_uses_known_family_namespace_for_custom_tensor() -> None:
+    i, k, j = axes("known_family_i", "known_family_k", "known_family_j")
+    namespace = _KnownFamilyEinsumNamespace()
+    left = _DirectEinsumTensor(np.arange(2 * 3).reshape(2, 3), namespace)
+    right = _DirectEinsumTensor(np.arange(3 * 4).reshape(3, 4), namespace)
+
     result = contract((ax[i, k], ax[k, j]), ax[i, j])(left, right)
 
     assert isinstance(result, _DirectEinsumTensor)
@@ -424,6 +450,11 @@ def test_contract_three_inputs_reuses_cached_contract_expression(
         einsum_step_module.opt_einsum,
         "contract",
         _explode_native_contract_einsum,
+    )
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "array_namespace",
+        _explode_output_namespace_lookup,
     )
 
     left = np.arange(2 * 5, dtype=np.float32).reshape(2, 5)
