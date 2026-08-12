@@ -912,6 +912,70 @@ def test_load_list_field_limited_handles_braces_inside_strings() -> None:
     assert entries[0] == {"x": 1}
 
 
+def _nested_checker_payload(
+    *,
+    total_container_depth: int,
+) -> str:
+    nested_depth = total_container_depth - 2
+    if nested_depth < 0:
+        raise ValueError("checker payload depth must include the object and list")
+    nested_value = "[" * nested_depth + "0" + "]" * nested_depth
+    return f'{{"errors": [{nested_value}]}}'
+
+
+def test_load_list_field_limited_accepts_maximum_nesting_depth() -> None:
+    entries, truncated, parse_error = load_list_field_limited(
+        _nested_checker_payload(total_container_depth=64),
+        field="errors",
+        max_entries=10,
+    )
+
+    assert len(entries) == 1
+    assert truncated is False
+    assert parse_error is None
+
+
+@pytest.mark.parametrize("location", ["target", "non_target", "capped_remainder"])
+def test_load_list_field_limited_rejects_excessive_nesting(location: str) -> None:
+    if location == "target":
+        nested_value = "[" * 63 + "0" + "]" * 63
+        payload = f'{{"errors": [{nested_value}]}}'
+        max_entries = 10
+    elif location == "non_target":
+        nested_value = "[" * 64 + "0" + "]" * 64
+        payload = f'{{"meta": {nested_value}, "errors": []}}'
+        max_entries = 10
+    else:
+        nested_value = "[" * 63 + "0" + "]" * 63
+        payload = f'{{"errors": [0, {nested_value}]}}'
+        max_entries = 1
+
+    entries, truncated, parse_error = load_list_field_limited(
+        payload,
+        field="errors",
+        max_entries=max_entries,
+    )
+
+    assert entries == []
+    assert truncated is False
+    assert parse_error == "checker JSON output is not valid JSON"
+
+
+def test_load_list_field_limited_ignores_delimiters_inside_strings() -> None:
+    nested_looking_text = '[{"escaped quote": "\\""}]' * 100
+    payload = json.dumps({"errors": [{"message": nested_looking_text}]})
+
+    entries, truncated, parse_error = load_list_field_limited(
+        payload,
+        field="errors",
+        max_entries=10,
+    )
+
+    assert entries == [{"message": nested_looking_text}]
+    assert truncated is False
+    assert parse_error is None
+
+
 def test_load_list_field_limited_reports_missing_field() -> None:
     entries, truncated, parse_error = load_list_field_limited(
         '{"summary": "ok"}',
