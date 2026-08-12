@@ -132,6 +132,46 @@ directly must construct the matching concrete variant or use
 direct or chain variant after checking the caller's declared arities. The side
 builder returns a side variant.
 
+Import the concrete variants from `einf.steps.einsum` and map the former field
+combinations to their matching constructor:
+
+```python
+from einf.steps.einsum import (
+    ChainEinsumSymbolicProgram,
+    DirectEinsumSymbolicProgram,
+    SideEinsumSymbolicProgram,
+)
+
+direct_program = DirectEinsumSymbolicProgram(
+    equations=("ab,bc->ac",),
+    allow_native_matmul=True,
+)
+chain_program = ChainEinsumSymbolicProgram(
+    equations=("ab,bc->ac", "ac,cd->ad"),
+    chain_order=(1, 2),
+    carrier_index=0,
+    allow_native_matmul=True,
+)
+side_program = SideEinsumSymbolicProgram(
+    lhs=lhs,
+    rhs=rhs,
+    explicit_sizes_items=explicit_sizes_items,
+    allow_native_matmul=True,
+)
+```
+
+Use the direct variant for equations without chain metadata, the chain variant
+for equations with `chain_order` and `carrier_index`, and the side variant for
+`lhs`, `rhs`, and explicit sizes. The variants derive their arity, so the old
+`input_arity` and `output_arity` constructor arguments are omitted.
+
+`EinsumSymbolicProgram` itself is no longer a dataclass. Calls such as
+`dataclasses.fields(EinsumSymbolicProgram)` and positional pattern matching
+against the base class therefore stop working. The concrete variants remain
+dataclasses, but each has its own field layout. Serializers and introspection
+code that assumed the former shared layout must dispatch on the concrete
+variant.
+
 The runtime projection carries different facts.
 `EinsumRuntimeProgram.native_matmul_equations` contains only resolved equations
 already proven equivalent to native `matmul`.

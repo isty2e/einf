@@ -1,10 +1,13 @@
 from inspect import signature
 
+import numpy as np
 import pytest
 
 from einf import ax, axes
 from einf.axis import AxisSide
-from einf.steps.base import RuntimeSpecializationContext
+from einf.backend import BACKEND_RESOLVER
+from einf.steps.base import RuntimeSpecializationContext, SymbolicStepScore
+from einf.steps.context import PlanSelectionContext
 from einf.steps.einsum import (
     ChainEinsumSymbolicProgram,
     DirectEinsumSymbolicProgram,
@@ -267,6 +270,49 @@ def test_symbolic_step_projects_direct_and_chain_variants_to_runtime() -> None:
     assert chain_step.specialization_depends_on_input_shapes() is False
     assert chain_runtime.program.chain_order == (1, 2)
     assert chain_runtime.program.carrier_index == 0
+
+
+def test_nonzero_carrier_chain_preserves_execution_projection_and_score() -> None:
+    first = np.arange(35, dtype=np.float64).reshape(5, 7)
+    carrier = np.arange(6, dtype=np.float64).reshape(2, 3)
+    second = np.arange(15, dtype=np.float64).reshape(3, 5)
+    tensors = (first, carrier, second)
+    input_shapes = tuple(tensor.shape for tensor in tensors)
+    step = EinsumSymbolicStep(
+        program=ChainEinsumSymbolicProgram(
+            equations=("ab,bc->ac", "ac,cd->ad"),
+            chain_order=(2, 0),
+            carrier_index=1,
+        )
+    )
+    runtime = step.specialize(
+        RuntimeSpecializationContext(
+            input_shapes=input_shapes,
+            backend_profile=BACKEND_RESOLVER.resolve(
+                *tensors,
+                op_name="contract",
+            ),
+        )
+    )
+
+    assert runtime.program.chain_order == (2, 0)
+    assert runtime.program.carrier_index == 1
+    (actual,) = runtime.run(tensors)
+    expected = carrier @ second @ first
+
+    assert isinstance(actual, np.ndarray)
+    np.testing.assert_allclose(actual, expected)
+    assert step.score(
+        PlanSelectionContext(
+            input_shapes=input_shapes,
+            explicit_sizes={},
+        )
+    ) == SymbolicStepScore(
+        peak_einsum_numel=35,
+        materialize_numel=0,
+        allocation_count=1,
+        kernel_count=2,
+    )
 
 
 def test_symbolic_step_preserves_side_shape_dependency() -> None:
