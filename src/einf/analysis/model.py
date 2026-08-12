@@ -15,12 +15,31 @@ _AXIS_OPERATION_ROLES = frozenset({"introduced", "reduced", "contracted"})
 
 @dataclass(frozen=True, slots=True)
 class TextPosition:
-    """One source position using 1-based line and 0-based column indexing."""
+    """One canonical source position.
+
+    Parameters
+    ----------
+    line : int
+        One-based source line. Boolean values are not accepted.
+    column : int
+        Zero-based source column. Boolean values are not accepted.
+
+    Raises
+    ------
+    TypeError
+        If either coordinate is not an integer or is a boolean.
+    ValueError
+        If ``line`` is less than 1 or ``column`` is negative.
+    """
 
     line: int
     column: int
 
     def __post_init__(self) -> None:
+        if isinstance(self.line, bool) or not isinstance(self.line, int):
+            raise TypeError("text position line must be an integer")
+        if isinstance(self.column, bool) or not isinstance(self.column, int):
+            raise TypeError("text position column must be an integer")
         if self.line < 1:
             raise ValueError("text position line must be >= 1")
         if self.column < 0:
