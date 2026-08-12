@@ -53,12 +53,19 @@ def test_text_span_accepts_zero_width_half_open_range() -> None:
     )
 
 
-def test_text_span_rejects_start_after_end() -> None:
+@pytest.mark.parametrize(
+    ("start", "end"),
+    (
+        (TextPosition(line=2, column=0), TextPosition(line=1, column=0)),
+        (TextPosition(line=2, column=4), TextPosition(line=2, column=3)),
+    ),
+)
+def test_text_span_rejects_start_after_end(
+    start: TextPosition,
+    end: TextPosition,
+) -> None:
     with pytest.raises(ValueError, match="start must not be after end"):
-        TextSpan(
-            start=TextPosition(line=2, column=0),
-            end=TextPosition(line=1, column=0),
-        )
+        TextSpan(start=start, end=end)
 
 
 def test_axis_token_rejects_operation_role_for_shared_symbol() -> None:

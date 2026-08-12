@@ -15,7 +15,22 @@ _AXIS_OPERATION_ROLES = frozenset({"introduced", "reduced", "contracted"})
 
 @dataclass(frozen=True, slots=True)
 class TextPosition:
-    """One source position using 1-based line and 0-based column indexing."""
+    """One canonical source position.
+
+    Parameters
+    ----------
+    line : int
+        One-based source line. Boolean values are not accepted.
+    column : int
+        Zero-based source column. Boolean values are not accepted.
+
+    Raises
+    ------
+    TypeError
+        If either coordinate is not an integer or is a boolean.
+    ValueError
+        If ``line`` is less than 1 or ``column`` is negative.
+    """
 
     line: int
     column: int
