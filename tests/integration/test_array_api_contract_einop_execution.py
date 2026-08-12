@@ -484,6 +484,7 @@ def test_non_matmul_binary_contract_uses_one_specialized_einsum_expression(
         ("mk,kn", False),
         ("mk,kn,np->mp", False),
         ("i.,.j->ij", False),
+        ("ij,jk- >ik", False),
         ("i\tj,jk->ik", False),
         ("iα,αj->ij", False),
         ("i_,_j->ij", False),

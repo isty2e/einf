@@ -44,6 +44,8 @@ def _parse_binary_einsum_equation(
     /,
 ) -> tuple[str, str, str] | None:
     """Parse one binary einsum equation into input/output subscripts."""
+    if equation.count("->") != 1:
+        return None
     normalized = equation.replace(" ", "")
     left_right = normalized.split("->")
     if len(left_right) != 2:

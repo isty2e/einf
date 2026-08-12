@@ -141,7 +141,7 @@ runtime_program = EinsumRuntimeProgram(
 )
 ```
 
-Construction rejects admissions outside `equations` and equations that do not
+Construction rejects admissions that are absent from `equations` or do not
 match the supported native-matmul grammar.
 
 ## Static analysis
