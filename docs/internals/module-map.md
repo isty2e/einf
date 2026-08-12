@@ -107,15 +107,34 @@ steps still own primitive specialization/execution.
   contract. Step-consumed runtime context and primitive scoring helpers
   live here, not in `plans/`.
 
-### Constructing einsum runtime programs
+### Constructing einsum programs
 
 `einf.steps` exposes low-level pipeline types for integrations that construct
-steps directly. Symbolic and runtime programs carry different facts:
+steps directly. The symbolic variants keep each construction form separate:
 
-- `EinsumSymbolicProgram.allow_native_matmul` records whether lowering may use
-  the optimization.
-- `EinsumRuntimeProgram.native_matmul_equations` contains only resolved
-  equations already proven equivalent to native `matmul`.
+- `DirectEinsumSymbolicProgram` owns one equation per output. Every equation
+  must consume the same number of inputs.
+- `ChainEinsumSymbolicProgram` owns an ordered contraction chain and its
+  carrier input. Each chain edge is a binary equation.
+- `SideEinsumSymbolicProgram` owns axis sides and resolves its equation from
+  runtime input shapes when necessary.
+- All three variants inherit from `EinsumSymbolicProgram` and record whether
+  lowering may use native `matmul`.
+
+Each variant derives its input and output arity from its canonical fields.
+`EinsumSymbolicStep` therefore accepts only the program and an optional name;
+it does not accept separate arity values.
+
+`EinsumSymbolicProgram` is abstract. Code that previously instantiated it
+directly must construct the matching concrete variant or use
+`build_einsum_symbolic_program_from_equations()` or
+`build_einsum_symbolic_program_from_sides()`. The equation builder returns a
+direct or chain variant after checking the caller's declared arities. The side
+builder returns a side variant.
+
+The runtime projection carries different facts.
+`EinsumRuntimeProgram.native_matmul_equations` contains only resolved equations
+already proven equivalent to native `matmul`.
 
 The supported proof is intentionally narrow. An admitted equation uses only
 explicit ASCII letter labels, contains no repeated label within either input or
