@@ -2,6 +2,8 @@
 
 import json
 
+_MAX_JSON_CONTAINER_DEPTH = 64
+
 
 class _MalformedJson(Exception):
     pass
@@ -17,18 +19,27 @@ def load_list_field_limited(
     field: str,
     max_entries: int,
 ) -> tuple[list[object], bool, str | None]:
-    """Parse one JSON object's list field with structural validation.
+    """Parse a bounded list field from one checker JSON object.
 
-    Returns ``(entries, truncated, error_message)``. Entries beyond
-    ``max_entries`` are never decoded into objects; ``truncated`` marks a
-    list stopped at the cap so callers can distinguish exactly-N results
-    from overflow. The whole object is validated structurally: non-target
-    fields are skipped without materializing, trailing content, duplicate
-    target keys, trailing commas, non-standard constants, and invalid
-    escapes fail closed.
+    Parameters
+    ----------
+    text : str
+        Checker output containing one JSON object.
+    field : str
+        Name of the list field to extract.
+    max_entries : int
+        Maximum number of list entries to materialize.
+
+    Returns
+    -------
+    tuple[list[object], bool, str or None]
+        Parsed entries, whether the list exceeded ``max_entries``, and a
+        parse error message. Invalid syntax and excessive container nesting
+        return no entries.
     """
     decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
     try:
+        _validate_container_depth(text)
         entries, truncated = _parse_object(
             decoder=decoder,
             text=text,
@@ -40,6 +51,35 @@ def load_list_field_limited(
     except (RecursionError, ValueError):
         return [], False, "checker JSON output is not valid JSON"
     return entries, truncated, None
+
+
+def _validate_container_depth(text: str) -> None:
+    expected_closings: list[str] = []
+    inside_string = False
+    escaped = False
+
+    for char in text:
+        if inside_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                inside_string = False
+            continue
+
+        if char == '"':
+            inside_string = True
+            continue
+        if char == "{":
+            expected_closings.append("}")
+        elif char == "[":
+            expected_closings.append("]")
+        elif char in "}]" and expected_closings and expected_closings[-1] == char:
+            expected_closings.pop()
+
+        if len(expected_closings) > _MAX_JSON_CONTAINER_DEPTH:
+            raise _MalformedJson("checker JSON output is not valid JSON")
 
 
 def _parse_object(
