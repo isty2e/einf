@@ -1,5 +1,21 @@
+import pytest
+
 from einf import axes, packs
 from einf.axis import AxisTermBase, ScalarAxisTermBase
+
+
+class _StructuralScalarTerm(ScalarAxisTermBase):
+    def to_dsl(self) -> str:
+        return "structural"
+
+    def stable_token(self) -> str:
+        return "structural"
+
+    def axis_names(self) -> set[str]:
+        return set()
+
+    def pack_names(self) -> set[str]:
+        return set()
 
 
 def test_axis_pack_exposes_only_structural_term_contract() -> None:
@@ -13,6 +29,22 @@ def test_axis_pack_exposes_only_structural_term_contract() -> None:
     assert not hasattr(pack, "evaluate")
     assert not hasattr(pack, "max_literal")
     assert not hasattr(pack, "evaluate_bounds")
+
+
+def test_scalar_axis_term_requires_scalar_algebra_implementations() -> None:
+    assert _StructuralScalarTerm.__abstractmethods__ == frozenset(
+        {"evaluate", "max_literal", "evaluate_bounds"}
+    )
+
+    with pytest.raises(TypeError, match="abstract"):
+        type.__call__(_StructuralScalarTerm)
+
+
+def test_scalar_axis_term_coercion_rejects_axis_pack() -> None:
+    (pack,) = packs("batch")
+
+    with pytest.raises(TypeError, match="axis expression terms"):
+        ScalarAxisTermBase.coerce(pack)
 
 
 def test_scalar_axis_terms_own_scalar_algebra() -> None:
