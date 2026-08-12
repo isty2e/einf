@@ -6,7 +6,7 @@ import signal
 import sys
 import tracemalloc
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import pytest
 
@@ -915,24 +915,43 @@ def test_load_list_field_limited_handles_braces_inside_strings() -> None:
 def _nested_checker_payload(
     *,
     total_container_depth: int,
+    structure: Literal["array", "object", "alternating"],
 ) -> str:
     nested_depth = total_container_depth - 2
     if nested_depth < 0:
         raise ValueError("checker payload depth must include the object and list")
-    nested_value = "[" * nested_depth + "0" + "]" * nested_depth
+    nested_value = "0"
+    for index in range(nested_depth):
+        if structure == "array" or (structure == "alternating" and index % 2 == 0):
+            nested_value = f"[{nested_value}]"
+        else:
+            nested_value = f'{{"value": {nested_value}}}'
     return f'{{"errors": [{nested_value}]}}'
 
 
-def test_load_list_field_limited_accepts_maximum_nesting_depth() -> None:
+@pytest.mark.parametrize("structure", ["array", "object", "alternating"])
+@pytest.mark.parametrize("total_container_depth", [64, 65])
+def test_load_list_field_limited_enforces_maximum_nesting_depth(
+    structure: Literal["array", "object", "alternating"],
+    total_container_depth: int,
+) -> None:
     entries, truncated, parse_error = load_list_field_limited(
-        _nested_checker_payload(total_container_depth=64),
+        _nested_checker_payload(
+            total_container_depth=total_container_depth,
+            structure=structure,
+        ),
         field="errors",
         max_entries=10,
     )
 
-    assert len(entries) == 1
-    assert truncated is False
-    assert parse_error is None
+    if total_container_depth == 64:
+        assert len(entries) == 1
+        assert truncated is False
+        assert parse_error is None
+    else:
+        assert entries == []
+        assert truncated is False
+        assert parse_error == "checker JSON output is not valid JSON"
 
 
 @pytest.mark.parametrize("location", ["target", "non_target", "capped_remainder"])
@@ -974,6 +993,46 @@ def test_load_list_field_limited_ignores_delimiters_inside_strings() -> None:
     assert entries == [{"message": nested_looking_text}]
     assert truncated is False
     assert parse_error is None
+
+
+def test_load_list_field_limited_ignores_unicode_escaped_delimiters() -> None:
+    escaped_delimiters = r"\u005b" * 65 + r"\u007b\u005d\u007d"
+    payload = f'{{"errors": [{{"message": "{escaped_delimiters}"}}]}}'
+
+    entries, truncated, parse_error = load_list_field_limited(
+        payload,
+        field="errors",
+        max_entries=10,
+    )
+
+    assert entries == [{"message": "[" * 65 + "{]}"}]
+    assert truncated is False
+    assert parse_error is None
+
+
+def test_load_list_field_limited_respects_backslash_parity_before_quotes() -> None:
+    odd_backslash_payload = json.dumps({"errors": [{"message": '\\"' + "[{]}" * 65}]})
+    even_backslash_payload = (
+        r'{"meta": "\\", "errors": [' + "[" * 63 + "0" + "]" * 63 + "]}"
+    )
+
+    entries, truncated, parse_error = load_list_field_limited(
+        odd_backslash_payload,
+        field="errors",
+        max_entries=10,
+    )
+    assert entries == [{"message": '\\"' + "[{]}" * 65}]
+    assert truncated is False
+    assert parse_error is None
+
+    entries, truncated, parse_error = load_list_field_limited(
+        even_backslash_payload,
+        field="errors",
+        max_entries=10,
+    )
+    assert entries == []
+    assert truncated is False
+    assert parse_error == "checker JSON output is not valid JSON"
 
 
 def test_load_list_field_limited_reports_missing_field() -> None:
