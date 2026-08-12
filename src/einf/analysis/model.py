@@ -21,6 +21,10 @@ class TextPosition:
     column: int
 
     def __post_init__(self) -> None:
+        if isinstance(self.line, bool) or not isinstance(self.line, int):
+            raise TypeError("text position line must be an integer")
+        if isinstance(self.column, bool) or not isinstance(self.column, int):
+            raise TypeError("text position column must be an integer")
         if self.line < 1:
             raise ValueError("text position line must be >= 1")
         if self.column < 0:
