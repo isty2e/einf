@@ -118,6 +118,13 @@ def _explode_opt_einsum_contract(*_args: object, **_kwargs: object) -> None:
     )
 
 
+def _explode_cached_contract_expression(
+    _equation: str,
+    _operand_shapes: tuple[tuple[int, ...], ...],
+) -> Callable[..., TensorLike]:
+    raise AssertionError("cached einsum should not run on a native matmul path")
+
+
 def _explode_native_contract_einsum(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("native contract einsum should not be called in this path")
 
@@ -317,22 +324,177 @@ def test_einop_opt_einsum_route_probe_is_cached(
 def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    i, k, j = axes("i", "k", "j")
+    i, k, j = axes("native_i", "native_k", "native_j")
     op = contract((ax[i, k], ax[k, j]), ax[i, j])
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+        matmul_calls.append(None)
+        return native_matmul(left, right)
 
     monkeypatch.setattr(
-        einsum_step_module.opt_einsum,
-        "contract",
-        _explode_opt_einsum_contract,
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_cached_contract_expression,
     )
+    monkeypatch.setattr(np, "matmul", record_matmul)
 
     left = np.arange(2 * 3).reshape(2, 3)
     right = np.arange(3 * 4).reshape(3, 4)
     result = _single_tensor_output(op(left, right))
     assert isinstance(result, np.ndarray)
 
-    expected = left @ right
+    expected = native_matmul(left, right)
     np.testing.assert_array_equal(result, expected)
+    assert len(matmul_calls) == 1
+
+
+def test_vector_matrix_contract_prefers_native_matmul_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    k, j = axes("vector_k", "vector_j")
+    op = contract((ax[k], ax[k, j]), ax[j])
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+        matmul_calls.append(None)
+        return native_matmul(left, right)
+
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_cached_contract_expression,
+    )
+    monkeypatch.setattr(np, "matmul", record_matmul)
+
+    left = np.arange(4)
+    right = np.arange(4 * 5).reshape(4, 5)
+    result = _single_tensor_output(op(left, right))
+
+    np.testing.assert_array_equal(result, native_matmul(left, right))
+    assert len(matmul_calls) == 1
+
+
+def test_batched_lhs_contract_prefers_native_matmul_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    b, i, k, j = axes("batch_b", "batch_i", "batch_k", "batch_j")
+    op = contract((ax[b, i, k], ax[k, j]), ax[b, i, j])
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+        matmul_calls.append(None)
+        return native_matmul(left, right)
+
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_cached_contract_expression,
+    )
+    monkeypatch.setattr(np, "matmul", record_matmul)
+
+    left = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    right = np.arange(4 * 5).reshape(4, 5)
+    result = _single_tensor_output(op(left, right))
+
+    np.testing.assert_array_equal(result, native_matmul(left, right))
+    assert len(matmul_calls) == 1
+
+
+def test_non_matmul_binary_contract_uses_one_specialized_einsum_expression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    i, contracted, batch, j = axes(
+        "fallback_i",
+        "fallback_contracted",
+        "fallback_batch",
+        "fallback_j",
+    )
+    op = contract(
+        (ax[i, contracted], ax[contracted, batch, j]),
+        ax[i, batch, j],
+    )
+    admission_checks: list[str] = []
+    expression_builds: list[str] = []
+    native_matmul_calls: list[None] = []
+    original_admission_check = einsum_step_impl._is_binary_matmul_equation
+    original_contract_expression = einsum_step_impl.opt_einsum.contract_expression
+
+    def check_admission(equation: str, /) -> bool:
+        admission_checks.append(equation)
+        return original_admission_check(equation)
+
+    def build_expression(
+        equation: str,
+        *shapes: tuple[int, ...],
+        **kwargs: object,
+    ) -> Callable[..., TensorLike]:
+        expression_builds.append(equation)
+        return original_contract_expression(equation, *shapes, **kwargs)
+
+    def run_native_matmul(_left: TensorLike, _right: TensorLike) -> TensorLike:
+        native_matmul_calls.append(None)
+        raise AssertionError("non-matmul equation reached native matmul")
+
+    einsum_step_impl._cached_contract_expression.cache_clear()
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_is_binary_matmul_equation",
+        check_admission,
+    )
+    monkeypatch.setattr(
+        einsum_step_impl.opt_einsum,
+        "contract_expression",
+        build_expression,
+    )
+    monkeypatch.setattr(np, "matmul", run_native_matmul)
+
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4 * 5).reshape(3, 4, 5)
+    expected = np.einsum("ij,jkl->ikl", left, right)
+
+    first = _single_tensor_output(op(left, right))
+    second = _single_tensor_output(op(left, right))
+
+    np.testing.assert_array_equal(first, expected)
+    np.testing.assert_array_equal(second, expected)
+    assert native_matmul_calls == []
+    assert len(admission_checks) == 1
+    assert len(expression_builds) == 1
+
+
+@pytest.mark.parametrize(
+    ("equation", "expected"),
+    (
+        ("k,kn->n", True),
+        ("mk,kn->mn", True),
+        ("bmk,kn->bmn", True),
+        (" bmk, kn -> bmn ", True),
+        ("mk,bkn->bmn", False),
+        ("bmk,bkn->bmn", False),
+        ("mk,k->m", False),
+        ("ij,jkl->ikl", False),
+        ("mk,kn->nm", False),
+        ("mk,kn->mkn", False),
+        ("mm,mn->mn", False),
+        ("mk,kk->mk", False),
+        ("mk,kn", False),
+        ("mk,kn,np->mp", False),
+        ("i.,.j->ij", False),
+        ("ij,jk- >ik", False),
+        ("i\tj,jk->ik", False),
+        ("iα,αj->ij", False),
+        ("i_,_j->ij", False),
+    ),
+)
+def test_binary_matmul_admission_requires_proven_equation_form(
+    equation: str,
+    expected: bool,
+) -> None:
+    assert einsum_step_impl._is_binary_matmul_equation(equation) is expected
 
 
 @pytest.mark.parametrize(
@@ -365,26 +527,35 @@ def test_atomic_contract_equivalent_numpy_ops_prefer_native_matmul_path(
 
 
 @pytest.mark.skipif(torch is None, reason="requires torch")
-def test_contract_matrix_multiply_torch_uses_native_einsum_path(
+def test_contract_matrix_multiply_torch_uses_native_matmul_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    i, k, j = axes("i", "k", "j")
+    i, k, j = axes("torch_native_i", "torch_native_k", "torch_native_j")
     op = contract((ax[i, k], ax[k, j]), ax[i, j])
 
-    monkeypatch.setattr(
-        einsum_step_module.opt_einsum,
-        "contract",
-        _explode_opt_einsum_contract,
-    )
-
     assert torch is not None
+    native_matmul = torch.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+        matmul_calls.append(None)
+        return native_matmul(left, right)
+
+    monkeypatch.setattr(
+        einsum_step_impl,
+        "_cached_contract_expression",
+        _explode_cached_contract_expression,
+    )
+    monkeypatch.setattr(torch, "matmul", record_matmul)
+
     left = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3)
     right = torch.arange(3 * 4, dtype=torch.float32).reshape(3, 4)
     result = _single_tensor_output(op(left, right))
     assert isinstance(result, torch.Tensor)
 
-    expected = left @ right
+    expected = native_matmul(left, right)
     assert torch.equal(result, expected)
+    assert len(matmul_calls) == 1
 
 
 @pytest.mark.skipif(torch is None, reason="requires torch")

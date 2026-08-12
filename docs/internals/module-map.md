@@ -98,6 +98,52 @@ steps still own primitive specialization/execution.
   contract. Step-consumed runtime context and primitive scoring helpers
   live here, not in `plans/`.
 
+### Constructing einsum runtime programs
+
+`einf.steps` exposes low-level pipeline types for integrations that construct
+steps directly. Symbolic and runtime programs carry different facts:
+
+- `EinsumSymbolicProgram.allow_native_matmul` records whether lowering may use
+  the optimization.
+- `EinsumRuntimeProgram.native_matmul_equations` contains only resolved
+  equations already proven equivalent to native `matmul`.
+
+The supported proof is intentionally narrow. An admitted equation uses only
+explicit ASCII letter labels, contains no repeated label within either input or
+the output, has a rank-2 right operand, contracts the left operand's final label
+with the right operand's first label, and emits the left prefix followed by the
+right operand's final label.
+
+Code migrating from the former runtime `allow_native_matmul=True` field must not
+admit every equation automatically. Use an empty set when the caller has no
+independent proof:
+
+```python
+from einf.steps.einsum import EinsumRuntimeProgram
+
+runtime_program = EinsumRuntimeProgram(
+    equations=equations,
+    chain_order=chain_order,
+    carrier_index=carrier_index,
+    native_matmul_equations=frozenset(),
+)
+```
+
+If the caller can prove that an equation matches the native route, it may
+include that exact resolved equation:
+
+```python
+runtime_program = EinsumRuntimeProgram(
+    equations=("ij,jk->ik",),
+    chain_order=(),
+    carrier_index=None,
+    native_matmul_equations=frozenset({"ij,jk->ik"}),
+)
+```
+
+Construction rejects admissions that are absent from `equations` or do not
+match the supported native-matmul grammar.
+
 ## Static analysis
 
 - **`analysis/`** — an independent tree for static DSL analysis.

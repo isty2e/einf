@@ -27,6 +27,118 @@ _EXPECTED_FALLBACK_EVENTS = {
 }
 
 
+def test_runtime_program_rejects_unresolved_native_matmul_admission() -> None:
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must belong to the runtime equations",
+    ):
+        EinsumRuntimeProgram(
+            equations=("ij,jk->ik",),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({"ik,kj->ij"}),
+        )
+
+
+def test_runtime_program_rejects_invalid_native_matmul_admission() -> None:
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must be semantically matmul-shaped",
+    ):
+        EinsumRuntimeProgram(
+            equations=("ij,jkl->ikl",),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({"ij,jkl->ikl"}),
+        )
+
+
+@pytest.mark.parametrize("malformed_equation", ("i.,.j->ij", "ij,jk- >ik"))
+def test_runtime_program_rejects_malformed_native_matmul_admission(
+    malformed_equation: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="native matmul admissions must be semantically matmul-shaped",
+    ):
+        EinsumRuntimeProgram(
+            equations=(malformed_equation,),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset({malformed_equation}),
+        )
+
+
+def test_runtime_step_does_not_route_malformed_equation_to_matmul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malformed_equation = "i.,.j->ij"
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+        matmul_calls.append(None)
+        return native_matmul(lhs, rhs)
+
+    monkeypatch.setattr(np, "matmul", record_matmul)
+    runtime_step = EinsumRuntimeStep(
+        name="einsum",
+        input_arity=2,
+        output_arity=1,
+        program=EinsumRuntimeProgram(
+            equations=(malformed_equation,),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset(),
+        ),
+        backend_profile=profile,
+    )
+
+    with pytest.raises(ExecutionError) as error:
+        runtime_step.run((left, right))
+
+    assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED
+    assert matmul_calls == []
+
+
+def test_runtime_step_does_not_route_split_arrow_equation_to_matmul(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    split_arrow_equation = "ij,jk- >ik"
+    left = np.arange(2 * 3).reshape(2, 3)
+    right = np.arange(3 * 4).reshape(3, 4)
+    profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
+    native_matmul = np.matmul
+    matmul_calls: list[None] = []
+
+    def record_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+        matmul_calls.append(None)
+        return native_matmul(lhs, rhs)
+
+    monkeypatch.setattr(np, "matmul", record_matmul)
+    runtime_step = EinsumRuntimeStep(
+        name="einsum",
+        input_arity=2,
+        output_arity=1,
+        program=EinsumRuntimeProgram(
+            equations=(split_arrow_equation,),
+            chain_order=(),
+            carrier_index=None,
+            native_matmul_equations=frozenset(),
+        ),
+        backend_profile=profile,
+    )
+
+    with pytest.raises(ExecutionError) as error:
+        runtime_step.run((left, right))
+
+    assert error.value.code == ErrorCode.INCONSISTENT_DIMS
+    assert matmul_calls == []
+
+
 def _build_runtime_steps(
     *,
     executor: EinsumEquationExecutor,
@@ -42,7 +154,9 @@ def _build_runtime_steps(
             equations=(_EINSUM_EQUATION,),
             chain_order=(1,) if chain_mode else (),
             carrier_index=0 if chain_mode else None,
-            allow_native_matmul=allow_native_matmul,
+            native_matmul_equations=(
+                frozenset({_EINSUM_EQUATION}) if allow_native_matmul else frozenset()
+            ),
         ),
         backend_profile=executor.profile,
         executor=executor,

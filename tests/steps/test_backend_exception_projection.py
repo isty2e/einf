@@ -898,7 +898,7 @@ def test_final_einsum_route_preserves_structured_error(
             equation="i->i",
             operands=(np.zeros((2,)),),
             chain_mode=False,
-            allow_native_matmul=False,
+            native_matmul_admitted=False,
         )
 
     assert error.value is original
@@ -925,7 +925,7 @@ def test_final_einsum_route_projects_unexpected_backend_failure(
             equation="i->i",
             operands=(np.zeros((2,)),),
             chain_mode=False,
-            allow_native_matmul=False,
+            native_matmul_admitted=False,
         )
 
     assert error.value.code == ErrorCode.BACKEND_EXECUTION_FAILED.value
@@ -950,7 +950,7 @@ def test_portable_einsum_rejects_wrong_semantic_output_shape() -> None:
             equation="ij,jk->ik",
             operands=(np.zeros((2, 3)), np.zeros((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -985,7 +985,7 @@ def test_numpy_family_einsum_validates_namespace_fallback_output() -> None:
             equation="ij,jk->ik",
             operands=(NumpyFamilyTensor((2, 3)), NumpyFamilyTensor((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -1020,7 +1020,7 @@ def test_numpy_family_einsum_rejects_foreign_namespace_output() -> None:
             equation="ij,jk->ik",
             operands=(NumpyFamilyTensor((2, 3)), NumpyFamilyTensor((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
@@ -1044,7 +1044,7 @@ def test_raw_native_profile_accepts_its_array_api_compat_namespace() -> None:
         equation="ij,ij->ij",
         operands=(Operand(), Operand()),
         chain_mode=False,
-        allow_native_matmul=True,
+        native_matmul_admitted=False,
     )
 
     assert result is output
@@ -1070,7 +1070,7 @@ def test_raw_torch_profile_accepts_its_array_api_compat_namespace() -> None:
         equation="ij,ij->ij",
         operands=(Operand(), Operand()),
         chain_mode=False,
-        allow_native_matmul=True,
+        native_matmul_admitted=False,
     )
 
     assert result is output
@@ -1097,7 +1097,7 @@ def test_exact_native_einsum_skips_semantic_shape_validation(
         equation="ij,jk->ik",
         operands=(np.zeros((2, 3)), np.zeros((3, 4))),
         chain_mode=False,
-        allow_native_matmul=True,
+        native_matmul_admitted=True,
     )
 
     assert output.shape == (2, 4)
@@ -1116,7 +1116,7 @@ def test_injected_native_einsum_callable_validates_output_shape() -> None:
             equation="ij,jk->ik",
             operands=(np.zeros((2, 3)), np.zeros((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -1135,7 +1135,7 @@ def test_injected_native_module_einsum_validates_output_shape() -> None:
             equation="i->i",
             operands=(np.zeros((2,)),),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=False,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -1183,7 +1183,7 @@ def test_torch_override_mode_disables_native_validation_bypass() -> None:
             equation="ij,jk->ik",
             operands=operands,
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -1228,7 +1228,7 @@ def test_namespace_einsum_fallback_runs_once_and_validates_opt_output(
             equation="ij,jk->ik",
             operands=(np.zeros((2, 3)), np.zeros((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value
@@ -1259,7 +1259,7 @@ def test_einsum_builder_deduplicates_identical_module_and_namespace_routes(
         equation="i->i",
         operands=(operand,),
         chain_mode=False,
-        allow_native_matmul=False,
+        native_matmul_admitted=False,
     )
 
     assert executor.native_module_einsum is unavailable_einsum
@@ -1287,7 +1287,7 @@ def test_final_opt_einsum_route_validates_output_shape(
             equation="ij,jk->ik",
             operands=(np.zeros((2, 3)), np.zeros((3, 4))),
             chain_mode=False,
-            allow_native_matmul=True,
+            native_matmul_admitted=True,
         )
 
     assert error.value.code == ErrorCode.INCONSISTENT_DIMS.value

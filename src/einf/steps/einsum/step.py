@@ -44,6 +44,8 @@ def _parse_binary_einsum_equation(
     /,
 ) -> tuple[str, str, str] | None:
     """Parse one binary einsum equation into input/output subscripts."""
+    if equation.count("->") != 1:
+        return None
     normalized = equation.replace(" ", "")
     left_right = normalized.split("->")
     if len(left_right) != 2:
@@ -55,15 +57,13 @@ def _parse_binary_einsum_equation(
     lhs_subscript, rhs_subscript = input_subscripts
     if not lhs_subscript or not rhs_subscript or not output_subscript:
         return None
+    if any(
+        symbol not in _EINSUM_SYMBOLS
+        for subscript in (lhs_subscript, rhs_subscript, output_subscript)
+        for symbol in subscript
+    ):
+        return None
     return lhs_subscript, rhs_subscript, output_subscript
-
-
-def _prefer_native_matmul(
-    *,
-    operands: tuple[TensorLike, ...],
-) -> bool:
-    """Return whether direct matmul is preferred over einsum for one binary call."""
-    return len(operands) == 2
 
 
 def _operand_shapes_key(
@@ -102,7 +102,7 @@ def _is_binary_matmul_equation(equation: str, /) -> bool:
     if parsed is None:
         return False
     lhs_subscript, rhs_subscript, output_subscript = parsed
-    if len(lhs_subscript) < 1 or len(rhs_subscript) < 2:
+    if len(lhs_subscript) < 1 or len(rhs_subscript) != 2:
         return False
     if (
         len(set(lhs_subscript)) != len(lhs_subscript)
@@ -142,12 +142,43 @@ class EinsumSymbolicProgram(SymbolicProgram):
 
 @dataclass(frozen=True, slots=True)
 class EinsumRuntimeProgram(RuntimeProgram):
-    """Runtime einsum program with fully resolved equation set."""
+    """Runtime equations with specialization-proven matmul admissions.
+
+    Parameters
+    ----------
+    equations : tuple[str, ...]
+        Fully resolved einsum equations.
+    chain_order : tuple[int, ...]
+        Operand indices consumed by a chain program.
+    carrier_index : int or None
+        Initial carrier operand for a chain program.
+    native_matmul_equations : frozenset[str]
+        Equations proven equivalent to the native matmul primitive.
+
+    Raises
+    ------
+    ValueError
+        A native matmul admission is absent from ``equations`` or is not
+        semantically matmul-shaped.
+    """
 
     equations: tuple[str, ...]
     chain_order: tuple[int, ...]
     carrier_index: int | None
-    allow_native_matmul: bool
+    native_matmul_equations: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not self.native_matmul_equations.issubset(self.equations):
+            raise ValueError(
+                "native matmul admissions must belong to the runtime equations"
+            )
+        if any(
+            not _is_binary_matmul_equation(equation)
+            for equation in self.native_matmul_equations
+        ):
+            raise ValueError(
+                "native matmul admissions must be semantically matmul-shaped"
+            )
 
 
 def build_einsum_symbolic_program_from_equations(
@@ -411,11 +442,20 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
         /,
     ) -> RuntimeStep:
         equations = self._resolved_equations(input_shapes=context.input_shapes)
+        native_matmul_equations = (
+            frozenset(
+                equation
+                for equation in equations
+                if _is_binary_matmul_equation(equation)
+            )
+            if self.program.allow_native_matmul
+            else frozenset()
+        )
         runtime_program = EinsumRuntimeProgram(
             equations=equations,
             chain_order=self.program.chain_order,
             carrier_index=self.program.carrier_index,
-            allow_native_matmul=self.program.allow_native_matmul,
+            native_matmul_equations=native_matmul_equations,
         )
         backend_profile = context.backend_profile
         executor = (
@@ -514,7 +554,7 @@ class EinsumEquationExecutor:
         equation: str,
         operands: tuple[TensorLike, ...],
         chain_mode: bool,
-        allow_native_matmul: bool,
+        native_matmul_admitted: bool,
     ) -> TensorLike:
         """Execute one equation with native-fallback dispatch and error mapping."""
         native_operand_family = self._trusted_native_operand_family(operands)
@@ -531,7 +571,7 @@ class EinsumEquationExecutor:
         if operand_shapes is not None:
             should_use_cached_expression = False
             if (len(operands) > 2 and not chain_mode) or (
-                len(operands) == 2 and not allow_native_matmul
+                len(operands) == 2 and not native_matmul_admitted
             ):
                 should_use_cached_expression = True
             if should_use_cached_expression and self.opt_einsum_supported:
@@ -555,11 +595,9 @@ class EinsumEquationExecutor:
 
         if (
             native_operand_family is not None
-            and allow_native_matmul
+            and native_matmul_admitted
             and len(operands) == 2
             and self.native_module_matmul is not None
-            and _is_binary_matmul_equation(equation)
-            and _prefer_native_matmul(operands=operands)
         ):
             try:
                 output = self.native_module_matmul(
@@ -908,7 +946,7 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
                     equations[0],
                     tensors,
                     False,
-                    self.program.allow_native_matmul,
+                    equations[0] in self.program.native_matmul_equations,
                 ),
             )
 
@@ -919,7 +957,7 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
                     equation,
                     tensors,
                     False,
-                    self.program.allow_native_matmul,
+                    equation in self.program.native_matmul_equations,
                 )
             )
         return tuple(outputs)
@@ -962,7 +1000,7 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
                 equation,
                 (carrier_tensor, tensors[next_index]),
                 True,
-                self.program.allow_native_matmul,
+                equation in self.program.native_matmul_equations,
             )
 
         return (carrier_tensor,)
