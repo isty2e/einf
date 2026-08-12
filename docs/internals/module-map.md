@@ -16,10 +16,19 @@ directory and sketches the dependency order.
 
 ## Axis and shape foundation
 
-- **`axis/`** — axis primitives. `Axis`, `AxisPack`, `AxisTerm`,
-  `AxisSide`, the `ax[...]` factory, canonical scalar algebra, and the
-  variadic-pack matcher. No other einf module is a prerequisite. All
-  higher layers use these as the vocabulary for op definitions.
+- **`axis/`** — axis primitives and their structural split.
+  `AxisTermBase` defines behavior shared by scalar terms and variadic packs;
+  `ScalarAxisTermBase` adds scalar evaluation for `Axis`, `AxisExpr`, and
+  `AxisInt`. The package also owns `AxisPack`, `AxisSide`, the `ax[...]`
+  factory, canonical scalar algebra, and variadic-pack matching. No other einf
+  module is a prerequisite. Higher layers use these types to define
+  operations.
+
+  `AxisTermBase` and `AxisPack` are structural-only. The `evaluate()`,
+  `max_literal()`, and `evaluate_bounds()` methods belong to
+  `ScalarAxisTermBase`. Code that receives an `AxisTermBase` must import
+  `ScalarAxisTermBase` from `einf.axis` and narrow the term with
+  `isinstance(term, ScalarAxisTermBase)` before using scalar algebra.
 - **`shape/`** — compiled shape nodes and fast-path shape evaluators.
   Used by solver and plan specialization to go from symbolic axis
   expressions to concrete sizes at call time.

@@ -96,26 +96,6 @@ class AxisPack(AxisTermBase):
         """Return axis-pack names referenced by this term."""
         return {self.name}
 
-    def evaluate(self, axis_sizes: dict[str, int]) -> int | None:
-        """Evaluate this term under scalar-axis assignments."""
-        _ = axis_sizes
-        return None
-
-    def max_literal(self) -> int:
-        """Return max integer literal contained in this term."""
-        return 0
-
-    def evaluate_bounds(
-        self,
-        *,
-        current: dict[str, int],
-        variable_bounds: dict[str, int],
-    ) -> tuple[int, int]:
-        """Return min/max attainable values under partial assignments."""
-        _ = current
-        _ = variable_bounds
-        raise TypeError("axis packs are not valid in scalar expressions")
-
 
 @dataclass(frozen=True, slots=True)
 class AxisExpr(ScalarAxisTermBase):

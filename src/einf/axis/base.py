@@ -7,7 +7,7 @@ except ImportError:  # pragma: no cover
 
 
 class AxisTermBase(ABC):
-    """Abstract base for normalized axis terms."""
+    """Abstract base for structural axis terms."""
 
     @abstractmethod
     def to_dsl(self) -> str:
@@ -25,13 +25,34 @@ class AxisTermBase(ABC):
     def pack_names(self) -> set[str]:
         """Return axis-pack names referenced by this term."""
 
+
+class ScalarAxisTermBase(AxisTermBase):
+    """Abstract base for scalar axis expressions."""
+
     @abstractmethod
     def evaluate(self, axis_sizes: dict[str, int]) -> int | None:
-        """Evaluate this term under scalar-axis assignments."""
+        """Evaluate the term under scalar-axis assignments.
+
+        Parameters
+        ----------
+        axis_sizes
+            Resolved sizes keyed by axis name.
+
+        Returns
+        -------
+        int | None
+            The evaluated size, or ``None`` if an axis remains unresolved.
+        """
 
     @abstractmethod
     def max_literal(self) -> int:
-        """Return max integer literal contained in this term."""
+        """Return the largest integer literal in the term.
+
+        Returns
+        -------
+        int
+            The largest literal, or zero when the term has no literals.
+        """
 
     @abstractmethod
     def evaluate_bounds(
@@ -40,11 +61,20 @@ class AxisTermBase(ABC):
         current: dict[str, int],
         variable_bounds: dict[str, int],
     ) -> tuple[int, int]:
-        """Return min/max attainable values under partial assignments."""
+        """Return attainable bounds under partial assignments.
 
+        Parameters
+        ----------
+        current
+            Resolved sizes keyed by axis name.
+        variable_bounds
+            Maximum sizes for unresolved axes.
 
-class ScalarAxisTermBase(AxisTermBase):
-    """Abstract base for scalar (non-pack) axis terms."""
+        Returns
+        -------
+        tuple[int, int]
+            The minimum and maximum attainable values.
+        """
 
     @classmethod
     def coerce(cls, term: AxisTermBase | int) -> Self:
