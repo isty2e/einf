@@ -673,30 +673,6 @@ def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> N
     assert _CountingSymbolicStep.calls["cache-hit"] == 2
 
 
-def test_abstract_plan_rejects_candidate_from_another_source() -> None:
-    lhs, rhs = _unary_side()
-    source = _source("rearrange", lhs, rhs)
-    foreign_lhs = AxisSide.from_spec((lhs[0], lhs[0]), side_name="lhs")
-    foreign_source = _source("rearrange", foreign_lhs, rhs)
-    foreign = SymbolicPlan(
-        source=foreign_source,
-        kind="foreign",
-        steps=(
-            _IdentitySymbolicStep(
-                name="foreign",
-                input_arity=2,
-                output_arity=1,
-            ),
-        ),
-    )
-
-    with pytest.raises(ValueError, match="symbolic plan source"):
-        AbstractPlan(
-            source=source,
-            lowering=StaticLoweringProgram(candidates=(foreign,)),
-        )
-
-
 def test_select_symbolic_plan_prefers_lower_score() -> None:
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)

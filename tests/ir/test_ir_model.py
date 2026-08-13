@@ -130,7 +130,39 @@ def test_default_lowering_compiles_independently_of_observability_trace() -> Non
     assert alternate_trace_candidates[0].source == source
 
 
-def test_abstract_plan_rejects_ir_from_another_source() -> None:
+def test_abstract_plan_accepts_alternate_trace_for_the_same_source() -> None:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
+    source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    alternate_trace_ir = IRProgram(
+        source=source,
+        trace=(LoweringTraceStage.GATHER,),
+    )
+    candidate = SymbolicPlan(
+        source=source,
+        kind="route",
+        steps=(),
+    )
+
+    abstract_plan = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(
+            candidates=(candidate,),
+            ir=alternate_trace_ir,
+        ),
+    )
+
+    assert abstract_plan.ir_program is alternate_trace_ir
+    assert abstract_plan.symbolic_candidates == (candidate,)
+
+
+def test_abstract_plan_rejects_ir_with_other_explicit_sizes() -> None:
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
@@ -251,6 +283,35 @@ def test_abstract_plan_rejects_candidate_from_another_operation() -> None:
         source=_source(
             "einop",
             lhs,
+            rhs,
+            explicit_sizes_items=(("d", 2),),
+        ),
+        kind="route",
+        steps=(),
+    )
+
+    with pytest.raises(ValueError, match="symbolic plan source"):
+        AbstractPlan(
+            source=source,
+            lowering=StaticLoweringProgram(candidates=(foreign_candidate,)),
+        )
+
+
+def test_abstract_plan_rejects_candidate_from_another_axis_signature() -> None:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
+    source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    foreign_lhs = AxisSide.from_spec(ax[n, b], side_name="lhs")
+    foreign_candidate = SymbolicPlan(
+        source=_source(
+            "repeat",
+            foreign_lhs,
             rhs,
             explicit_sizes_items=(("d", 2),),
         ),
