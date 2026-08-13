@@ -1,5 +1,3 @@
-from collections.abc import Iterator
-
 import pytest
 
 from einf import ErrorCode, ValidationError, ax, axes, einop
@@ -250,24 +248,60 @@ def test_chain_search_shares_candidate_budget_across_carriers(
     }
 
 
-class _CountingAxisSet(set[AxisTermBase]):
-    iterations: int
+class _MembershipProbeAxis(AxisTermBase):
+    def __init__(
+        self,
+        *,
+        token: str,
+        hash_value: int,
+        comparisons: list[int],
+    ) -> None:
+        self._token = token
+        self._hash_value = hash_value
+        self._comparisons = comparisons
 
-    def __init__(self, terms: tuple[AxisTermBase, ...]) -> None:
-        super().__init__(terms)
-        self.iterations = 0
+    def __hash__(self) -> int:
+        return self._hash_value
 
-    def __iter__(self) -> Iterator[AxisTermBase]:
-        self.iterations += 1
-        return super().__iter__()
+    def __eq__(self, other: object) -> bool:
+        self._comparisons[0] += 1
+        return self is other
+
+    def to_dsl(self) -> str:
+        return self._token
+
+    def stable_token(self) -> str:
+        return f"probe:{self._token}"
+
+    def axis_names(self) -> set[str]:
+        return set()
+
+    def pack_names(self) -> set[str]:
+        return set()
 
 
-def test_subset_scoring_does_not_rescan_unrelated_axes_per_candidate() -> None:
+def test_subset_scoring_does_not_repeat_membership_work_per_candidate() -> None:
     ordered_terms = AxisTerms(axes(*(f"ordered_{index}" for index in range(10))))
-    target_terms = _CountingAxisSet((ordered_terms[0], ordered_terms[1]))
-    remaining_terms = _CountingAxisSet(
-        axes(*(f"unrelated_{index}" for index in range(60)))
-    )
+    target_comparisons = [0]
+    remaining_comparisons = [0]
+    target_terms: set[AxisTermBase] = {
+        _MembershipProbeAxis(
+            token=f"target_{index}",
+            hash_value=hash(ordered_terms[index % len(ordered_terms)]),
+            comparisons=target_comparisons,
+        )
+        for index in range(30)
+    }
+    remaining_terms: set[AxisTermBase] = {
+        _MembershipProbeAxis(
+            token=f"remaining_{index}",
+            hash_value=hash(ordered_terms[index % len(ordered_terms)]),
+            comparisons=remaining_comparisons,
+        )
+        for index in range(60)
+    }
+    target_comparisons[0] = 0
+    remaining_comparisons[0] = 0
 
     candidates = all_subset_axis_lists(
         ordered_terms=ordered_terms,
@@ -276,8 +310,8 @@ def test_subset_scoring_does_not_rescan_unrelated_axes_per_candidate() -> None:
     )
 
     assert len(candidates) == 1_024
-    assert target_terms.iterations <= 1
-    assert remaining_terms.iterations <= 1
+    assert target_comparisons[0] <= len(ordered_terms) * len(target_terms)
+    assert remaining_comparisons[0] <= len(ordered_terms) * len(remaining_terms)
 
 
 def test_subset_bitmask_scoring_preserves_candidate_order() -> None:
@@ -298,4 +332,29 @@ def test_subset_bitmask_scoring_preserves_candidate_order() -> None:
         ax[b, c],
         ax[()],
         ax[c],
+    )
+
+
+def test_subset_scoring_uses_stable_tokens_to_break_score_ties() -> None:
+    earlier, middle, later = axes(
+        "subset_tie_a",
+        "subset_tie_m",
+        "subset_tie_z",
+    )
+
+    candidates = all_subset_axis_lists(
+        ordered_terms=AxisTerms((later, middle, earlier)),
+        target_terms=set(),
+        remaining_terms=set(),
+    )
+
+    assert candidates == (
+        ax[()],
+        ax[earlier],
+        ax[middle],
+        ax[later],
+        ax[middle, earlier],
+        ax[later, earlier],
+        ax[later, middle],
+        ax[later, middle, earlier],
     )
