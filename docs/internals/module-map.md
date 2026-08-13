@@ -107,15 +107,74 @@ steps still own primitive specialization/execution.
   contract. Step-consumed runtime context and primitive scoring helpers
   live here, not in `plans/`.
 
-### Constructing einsum runtime programs
+### Constructing einsum programs
 
 `einf.steps` exposes low-level pipeline types for integrations that construct
-steps directly. Symbolic and runtime programs carry different facts:
+steps directly. The symbolic variants keep each construction form separate:
 
-- `EinsumSymbolicProgram.allow_native_matmul` records whether lowering may use
-  the optimization.
-- `EinsumRuntimeProgram.native_matmul_equations` contains only resolved
-  equations already proven equivalent to native `matmul`.
+- `DirectEinsumSymbolicProgram` owns one equation per output. Every equation
+  must consume the same number of inputs.
+- `ChainEinsumSymbolicProgram` owns an ordered contraction chain and its
+  carrier input. Each chain edge is a binary equation.
+- `SideEinsumSymbolicProgram` owns axis sides and resolves its equation from
+  runtime input shapes when necessary.
+- All three variants inherit from `EinsumSymbolicProgram` and record whether
+  lowering may use native `matmul`.
+
+Each variant derives its input and output arity from its canonical fields.
+`EinsumSymbolicStep` therefore accepts only the program and an optional name;
+it does not accept separate arity values.
+
+`EinsumSymbolicProgram` is abstract. Code that previously instantiated it
+directly must construct the matching concrete variant or use
+`build_einsum_symbolic_program_from_equations()` or
+`build_einsum_symbolic_program_from_sides()`. The equation builder returns a
+direct or chain variant after checking the caller's declared arities. The side
+builder returns a side variant.
+
+Import the concrete variants from `einf.steps.einsum` and map the former field
+combinations to their matching constructor:
+
+```python
+from einf.steps.einsum import (
+    ChainEinsumSymbolicProgram,
+    DirectEinsumSymbolicProgram,
+    SideEinsumSymbolicProgram,
+)
+
+direct_program = DirectEinsumSymbolicProgram(
+    equations=("ab,bc->ac",),
+    allow_native_matmul=True,
+)
+chain_program = ChainEinsumSymbolicProgram(
+    equations=("ab,bc->ac", "ac,cd->ad"),
+    chain_order=(1, 2),
+    carrier_index=0,
+    allow_native_matmul=True,
+)
+side_program = SideEinsumSymbolicProgram(
+    lhs=lhs,
+    rhs=rhs,
+    explicit_sizes_items=explicit_sizes_items,
+    allow_native_matmul=True,
+)
+```
+
+Use the direct variant for equations without chain metadata, the chain variant
+for equations with `chain_order` and `carrier_index`, and the side variant for
+`lhs`, `rhs`, and explicit sizes. The variants derive their arity, so the old
+`input_arity` and `output_arity` constructor arguments are omitted.
+
+`EinsumSymbolicProgram` itself is no longer a dataclass. Calls such as
+`dataclasses.fields(EinsumSymbolicProgram)` and positional pattern matching
+against the base class therefore stop working. The concrete variants remain
+dataclasses, but each has its own field layout. Serializers and introspection
+code that assumed the former shared layout must dispatch on the concrete
+variant.
+
+The runtime projection carries different facts.
+`EinsumRuntimeProgram.native_matmul_equations` contains only resolved equations
+already proven equivalent to native `matmul`.
 
 The supported proof is intentionally narrow. An admitted equation uses only
 explicit ASCII letter labels, contains no repeated label within either input or

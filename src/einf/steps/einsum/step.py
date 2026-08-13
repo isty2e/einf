@@ -1,5 +1,6 @@
+from abc import abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal, cast
 
@@ -37,6 +38,11 @@ from .equation import build_contract_equation
 
 _EINSUM_SYMBOLS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CONTRACT_EXPRESSION_CACHE_MAXSIZE = 2_048
+
+
+def _equation_operand_arity(equation: str, /) -> int:
+    inputs = equation.split("->", maxsplit=1)[0]
+    return inputs.count(",") + 1
 
 
 def _parse_binary_einsum_equation(
@@ -125,19 +131,231 @@ def _is_binary_matmul_equation(equation: str, /) -> bool:
     return output_subscript == expected_output
 
 
-@dataclass(frozen=True, slots=True)
 class EinsumSymbolicProgram(SymbolicProgram):
-    """Precompiled einsum symbolic program."""
+    """Abstract base for closed einsum symbolic program variants."""
 
     input_arity: int
     output_arity: int
+    allow_native_matmul: bool
+
+    @abstractmethod
+    def _resolve_equations(
+        self,
+        *,
+        input_shapes: tuple[tuple[int, ...], ...],
+    ) -> tuple[str, ...]:
+        """Resolve equations for one input-shape set."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _preview_equations(self) -> tuple[str, ...]:
+        """Return equations available without runtime shapes."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _runtime_chain(self) -> tuple[tuple[int, ...], int] | None:
+        """Return runtime chain metadata when this is a chain variant."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _specialization_depends_on_input_shapes(self) -> bool:
+        """Return whether equation resolution needs runtime input shapes."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class DirectEinsumSymbolicProgram(EinsumSymbolicProgram):
+    """Equation-driven program that computes outputs directly.
+
+    Parameters
+    ----------
+    equations : tuple[str, ...]
+        One equation for each output tensor.
+    allow_native_matmul : bool
+        Whether matmul-shaped equations may use the native matmul route.
+
+    Raises
+    ------
+    ValueError
+        The equation list is empty or its equations consume different numbers
+        of operands.
+    """
+
+    equations: tuple[str, ...]
+    allow_native_matmul: bool = False
+    input_arity: int = field(init=False)
+    output_arity: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.equations:
+            raise ValueError("direct einsum symbolic program requires equations")
+        input_arity = _equation_operand_arity(self.equations[0])
+        if any(
+            _equation_operand_arity(equation) != input_arity
+            for equation in self.equations[1:]
+        ):
+            raise ValueError(
+                "direct einsum symbolic program equations must consume "
+                "the same input arity"
+            )
+        object.__setattr__(self, "input_arity", input_arity)
+        object.__setattr__(self, "output_arity", len(self.equations))
+
+    def _resolve_equations(
+        self,
+        *,
+        input_shapes: tuple[tuple[int, ...], ...],
+    ) -> tuple[str, ...]:
+        _ = input_shapes
+        return self.equations
+
+    def _preview_equations(self) -> tuple[str, ...]:
+        return self.equations
+
+    def _runtime_chain(self) -> tuple[tuple[int, ...], int] | None:
+        return None
+
+    def _specialization_depends_on_input_shapes(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class ChainEinsumSymbolicProgram(EinsumSymbolicProgram):
+    """Equation-driven program that contracts inputs through one carrier.
+
+    Parameters
+    ----------
+    equations : tuple[str, ...]
+        One binary equation for each chain edge.
+    chain_order : tuple[int, ...]
+        Non-carrier input indices in execution order.
+    carrier_index : int
+        Input index used as the initial carrier.
+    allow_native_matmul : bool
+        Whether matmul-shaped equations may use the native matmul route.
+
+    Raises
+    ------
+    ValueError
+        The chain is empty, has a non-binary equation or inconsistent edge
+        metadata, or does not consume every non-carrier input exactly once.
+    """
+
     equations: tuple[str, ...]
     chain_order: tuple[int, ...]
-    carrier_index: int | None
-    lhs: AxisSide | None
-    rhs: AxisSide | None
+    carrier_index: int
+    allow_native_matmul: bool = False
+    input_arity: int = field(init=False)
+    output_arity: int = field(init=False, default=1)
+
+    def __post_init__(self) -> None:
+        if not self.equations:
+            raise ValueError("chain einsum symbolic program requires equations")
+        if not self.chain_order:
+            raise ValueError("chain einsum symbolic program requires chain order")
+        if len(self.chain_order) != len(self.equations):
+            raise ValueError(
+                "chain einsum symbolic program requires one equation per chain edge"
+            )
+        if any(_equation_operand_arity(equation) != 2 for equation in self.equations):
+            raise ValueError(
+                "chain einsum symbolic program requires binary edge equations"
+            )
+        input_arity = len(self.chain_order) + 1
+        if self.carrier_index < 0 or self.carrier_index >= input_arity:
+            raise ValueError("chain einsum symbolic program carrier is out of bounds")
+        expected_order = set(range(input_arity)) - {self.carrier_index}
+        if len(self.chain_order) != len(expected_order) or set(self.chain_order) != (
+            expected_order
+        ):
+            raise ValueError(
+                "chain einsum symbolic program must consume every non-carrier "
+                "input exactly once"
+            )
+        object.__setattr__(self, "input_arity", input_arity)
+
+    def _resolve_equations(
+        self,
+        *,
+        input_shapes: tuple[tuple[int, ...], ...],
+    ) -> tuple[str, ...]:
+        _ = input_shapes
+        return self.equations
+
+    def _preview_equations(self) -> tuple[str, ...]:
+        return self.equations
+
+    def _runtime_chain(self) -> tuple[tuple[int, ...], int] | None:
+        return self.chain_order, self.carrier_index
+
+    def _specialization_depends_on_input_shapes(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class SideEinsumSymbolicProgram(EinsumSymbolicProgram):
+    """Side-driven program whose equation may depend on runtime shapes.
+
+    Parameters
+    ----------
+    lhs : AxisSide
+        Input axis sides.
+    rhs : AxisSide
+        Single output axis side.
+    explicit_sizes_items : tuple[tuple[str, int], ...]
+        Explicit scalar-axis sizes used during equation resolution.
+    allow_native_matmul : bool
+        Whether a resolved matmul-shaped equation may use native matmul.
+
+    Raises
+    ------
+    ValueError
+        The program does not have exactly one output side.
+    """
+
+    lhs: AxisSide
+    rhs: AxisSide
     explicit_sizes_items: tuple[tuple[str, int], ...]
-    allow_native_matmul: bool
+    allow_native_matmul: bool = False
+    input_arity: int = field(init=False)
+    output_arity: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        if len(self.rhs) != 1:
+            raise ValueError("side-based einsum symbolic program must be N->1")
+        object.__setattr__(self, "input_arity", len(self.lhs))
+        object.__setattr__(self, "output_arity", len(self.rhs))
+
+    def _resolve_equations(
+        self,
+        *,
+        input_shapes: tuple[tuple[int, ...], ...],
+    ) -> tuple[str, ...]:
+        return (
+            _equation_from_sides(
+                lhs=self.lhs,
+                rhs=self.rhs,
+                explicit_sizes_items=self.explicit_sizes_items,
+                input_shapes=input_shapes,
+            ),
+        )
+
+    def _preview_equations(self) -> tuple[str, ...]:
+        try:
+            return (
+                build_contract_equation(
+                    input_axis_lists=self.lhs,
+                    output_axis_list=self.rhs[0],
+                ),
+            )
+        except ValidationError:
+            return ()
+
+    def _runtime_chain(self) -> tuple[tuple[int, ...], int] | None:
+        return None
+
+    def _specialization_depends_on_input_shapes(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,18 +409,31 @@ def build_einsum_symbolic_program_from_equations(
     allow_native_matmul: bool = False,
 ) -> EinsumSymbolicProgram:
     """Build one equation-driven einsum program."""
-    program = EinsumSymbolicProgram(
-        input_arity=input_arity,
-        output_arity=output_arity,
+    if chain_order:
+        if output_arity != 1:
+            raise ValueError("chain einsum symbolic step must be N->1")
+        if carrier_index is None:
+            raise ValueError("chain einsum symbolic step requires a carrier index")
+        program = ChainEinsumSymbolicProgram(
+            equations=equations,
+            chain_order=chain_order,
+            carrier_index=carrier_index,
+            allow_native_matmul=allow_native_matmul,
+        )
+        if program.input_arity != input_arity:
+            raise ValueError("chain einsum symbolic step input arity mismatch")
+        return program
+
+    if carrier_index is not None:
+        raise ValueError("direct einsum symbolic step cannot have a carrier index")
+    program = DirectEinsumSymbolicProgram(
         equations=equations,
-        chain_order=chain_order,
-        carrier_index=carrier_index,
-        lhs=None,
-        rhs=None,
-        explicit_sizes_items=(),
         allow_native_matmul=allow_native_matmul,
     )
-    _validate_einsum_program(program)
+    if program.input_arity != input_arity:
+        raise ValueError("direct einsum symbolic step input arity mismatch")
+    if program.output_arity != output_arity:
+        raise ValueError("direct einsum symbolic step output arity mismatch")
     return program
 
 
@@ -214,19 +445,12 @@ def build_einsum_symbolic_program_from_sides(
     allow_native_matmul: bool = False,
 ) -> EinsumSymbolicProgram:
     """Build one side-driven einsum program."""
-    program = EinsumSymbolicProgram(
-        input_arity=len(lhs),
-        output_arity=len(rhs),
-        equations=(),
-        chain_order=(),
-        carrier_index=None,
+    return SideEinsumSymbolicProgram(
         lhs=lhs,
         rhs=rhs,
         explicit_sizes_items=explicit_sizes_items,
         allow_native_matmul=allow_native_matmul,
     )
-    _validate_einsum_program(program)
-    return program
 
 
 def _build_equation_from_scalar_terms(
@@ -323,114 +547,30 @@ def _equation_from_sides(
     )
 
 
-def _validate_einsum_program(program: EinsumSymbolicProgram) -> None:
-    """Validate one einsum symbolic program."""
-    has_equations = len(program.equations) > 0
-    has_side_spec = program.lhs is not None or program.rhs is not None
-
-    if has_equations and has_side_spec:
-        raise ValueError(
-            "einsum symbolic step must define either equations or side spec"
-        )
-    if not has_equations and not has_side_spec:
-        raise ValueError("einsum symbolic step requires equations or side spec")
-
-    if has_equations:
-        if program.chain_order:
-            if program.output_arity != 1:
-                raise ValueError("chain einsum symbolic step must be N->1")
-            if len(program.chain_order) != len(program.equations):
-                raise ValueError(
-                    "chain einsum step requires one equation per chain edge"
-                )
-            if program.carrier_index is None:
-                raise ValueError("chain einsum step requires a carrier index")
-            if (
-                program.carrier_index < 0
-                or program.carrier_index >= program.input_arity
-            ):
-                raise ValueError("chain einsum step carrier index is out of bounds")
-            return
-
-        if program.carrier_index is not None:
-            raise ValueError("direct einsum symbolic step cannot have a carrier index")
-        if program.output_arity != len(program.equations):
-            raise ValueError(
-                "direct einsum symbolic step requires one equation per output"
-            )
-        return
-
-    if program.chain_order:
-        raise ValueError("side-based einsum symbolic step cannot be chain mode")
-    if program.carrier_index is not None:
-        raise ValueError("side-based einsum symbolic step cannot set carrier index")
-    if program.output_arity != 1:
-        raise ValueError("side-based einsum symbolic step must be N->1")
-
-    lhs = program.lhs
-    rhs = program.rhs
-    if lhs is None or rhs is None:
-        raise ValueError("side-based einsum symbolic step requires lhs and rhs")
-    if len(lhs) != program.input_arity:
-        raise ValueError("side-based einsum symbolic step input arity mismatch")
-    if len(rhs) != program.output_arity:
-        raise ValueError("side-based einsum symbolic step output arity mismatch")
-
-
 @dataclass(frozen=True, slots=True)
 class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
-    """Symbolic einsum step with precompiled direct or side-driven program."""
+    """Symbolic einsum step with one closed program variant.
+
+    Parameters
+    ----------
+    program : EinsumSymbolicProgram
+        Canonical symbolic program specialized by this step.
+    name : str
+        Step name used in plans and diagnostics.
+    """
 
     program: EinsumSymbolicProgram
     name: str = "einsum"
-    input_arity: int = 0
-    output_arity: int = 0
+    input_arity: int = field(init=False)
+    output_arity: int = field(init=False)
 
     def __post_init__(self) -> None:
-        _validate_einsum_program(self.program)
         object.__setattr__(self, "input_arity", self.program.input_arity)
         object.__setattr__(self, "output_arity", self.program.output_arity)
 
-    def _resolved_equations(
-        self,
-        *,
-        input_shapes: tuple[tuple[int, ...], ...],
-    ) -> tuple[str, ...]:
-        if self.program.equations:
-            return self.program.equations
-
-        lhs = self.program.lhs
-        rhs = self.program.rhs
-        if lhs is None or rhs is None:
-            raise ValueError("side-based einsum symbolic step is missing lhs/rhs")
-        return (
-            _equation_from_sides(
-                lhs=lhs,
-                rhs=rhs,
-                explicit_sizes_items=self.program.explicit_sizes_items,
-                input_shapes=input_shapes,
-            ),
-        )
-
     def preview_equations(self) -> tuple[str, ...]:
         """Return deterministic preview equations if available without runtime shapes."""
-        if self.program.equations:
-            return self.program.equations
-
-        lhs = self.program.lhs
-        rhs = self.program.rhs
-        if lhs is None or rhs is None:
-            return ()
-
-        try:
-            return (
-                build_contract_equation(
-                    input_axis_lists=lhs,
-                    output_axis_list=rhs[0],
-                ),
-            )
-        except ValidationError:
-            return ()
+        return self.program._preview_equations()
 
     def requires_einsum_backend(self) -> bool:
         """Return that einsum steps require an einsum-capable backend."""
@@ -441,7 +581,10 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
         context: RuntimeSpecializationContext,
         /,
     ) -> RuntimeStep:
-        equations = self._resolved_equations(input_shapes=context.input_shapes)
+        equations = self.program._resolve_equations(input_shapes=context.input_shapes)
+        runtime_chain = self.program._runtime_chain()
+        chain_order = () if runtime_chain is None else runtime_chain[0]
+        carrier_index = None if runtime_chain is None else runtime_chain[1]
         native_matmul_equations = (
             frozenset(
                 equation
@@ -453,8 +596,8 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
         )
         runtime_program = EinsumRuntimeProgram(
             equations=equations,
-            chain_order=self.program.chain_order,
-            carrier_index=self.program.carrier_index,
+            chain_order=chain_order,
+            carrier_index=carrier_index,
             native_matmul_equations=native_matmul_equations,
         )
         backend_profile = context.backend_profile
@@ -472,22 +615,23 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
 
     def score(self, context: PlanSelectionContext, /) -> SymbolicStepScore:
         tensor_shapes = context.input_shapes
-        equations = self._resolved_equations(input_shapes=tensor_shapes)
+        equations = self.program._resolve_equations(input_shapes=tensor_shapes)
+        runtime_chain = self.program._runtime_chain()
         peak_numel = 0
-        if self.program.chain_order:
-            carrier_index = self.program.carrier_index
-            if carrier_index is None or carrier_index >= len(tensor_shapes):
+        if runtime_chain is not None:
+            chain_order, carrier_index = runtime_chain
+            if carrier_index >= len(tensor_shapes):
                 return SymbolicStepScore(
                     peak_einsum_numel=0,
                     materialize_numel=0,
                     allocation_count=0,
-                    kernel_count=len(self.program.equations),
+                    kernel_count=len(equations),
                 )
 
             carrier_shape = tensor_shapes[carrier_index]
             for equation, next_index in zip(
                 equations,
-                self.program.chain_order,
+                chain_order,
                 strict=True,
             ):
                 if next_index >= len(tensor_shapes):
@@ -516,13 +660,13 @@ class EinsumSymbolicStep(SymbolicStep[EinsumSymbolicProgram]):
         return SymbolicStepScore(
             peak_einsum_numel=peak_numel,
             materialize_numel=0,
-            allocation_count=1 if self.program.chain_order else len(equations),
+            allocation_count=1 if runtime_chain is not None else len(equations),
             kernel_count=len(equations),
         )
 
     def specialization_depends_on_input_shapes(self) -> bool:
         """Return whether specialization depends on runtime input shapes."""
-        return not self.program.equations
+        return self.program._specialization_depends_on_input_shapes()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1030,10 +1174,13 @@ class EinsumRuntimeStep(RuntimeStep[EinsumRuntimeProgram]):
 
 
 __all__ = [
+    "ChainEinsumSymbolicProgram",
+    "DirectEinsumSymbolicProgram",
     "EinsumRuntimeProgram",
     "EinsumRuntimeStep",
     "EinsumSymbolicProgram",
     "EinsumSymbolicStep",
+    "SideEinsumSymbolicProgram",
     "build_einsum_symbolic_program_from_equations",
     "build_einsum_symbolic_program_from_sides",
 ]
