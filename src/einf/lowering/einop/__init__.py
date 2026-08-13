@@ -5,11 +5,29 @@ from .equation import (
     has_nary_contraction_candidate,
     ordered_unique_axis_terms,
 )
-from .model import EinopLoweringPlan
+from .model import (
+    CarrierEinopLoweringPlan,
+    ChainEinopLoweringPlan,
+    DirectEinsumEinopLoweringPlan,
+    EinopChainSearchRequest,
+    EinopLeafLoweringPlan,
+    EinopLoweringPlan,
+    EinopPrimitiveRoute,
+    LayoutNormalizedEinopLoweringPlan,
+    PrimitiveEinopLoweringPlan,
+)
 from .plan_select import build_einop_execution_plan
 
 __all__ = [
+    "CarrierEinopLoweringPlan",
+    "ChainEinopLoweringPlan",
+    "DirectEinsumEinopLoweringPlan",
+    "EinopChainSearchRequest",
+    "EinopLeafLoweringPlan",
     "EinopLoweringPlan",
+    "EinopPrimitiveRoute",
+    "LayoutNormalizedEinopLoweringPlan",
+    "PrimitiveEinopLoweringPlan",
     "all_subset_axis_lists",
     "build_einop_equations",
     "build_einop_execution_plan",

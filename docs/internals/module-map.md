@@ -172,6 +172,119 @@ dataclasses, but each has its own field layout. Serializers and introspection
 code that assumed the former shared layout must dispatch on the concrete
 variant.
 
+### Constructing einop lowering plans
+
+`einf.lowering.einop` exposes the canonical plans produced before symbolic-step
+construction. The variants keep primitive routing, direct equations, layout
+normalization, and composite carrier strategies separate:
+
+- `PrimitiveEinopLoweringPlan` carries one `EinopPrimitiveRoute`.
+- `DirectEinsumEinopLoweringPlan` carries one or more independent equations.
+- `LayoutNormalizedEinopLoweringPlan` carries a required logical-layout
+  normalization.
+- `CarrierEinopLoweringPlan` carries one carrier equation, its intermediate
+  axes, and the canonical unary tail plan.
+- `ChainEinopLoweringPlan` carries the carrier input, ordered binary equations,
+  final intermediate axes, and the canonical unary tail plan.
+- `EinopChainSearchRequest` is a non-executable result from base planning. The
+  complete planner resolves it before returning an `EinopLoweringPlan`.
+
+`EinopLeafLoweringPlan` is the union of the primitive, direct-einsum, and
+layout-normalized variants. Carrier and chain plans accept only a leaf selected
+for their unary terminal signature; another carrier or chain cannot be nested
+as a tail.
+
+`EinopLoweringPlan` is now a closed union alias. Replace direct construction of
+its former `kind` and nullable fields with the matching concrete variant:
+
+```python
+from einf import ax, axes
+from einf.lowering.einop import (
+    CarrierEinopLoweringPlan,
+    DirectEinsumEinopLoweringPlan,
+    EinopPrimitiveRoute,
+    PrimitiveEinopLoweringPlan,
+)
+
+a, b, c, d = axes("a", "b", "c", "d")
+direct_plan = DirectEinsumEinopLoweringPlan(
+    equations=("ab,bc->ac",),
+)
+tail_plan = PrimitiveEinopLoweringPlan(
+    route=EinopPrimitiveRoute.REARRANGE,
+)
+carrier_plan = CarrierEinopLoweringPlan(
+    equation="abc,cd->abd",
+    intermediate=ax[a, b, d],
+    tail=tail_plan,
+)
+```
+
+The former primitive `kind` strings map to `EinopPrimitiveRoute`, and
+`kind="einsum"` maps to the direct variant. Layout metadata maps to the
+layout-normalized variant. Carrier and chain plans now store an executable
+`tail` instead of a `tail_kind`; symbolic construction consumes that plan
+without selecting the tail again.
+
+`build_einop_execution_plan_base()` may return either an executable plan or an
+`EinopChainSearchRequest`. `build_einop_execution_plan()` always returns an
+executable plan. The union alias is not a dataclass; each concrete plan variant
+remains one.
+
+#### Migrating einop planner helpers
+
+The lower-level planner helpers remain available from their defining modules,
+but their signatures and result types follow the same variant model:
+
+```python
+from einf import ax, axes
+from einf.lowering.einop import (
+    EinopLeafLoweringPlan,
+    build_einop_execution_plan,
+)
+from einf.lowering.einop.carrier_plan import try_build_carrier_then_unary_plan
+from einf.lowering.einop.search_plan import build_symbolic_einsum_chain_plan
+from einf.signature import Signature
+
+b, h, w, d, j, k = axes("b", "h", "w", "d", "j", "k")
+signature = Signature(
+    inputs=(ax[b, h + w, d], ax[d, j], ax[j, k]),
+    outputs=(ax[b, h, k], ax[b, w, k]),
+)
+
+
+def build_terminal_tail(
+    terminal_signature: Signature,
+) -> EinopLeafLoweringPlan:
+    plan = build_einop_execution_plan(
+        analysis_signature=terminal_signature,
+        has_reducer_plan=False,
+    )
+    if not isinstance(plan, EinopLeafLoweringPlan):
+        raise TypeError("terminal planner returned a composite plan")
+    return plan
+
+carrier_plan = try_build_carrier_then_unary_plan(
+    analysis_signature=signature,
+)
+chain_plan = build_symbolic_einsum_chain_plan(
+    analysis_signature=signature,
+    tail_builder=build_terminal_tail,
+)
+```
+
+`try_build_carrier_then_unary_plan()` now returns
+`CarrierEinopLoweringPlan | None`. Use `equation` instead of the former
+single-item `equations` tuple; `intermediate` is unchanged, and `tail` contains
+the unary leaf plan that symbolic construction will consume.
+
+`build_symbolic_einsum_chain_plan()` now requires a `tail_builder` that returns
+`EinopLeafLoweringPlan`, and the helper returns `ChainEinopLoweringPlan | None`.
+Its `equations`, `intermediate`,
+`carrier_index`, and `chain_order` fields retain their meanings. The executable
+`tail` replaces `tail_kind`, so callers no longer select the terminal plan a
+second time.
+
 The runtime projection carries different facts.
 `EinsumRuntimeProgram.native_matmul_equations` contains only resolved equations
 already proven equivalent to native `matmul`.

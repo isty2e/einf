@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from einf.axis import (
     AxisExpr,
     AxisTerms,
@@ -15,15 +17,44 @@ from .equation import (
     build_einop_equations,
     ordered_unique_axis_terms,
 )
-from .model import EinopLoweringPlan
+from .model import (
+    ChainEinopLoweringPlan,
+    DirectEinsumEinopLoweringPlan,
+    EinopChainSearchRequest,
+    EinopLeafLoweringPlan,
+    EinopPrimitiveRoute,
+    PrimitiveEinopLoweringPlan,
+)
 
 
 def build_symbolic_einsum_chain_plan(
     *,
     analysis_signature: Signature,
-) -> EinopLoweringPlan | None:
-    """Build symbolic chain plan without runtime tensor probing."""
+    tail_builder: Callable[[Signature], EinopLeafLoweringPlan],
+) -> ChainEinopLoweringPlan | None:
+    """Search for a symbolic carrier-chain plan.
+
+    Parameters
+    ----------
+    analysis_signature : Signature
+        Canonical input and output axes to lower.
+    tail_builder : Callable[[Signature], EinopLeafLoweringPlan]
+        Complete planner for a terminal unary signature.
+
+    Returns
+    -------
+    ChainEinopLoweringPlan | None
+        The complete chain plan, or ``None`` when no chain is feasible.
+
+    Raises
+    ------
+    TypeError
+        If ``tail_builder`` returns a composite lowering plan.
+    """
     input_axis_lists = analysis_signature.inputs
+    if len(input_axis_lists) < 2:
+        return None
+
     output_axis_lists = analysis_signature.outputs
     target_terms = {term for axis_list in output_axis_lists for term in axis_list}
     failed_states: set[tuple[AxisTerms, tuple[int, ...]]] = set()
@@ -110,7 +141,7 @@ def build_symbolic_einsum_chain_plan(
         remaining_indices: tuple[int, ...],
         chain_order: tuple[int, ...],
         equations: tuple[str, ...],
-    ) -> EinopLoweringPlan | None:
+    ) -> ChainEinopLoweringPlan | None:
         state_key = (carrier_terms, remaining_indices)
         if state_key in failed_states:
             return None
@@ -124,24 +155,30 @@ def build_symbolic_einsum_chain_plan(
                 analysis_signature=stage_signature,
                 has_reducer_plan=False,
             )
-            if stage_plan.kind == "search_chain":
+            if isinstance(stage_plan, EinopChainSearchRequest):
                 failed_states.add(state_key)
                 return None
             if (
-                stage_plan.kind == "rearrange"
+                isinstance(stage_plan, PrimitiveEinopLoweringPlan)
+                and stage_plan.route is EinopPrimitiveRoute.REARRANGE
                 and len(output_axis_lists) > 1
                 and not is_multi_output_split_feasible(carrier_terms)
             ):
                 failed_states.add(state_key)
                 return None
 
-            return EinopLoweringPlan(
-                kind="einsum_chain_then_unary",
+            tail_plan = (
+                tail_builder(stage_signature)
+                if isinstance(stage_plan, DirectEinsumEinopLoweringPlan)
+                and len(stage_plan.equations) > 1
+                else stage_plan
+            )
+            return ChainEinopLoweringPlan(
                 equations=equations,
                 intermediate=carrier_terms,
                 carrier_index=carrier_index,
                 chain_order=chain_order,
-                tail_kind=stage_plan.kind,
+                tail=tail_plan,
             )
 
         for next_index in remaining_indices:

@@ -4,17 +4,43 @@ from einf.signature import Signature
 from einf.steps.einsum.equation import build_contract_equation
 
 from .equation import build_einop_equations, has_nary_contraction_candidate
-from .model import EinopLoweringPlan
+from .model import (
+    DirectEinsumEinopLoweringPlan,
+    EinopChainSearchRequest,
+    EinopLeafLoweringPlan,
+    EinopPrimitiveRoute,
+    LayoutNormalizedEinopLoweringPlan,
+    PrimitiveEinopLoweringPlan,
+)
 
 
 def build_einop_execution_plan_base(
     *,
     analysis_signature: Signature,
     has_reducer_plan: bool,
-) -> EinopLoweringPlan:
-    """Build deterministic einop lowering plan before carrier-specific lifting."""
+) -> EinopLeafLoweringPlan | EinopChainSearchRequest:
+    """Build an einop plan before carrier-chain search.
+
+    Parameters
+    ----------
+    analysis_signature : Signature
+        Canonical input and output axes to lower.
+    has_reducer_plan : bool
+        Whether the operation supplies an explicit reducer plan.
+
+    Returns
+    -------
+    EinopLeafLoweringPlan | EinopChainSearchRequest
+        An executable base plan, or a request for carrier-chain search.
+
+    Raises
+    ------
+    ValidationError
+        If the signature cannot be normalized or represented by the selected
+        base route.
+    """
     if analysis_signature.inputs == analysis_signature.outputs and not has_reducer_plan:
-        return EinopLoweringPlan(kind="route", equations=())
+        return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.ROUTE)
 
     layout_normalization = EinopLayoutNormalization.from_signature(analysis_signature)
     if layout_normalization.is_required:
@@ -30,10 +56,8 @@ def build_einop_execution_plan_base(
                 related=("einop layout normalization",),
                 data={"operation": "einop", "terms": ",".join(duplicate_terms)},
             )
-        return EinopLoweringPlan(
-            kind="layout_normalized",
-            equations=(),
-            layout_normalization=layout_normalization,
+        return LayoutNormalizedEinopLoweringPlan(
+            normalization=layout_normalization,
         )
 
     if len(analysis_signature.inputs) == 1 and len(analysis_signature.outputs) == 1:
@@ -45,19 +69,19 @@ def build_einop_execution_plan_base(
         has_broadcast = bool(introduced_terms)
 
         if has_reduction and has_broadcast:
-            return EinopLoweringPlan(kind="reduce_repeat", equations=())
+            return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REDUCE_REPEAT)
         if has_reduction:
-            return EinopLoweringPlan(kind="reduce", equations=())
+            return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REDUCE)
         if has_broadcast:
-            return EinopLoweringPlan(kind="repeat", equations=())
-        return EinopLoweringPlan(kind="rearrange", equations=())
+            return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REPEAT)
+        return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REARRANGE)
 
     if analysis_signature.is_atomic() and len(analysis_signature.outputs) == 1:
-        equation = build_contract_equation(
+        _ = build_contract_equation(
             input_axis_lists=analysis_signature.inputs,
             output_axis_list=analysis_signature.outputs[0],
         )
-        return EinopLoweringPlan(kind="contract", equations=(equation,))
+        return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.CONTRACT)
 
     try:
         equations = build_einop_equations(
@@ -66,10 +90,10 @@ def build_einop_execution_plan_base(
         )
     except ValidationError:
         if has_nary_contraction_candidate(analysis_signature):
-            return EinopLoweringPlan(kind="search_chain", equations=())
-        return EinopLoweringPlan(kind="rearrange", equations=())
+            return EinopChainSearchRequest()
+        return PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REARRANGE)
 
-    return EinopLoweringPlan(kind="einsum", equations=equations)
+    return DirectEinsumEinopLoweringPlan(equations=equations)
 
 
 __all__ = ["build_einop_execution_plan_base"]
