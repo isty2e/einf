@@ -3,13 +3,9 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import final, overload
 
-try:
-    from typing import Self
-except ImportError:  # pragma: no cover
-    from typing_extensions import Self
-
 from ..axis import AxisSide, AxisTerms
 from ..backend import BackendExecutionIdentity
+from ..ir import LoweringSignature
 from ..lowering import DefaultLoweringProgram
 from ..output_normalization import RuntimeOutputContract
 from ..plans.abstract import AbstractPlan, RuntimeSpecializationContext
@@ -57,7 +53,7 @@ def _configured_cache_key(definition: TensorOpDefinition) -> ConfiguredOpCacheKe
 
 
 @dataclass(frozen=True, slots=True)
-class TensorOpExecutionStrategy:
+class _TensorOpExecutionStrategy:
     """Stable execution strategy derived from one planned TensorOp."""
 
     shape_free_context: RuntimeSpecializationContext | None
@@ -70,7 +66,7 @@ class TensorOpExecutionStrategy:
         abstract_plan: AbstractPlan,
         input_arity: int,
         output_arity: int,
-    ) -> Self:
+    ) -> "_TensorOpExecutionStrategy":
         """Build one execution strategy from a realized abstract plan."""
         shape_free_context: RuntimeSpecializationContext | None = None
         if not abstract_plan.specialization_depends_on_input_shapes(input_arity):
@@ -111,7 +107,7 @@ class TensorOp:
 
     _definition: TensorOpDefinition
     _abstract_plan: AbstractPlan = field(init=False, repr=False, compare=False)
-    _execution_strategy: TensorOpExecutionStrategy = field(
+    _execution_strategy: _TensorOpExecutionStrategy = field(
         init=False,
         repr=False,
         compare=False,
@@ -131,10 +127,11 @@ class TensorOp:
         """Realize one definition as an abstract plan with fresh runtime state."""
         definition = self._definition
         abstract_plan = AbstractPlan(
-            op_name=definition.name,
-            lhs=definition.lhs,
-            rhs=definition.rhs,
-            explicit_sizes_items=definition.sizes_items,
+            source=LoweringSignature(
+                op_name=definition.name,
+                signature=definition.signature,
+                explicit_sizes_items=definition.sizes_items,
+            ),
             lowering=_DEFAULT_LOWERING_PROGRAM.with_reducer_plan(
                 definition.reducer_plan
             ),
@@ -143,7 +140,7 @@ class TensorOp:
         object.__setattr__(
             self,
             "_execution_strategy",
-            TensorOpExecutionStrategy.from_plan(
+            _TensorOpExecutionStrategy.from_plan(
                 abstract_plan=abstract_plan,
                 input_arity=definition.input_arity,
                 output_arity=definition.output_arity,
@@ -166,8 +163,23 @@ class TensorOp:
         kind: OperationKind,
         lhs: AxisSide,
         rhs: AxisSide,
-    ):
-        """Return cached base TensorOp for one normalized constructor spec."""
+    ) -> "TensorOp":
+        """Return a cached operation for one normalized base specification.
+
+        Parameters
+        ----------
+        kind : OperationKind
+            Operation family.
+        lhs : AxisSide
+            Normalized input signature.
+        rhs : AxisSide
+            Normalized output signature.
+
+        Returns
+        -------
+        TensorOp
+            Cached operation value.
+        """
         cache_key = BaseOpCacheKey(
             kind=kind,
             lhs=lhs,
@@ -229,12 +241,12 @@ class TensorOp:
         """Return canonical immutable explicit size bindings."""
         return self._definition.sizes_items
 
-    def with_sizes(self, **sizes: int):
+    def with_sizes(self, **sizes: int) -> "TensorOp":
         """Return a new operation with additional dimension bindings.
 
         Parameters
         ----------
-        **sizes
+        **sizes : int
             Non-negative integer dimension bindings by symbol name.
 
         Returns
@@ -259,45 +271,45 @@ class TensorOp:
         )
 
     @overload
-    def reduce_by(self, reducer: str) -> Self: ...
+    def reduce_by(self, reducer: str) -> "TensorOp": ...
 
     @overload
     def reduce_by(
         self,
         reducer: ReducerCallable,
-    ) -> Self: ...
+    ) -> "TensorOp": ...
 
     @overload
     def reduce_by(
         self, reducer: tuple[AxisTerms, str], *phases: tuple[AxisTerms, str]
-    ) -> Self: ...
+    ) -> "TensorOp": ...
 
     @overload
     def reduce_by(
         self,
         reducer: tuple[AxisTerms, ReducerCallable],
         *phases: tuple[AxisTerms, ReducerCallable],
-    ) -> Self: ...
+    ) -> "TensorOp": ...
 
     @overload
     def reduce_by(
         self,
         reducer: tuple[AxisTerms, str | ReducerCallable],
         *phases: tuple[AxisTerms, str | ReducerCallable],
-    ) -> Self: ...
+    ) -> "TensorOp": ...
 
     def reduce_by(
         self,
         reducer: Reducer | tuple[AxisTerms, Reducer],
         *phases: tuple[AxisTerms, Reducer],
-    ):
+    ) -> "TensorOp":
         """Return a new operation with a custom reducer strategy.
 
         Parameters
         ----------
-        reducer
+        reducer : Reducer or tuple[AxisTerms, Reducer]
             Reducer name/callable, or one reducer phase tuple `(ax[...], reducer)`.
-        *phases
+        *phases : tuple[AxisTerms, Reducer]
             Additional ordered reducer phases.
 
         Returns

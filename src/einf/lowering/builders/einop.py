@@ -1,7 +1,7 @@
 from einf.axis import AxisSide, AxisTermBase, AxisTerms
 from einf.diagnostics import ErrorCode, ValidationError
 from einf.einop_layout import EinopLayoutNormalization
-from einf.ir import IRProgram, build_default_ir_program
+from einf.ir import IRProgram, LoweringSignature
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.plan import infer_unary_reduced_terms
 from einf.reduction.schema import ReducerPhase, ReducerPlan
@@ -33,11 +33,12 @@ from .repeat import build_repeat_symbolic_plan
 
 def _build_direct_einsum_symbolic_plan(
     *,
-    lhs: AxisSide,
-    rhs: AxisSide,
+    source: LoweringSignature,
     equations: tuple[str, ...],
 ) -> SymbolicPlan:
     """Build independent direct einsum outputs from one shared input tuple."""
+    lhs = source.signature.inputs
+    rhs = source.signature.outputs
     if len(equations) != len(rhs):
         raise ValueError(
             "direct einsum lowering requires one equation per output tensor"
@@ -51,9 +52,8 @@ def _build_direct_einsum_symbolic_plan(
         )
     )
     return SymbolicPlan(
+        source=source,
         kind="einsum",
-        input_arity=len(lhs),
-        output_arity=len(rhs),
         steps=(step,),
     )
 
@@ -74,12 +74,16 @@ def _build_layout_map_steps(
             chains.append(())
             continue
         plan = build_rearrange_symbolic_plan(
-            build_default_ir_program(
-                op_name="rearrange",
-                lhs=AxisSide.from_spec((source,), side_name="lhs"),
-                rhs=AxisSide.from_spec((target,), side_name="rhs"),
+            IRProgram.from_source(
+                LoweringSignature(
+                    op_name="rearrange",
+                    signature=Signature(
+                        inputs=AxisSide.from_spec((source,), side_name="lhs"),
+                        outputs=AxisSide.from_spec((target,), side_name="rhs"),
+                    ),
+                    explicit_sizes_items=explicit_sizes_items,
+                )
             ),
-            explicit_sizes_items,
             None,
         )
         if plan.input_arity != 1 or plan.output_arity != 1:
@@ -177,11 +181,12 @@ def _normalize_layout_reducer_plan(
 
 def _build_layout_normalized_symbolic_plan(
     *,
+    source: LoweringSignature,
     execution_plan: LayoutNormalizedEinopLoweringPlan,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
     """Compose requested layouts around one logical einop plan."""
+    explicit_sizes_items = source.explicit_sizes_items
     normalization = execution_plan.normalization
     requested = normalization.requested
     logical = normalization.logical
@@ -205,18 +210,22 @@ def _build_layout_normalized_symbolic_plan(
             pass
         else:
             logical_plan = _build_direct_einsum_symbolic_plan(
-                lhs=logical.inputs,
-                rhs=logical.outputs,
+                source=LoweringSignature(
+                    op_name="einop",
+                    signature=logical,
+                    explicit_sizes_items=explicit_sizes_items,
+                ),
                 equations=direct_equations,
             )
     if logical_plan is None:
         logical_plan = build_einop_symbolic_plan(
-            build_default_ir_program(
-                op_name="einop",
-                lhs=logical.inputs,
-                rhs=logical.outputs,
+            IRProgram.from_source(
+                LoweringSignature(
+                    op_name="einop",
+                    signature=logical,
+                    explicit_sizes_items=explicit_sizes_items,
+                )
             ),
-            explicit_sizes_items,
             logical_reducer_plan,
         )
     if any(
@@ -238,20 +247,20 @@ def _build_layout_normalized_symbolic_plan(
         explicit_sizes_items=explicit_sizes_items,
     )
     return SymbolicPlan(
+        source=source,
         kind="layout_normalized",
-        input_arity=len(requested.inputs),
-        output_arity=len(requested.outputs),
         steps=(*input_steps, *logical_plan.steps, *output_steps),
     )
 
 
 def _build_reduce_repeat_symbolic_plan(
     *,
-    lhs: AxisSide,
-    rhs: AxisSide,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
+    source: LoweringSignature,
 ) -> SymbolicPlan | None:
     """Build one `reduce -> repeat` symbolic plan for unary signatures."""
+    lhs = source.signature.inputs
+    rhs = source.signature.outputs
+    explicit_sizes_items = source.explicit_sizes_items
     if len(lhs) != 1 or len(rhs) != 1:
         return None
 
@@ -259,44 +268,46 @@ def _build_reduce_repeat_symbolic_plan(
     reduced_rhs = AxisSide.from_spec((shared_terms,), side_name="rhs")
     repeated_lhs = AxisSide.from_spec((shared_terms,), side_name="lhs")
     reduce_plan = build_reduce_symbolic_plan(
-        build_default_ir_program(
-            op_name="reduce",
-            lhs=lhs,
-            rhs=reduced_rhs,
+        IRProgram.from_source(
+            LoweringSignature(
+                op_name="reduce",
+                signature=Signature(inputs=lhs, outputs=reduced_rhs),
+                explicit_sizes_items=explicit_sizes_items,
+            )
         ),
-        explicit_sizes_items,
         None,
     )
     repeat_plan = build_repeat_symbolic_plan(
-        build_default_ir_program(
-            op_name="repeat",
-            lhs=repeated_lhs,
-            rhs=rhs,
+        IRProgram.from_source(
+            LoweringSignature(
+                op_name="repeat",
+                signature=Signature(inputs=repeated_lhs, outputs=rhs),
+                explicit_sizes_items=explicit_sizes_items,
+            )
         ),
-        explicit_sizes_items,
         None,
     )
     return SymbolicPlan(
+        source=source,
         kind="reduce_repeat",
-        input_arity=len(lhs),
-        output_arity=len(rhs),
         steps=(*reduce_plan.steps, *repeat_plan.steps),
     )
 
 
 def _build_selected_einop_symbolic_plan(
     *,
+    source: LoweringSignature,
     execution_plan: EinopLoweringPlan,
-    lhs: AxisSide,
-    rhs: AxisSide,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
     """Build one symbolic plan from a canonical einop lowering variant."""
+    lhs = source.signature.inputs
+    rhs = source.signature.outputs
+    explicit_sizes_items = source.explicit_sizes_items
     if isinstance(execution_plan, LayoutNormalizedEinopLoweringPlan):
         return _build_layout_normalized_symbolic_plan(
+            source=source,
             execution_plan=execution_plan,
-            explicit_sizes_items=explicit_sizes_items,
             reducer_plan=reducer_plan,
         )
 
@@ -304,66 +315,72 @@ def _build_selected_einop_symbolic_plan(
         route = execution_plan.route
         if route is EinopPrimitiveRoute.ROUTE:
             return SymbolicPlan(
+                source=source,
                 kind=execution_plan.symbolic_kind,
-                input_arity=len(lhs),
-                output_arity=len(rhs),
                 steps=(),
             )
         if route is EinopPrimitiveRoute.REARRANGE:
-            return build_rearrange_symbolic_plan(
-                build_default_ir_program(
-                    op_name="rearrange",
-                    lhs=lhs,
-                    rhs=rhs,
+            primitive_plan = build_rearrange_symbolic_plan(
+                IRProgram.from_source(
+                    LoweringSignature(
+                        op_name="rearrange",
+                        signature=source.signature,
+                        explicit_sizes_items=explicit_sizes_items,
+                    )
                 ),
-                explicit_sizes_items,
                 None,
             )
-        if route is EinopPrimitiveRoute.REPEAT:
-            return build_repeat_symbolic_plan(
-                build_default_ir_program(
-                    op_name="repeat",
-                    lhs=lhs,
-                    rhs=rhs,
+        elif route is EinopPrimitiveRoute.REPEAT:
+            primitive_plan = build_repeat_symbolic_plan(
+                IRProgram.from_source(
+                    LoweringSignature(
+                        op_name="repeat",
+                        signature=source.signature,
+                        explicit_sizes_items=explicit_sizes_items,
+                    )
                 ),
-                explicit_sizes_items,
                 None,
             )
-        if route is EinopPrimitiveRoute.REDUCE:
-            return build_reduce_symbolic_plan(
-                build_default_ir_program(
-                    op_name="reduce",
-                    lhs=lhs,
-                    rhs=rhs,
+        elif route is EinopPrimitiveRoute.REDUCE:
+            primitive_plan = build_reduce_symbolic_plan(
+                IRProgram.from_source(
+                    LoweringSignature(
+                        op_name="reduce",
+                        signature=source.signature,
+                        explicit_sizes_items=explicit_sizes_items,
+                    )
                 ),
-                explicit_sizes_items,
                 reducer_plan,
             )
-        if route is EinopPrimitiveRoute.REDUCE_REPEAT:
+        elif route is EinopPrimitiveRoute.REDUCE_REPEAT:
             reduce_repeat_plan = _build_reduce_repeat_symbolic_plan(
-                lhs=lhs,
-                rhs=rhs,
-                explicit_sizes_items=explicit_sizes_items,
+                source=source,
             )
             if reduce_repeat_plan is None:
                 raise ValueError("reduce-repeat einop lowering must be unary")
             return reduce_repeat_plan
-        if route is EinopPrimitiveRoute.CONTRACT:
-            return build_contract_symbolic_plan(
-                build_default_ir_program(
-                    op_name="contract",
-                    lhs=lhs,
-                    rhs=rhs,
+        elif route is EinopPrimitiveRoute.CONTRACT:
+            primitive_plan = build_contract_symbolic_plan(
+                IRProgram.from_source(
+                    LoweringSignature(
+                        op_name="contract",
+                        signature=source.signature,
+                        explicit_sizes_items=explicit_sizes_items,
+                    )
                 ),
-                explicit_sizes_items,
                 None,
             )
-        raise ValueError(f"unsupported primitive einop route: {route!r}")
+        else:
+            raise ValueError(f"unsupported primitive einop route: {route!r}")
+        return SymbolicPlan(
+            source=source,
+            kind=primitive_plan.kind,
+            steps=primitive_plan.steps,
+        )
 
     if isinstance(execution_plan, DirectEinsumEinopLoweringPlan):
         return _build_direct_einsum_symbolic_plan(
-            lhs=lhs,
-            rhs=rhs,
+            source=source,
             equations=execution_plan.equations,
         )
 
@@ -381,18 +398,19 @@ def _build_selected_einop_symbolic_plan(
             side_name="lhs",
         )
         tail_plan = _build_selected_einop_symbolic_plan(
+            source=LoweringSignature(
+                op_name="einop",
+                signature=Signature(inputs=carrier_lhs, outputs=rhs),
+                explicit_sizes_items=explicit_sizes_items,
+            ),
             execution_plan=execution_plan.tail,
-            lhs=carrier_lhs,
-            rhs=rhs,
-            explicit_sizes_items=explicit_sizes_items,
             reducer_plan=None,
         )
         if tail_plan.input_arity != 1:
             raise ValueError("carrier tail lowering must be unary")
         return SymbolicPlan(
+            source=source,
             kind=execution_plan.symbolic_kind,
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(carrier_step, *tail_plan.steps),
         )
 
@@ -412,18 +430,19 @@ def _build_selected_einop_symbolic_plan(
             side_name="lhs",
         )
         tail_plan = _build_selected_einop_symbolic_plan(
+            source=LoweringSignature(
+                op_name="einop",
+                signature=Signature(inputs=carrier_lhs, outputs=rhs),
+                explicit_sizes_items=explicit_sizes_items,
+            ),
             execution_plan=execution_plan.tail,
-            lhs=carrier_lhs,
-            rhs=rhs,
-            explicit_sizes_items=explicit_sizes_items,
             reducer_plan=None,
         )
         if tail_plan.input_arity != 1:
             raise ValueError("einsum chain tail lowering must be unary")
         return SymbolicPlan(
+            source=source,
             kind=execution_plan.symbolic_kind,
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(chain_step, *tail_plan.steps),
         )
 
@@ -432,12 +451,30 @@ def _build_selected_einop_symbolic_plan(
 
 def build_einop_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `einop` from canonical sides."""
+    """Build one symbolic plan for ``einop``.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound einop IR.
+    reducer_plan : ReducerPlan or None
+        Optional ordered reducer phases.
+
+    Returns
+    -------
+    SymbolicPlan
+        Einop plan carrying ``ir_program.source``.
+
+    Raises
+    ------
+    ValidationError
+        If no feasible lowering exists within the planning contract.
+    """
     lhs = ir_program.lhs
     rhs = ir_program.rhs
+    explicit_sizes_items = ir_program.explicit_sizes_items
     analysis_signature = Signature(inputs=lhs, outputs=rhs)
     try:
         execution_plan = build_einop_execution_plan(
@@ -460,17 +497,14 @@ def build_einop_symbolic_plan(
             )
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="einsum",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(step,),
         )
 
     return _build_selected_einop_symbolic_plan(
+        source=ir_program.source,
         execution_plan=execution_plan,
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=explicit_sizes_items,
         reducer_plan=reducer_plan,
     )
 

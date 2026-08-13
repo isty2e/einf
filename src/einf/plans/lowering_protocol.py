@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 
-from einf.axis import AxisSide
-from einf.ir import IRProgram
+from einf.ir import IRProgram, LoweringSignature
 
 from .symbolic import SymbolicPlan
 
@@ -12,13 +11,21 @@ class LoweringProgram(ABC):
     @abstractmethod
     def ir_program(
         self,
-        *,
-        op_name: str,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
+        source: LoweringSignature,
+        /,
     ) -> IRProgram:
-        """Return canonical lowering IR program for one abstract operation."""
+        """Return the IR program for one structural operation.
+
+        Parameters
+        ----------
+        source : LoweringSignature
+            Canonical structural input to lowering.
+
+        Returns
+        -------
+        IRProgram
+            IR program whose source matches ``source``.
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -26,9 +33,19 @@ class LoweringProgram(ABC):
         self,
         *,
         ir_program: IRProgram,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
     ) -> tuple[SymbolicPlan, ...]:
-        """Return ordered symbolic plan candidates."""
+        """Return ordered symbolic plans for an IR program.
+
+        Parameters
+        ----------
+        ir_program : IRProgram
+            Canonical lowering input and observability trace.
+
+        Returns
+        -------
+        tuple[SymbolicPlan, ...]
+            Ordered candidates whose sources match ``ir_program.source``.
+        """
         raise NotImplementedError
 
 

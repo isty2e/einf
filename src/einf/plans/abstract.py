@@ -8,9 +8,8 @@ from einf.backend import (
     BackendProfile,
 )
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.ir import IRProgram
+from einf.ir import IRProgram, LoweringSignature
 from einf.ir.routing.static import precompute_route_output_indices
-from einf.signature import Signature
 from einf.solver import validate_dimensions
 from einf.steps.base import RuntimeSpecializationContext, RuntimeStep, StepProgram
 from einf.steps.context import PlanSelectionContext
@@ -52,26 +51,30 @@ class AbstractPlanRuntimeCaches:
 
 @dataclass(frozen=True, slots=True)
 class AbstractPlan:
-    """Ingress-normalized abstract operation facade with detached runtime caches."""
+    """Represent one source-bound abstract operation and its lowering.
 
-    op_name: str
-    lhs: AxisSide
-    rhs: AxisSide
-    explicit_sizes_items: tuple[tuple[str, int], ...]
+    Parameters
+    ----------
+    source : LoweringSignature
+        Canonical structural operation consumed by lowering.
+    lowering : LoweringProgram
+        Lowering policy used to produce the IR and symbolic candidates.
+
+    Raises
+    ------
+    ValueError
+        If the lowering output does not carry the same source.
+    """
+
+    source: LoweringSignature
     lowering: LoweringProgram
     ir_program: IRProgram = field(init=False)
     symbolic_candidates: tuple[SymbolicPlan, ...] = field(init=False)
-    _candidate_indices_by_input_arity: dict[int, tuple[int, ...]] = field(
+    _specialization_depends_on_input_shapes: bool = field(
         init=False,
         repr=False,
         compare=False,
     )
-    _specialization_shape_dependency_by_input_arity: dict[int, bool] = field(
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _signature: Signature = field(init=False, repr=False, compare=False)
     _explicit_sizes: dict[str, int] = field(
         init=False,
         repr=False,
@@ -81,12 +84,12 @@ class AbstractPlan:
 
     def __post_init__(self) -> None:
         """Lower one abstract operation once into deterministic symbolic candidates."""
-        ir_program = self.lowering.ir_program(
-            op_name=self.op_name,
-            lhs=self.lhs,
-            rhs=self.rhs,
-            explicit_sizes_items=self.explicit_sizes_items,
-        )
+        ir_program = self.lowering.ir_program(self.source)
+        if ir_program.source != self.source:
+            raise ValueError(
+                "lowering IR source does not match the abstract plan source: "
+                f"expected {self.source!r}, got {ir_program.source!r}"
+            )
         object.__setattr__(
             self,
             "ir_program",
@@ -94,36 +97,20 @@ class AbstractPlan:
         )
         symbolic_candidates = self.lowering.symbolic_candidates(
             ir_program=ir_program,
-            explicit_sizes_items=self.explicit_sizes_items,
         )
+        for candidate_index, candidate in enumerate(symbolic_candidates):
+            if candidate.source != self.source:
+                raise ValueError(
+                    "symbolic plan source does not match the abstract plan source "
+                    f"for candidate {candidate_index}: "
+                    f"expected {self.source!r}, got {candidate.source!r}"
+                )
         object.__setattr__(
             self,
             "symbolic_candidates",
             symbolic_candidates,
         )
-        candidate_indices_by_input_arity: dict[int, list[int]] = {}
-        for candidate_index, candidate in enumerate(symbolic_candidates):
-            indices = candidate_indices_by_input_arity.get(candidate.input_arity)
-            if indices is None:
-                candidate_indices_by_input_arity[candidate.input_arity] = [
-                    candidate_index
-                ]
-                continue
-            indices.append(candidate_index)
-        object.__setattr__(
-            self,
-            "_candidate_indices_by_input_arity",
-            {
-                input_arity: tuple(indices)
-                for input_arity, indices in candidate_indices_by_input_arity.items()
-            },
-        )
         object.__setattr__(self, "_explicit_sizes", dict(self.explicit_sizes_items))
-        object.__setattr__(
-            self,
-            "_signature",
-            Signature(inputs=self.lhs, outputs=self.rhs),
-        )
         static_output_indices = precompute_route_output_indices(self.lhs, self.rhs)
         object.__setattr__(
             self,
@@ -136,45 +123,77 @@ class AbstractPlan:
         )
         object.__setattr__(
             self,
-            "_specialization_shape_dependency_by_input_arity",
-            self._build_specialization_shape_dependency_map(
-                candidate_indices_by_input_arity={
-                    input_arity: tuple(indices)
-                    for input_arity, indices in candidate_indices_by_input_arity.items()
-                },
+            "_specialization_depends_on_input_shapes",
+            self._compute_specialization_shape_dependency(
                 static_route_output_indices=static_output_indices,
             ),
         )
 
-    def _build_specialization_shape_dependency_map(
+    @property
+    def op_name(self) -> str:
+        """Return the operation name used by lowering.
+
+        Returns
+        -------
+        str
+            Operation name from the canonical source.
+        """
+        return self.source.op_name
+
+    @property
+    def lhs(self) -> AxisSide:
+        """Return normalized input axis terms.
+
+        Returns
+        -------
+        AxisSide
+            Input side of the canonical signature.
+        """
+        return self.source.signature.inputs
+
+    @property
+    def rhs(self) -> AxisSide:
+        """Return normalized output axis terms.
+
+        Returns
+        -------
+        AxisSide
+            Output side of the canonical signature.
+        """
+        return self.source.signature.outputs
+
+    @property
+    def explicit_sizes_items(self) -> tuple[tuple[str, int], ...]:
+        """Return canonical explicit axis-size bindings.
+
+        Returns
+        -------
+        tuple[tuple[str, int], ...]
+            Explicit size bindings in canonical order.
+        """
+        return self.source.explicit_sizes_items
+
+    def _compute_specialization_shape_dependency(
         self,
         *,
-        candidate_indices_by_input_arity: dict[int, tuple[int, ...]],
         static_route_output_indices: tuple[int, ...] | None,
-    ) -> dict[int, bool]:
-        """Build runner-specialization shape dependencies by input arity."""
-        depends_on_shapes_by_arity: dict[int, bool] = {}
-        for input_arity, indices in candidate_indices_by_input_arity.items():
-            if len(indices) != 1:
-                depends_on_shapes_by_arity[input_arity] = True
-                continue
-            symbolic_plan = self.symbolic_candidates[indices[0]]
-            if symbolic_plan.kind == "route" and not symbolic_plan.steps:
-                depends_on_shapes_by_arity[input_arity] = (
-                    static_route_output_indices is None
-                )
-                continue
-            depends_on_shapes_by_arity[input_arity] = any(
-                step.specialization_depends_on_input_shapes()
-                for step in symbolic_plan.steps
-            )
-        return depends_on_shapes_by_arity
+    ) -> bool:
+        """Return whether candidate specialization depends on input shapes."""
+        if len(self.symbolic_candidates) != 1:
+            return True
+        symbolic_plan = self.symbolic_candidates[0]
+        if symbolic_plan.kind == "route" and not symbolic_plan.steps:
+            return static_route_output_indices is None
+        return any(
+            step.specialization_depends_on_input_shapes()
+            for step in symbolic_plan.steps
+        )
 
     def specialization_depends_on_input_shapes(self, input_arity: int, /) -> bool:
         """Return whether runner specialization depends on concrete input shapes."""
-        return self._specialization_shape_dependency_by_input_arity.get(
-            input_arity,
-            True,
+        return (
+            input_arity != self.source.input_arity
+            or self._specialization_depends_on_input_shapes
         )
 
     def validate_input_shapes(
@@ -187,7 +206,7 @@ class AbstractPlan:
             return
         try:
             validate_dimensions(
-                self._signature,
+                self.source.signature,
                 input_shapes,
                 explicit_sizes=self._explicit_sizes,
             )
@@ -209,18 +228,13 @@ class AbstractPlan:
             raise ValueError("no symbolic plan candidates are available")
 
         input_arity = len(context.input_shapes)
-        matching_candidate_indices = self._candidate_indices_by_input_arity.get(
-            input_arity,
-            (),
-        )
-
-        if not matching_candidate_indices:
+        if input_arity != self.source.input_arity:
             raise ValueError(
                 f"no symbolic plan candidate matches input arity {input_arity}"
             )
 
-        if len(matching_candidate_indices) == 1:
-            return self.symbolic_candidates[matching_candidate_indices[0]]
+        if len(self.symbolic_candidates) == 1:
+            return self.symbolic_candidates[0]
 
         cache_key = SelectionCacheKey(
             input_shapes=context.input_shapes,
@@ -228,12 +242,10 @@ class AbstractPlan:
         )
         cached_index = self._runtime.selection.get_index(cache_key)
         if cached_index is not None:
-            cached_candidate = self.symbolic_candidates[cached_index]
-            if cached_candidate.input_arity == input_arity:
-                return cached_candidate
+            return self.symbolic_candidates[cached_index]
 
         best_index = min(
-            matching_candidate_indices,
+            range(len(self.symbolic_candidates)),
             key=lambda candidate_index: (
                 self.symbolic_candidates[candidate_index].score(context),
                 candidate_index,
@@ -265,16 +277,12 @@ class AbstractPlan:
     ) -> SymbolicPlan:
         """Select one symbolic plan for already-normalized runtime context."""
         input_arity = len(context.input_shapes)
-        matching_candidate_indices = self._candidate_indices_by_input_arity.get(
-            input_arity,
-            (),
-        )
-        if not matching_candidate_indices:
+        if input_arity != self.source.input_arity:
             raise ValueError(
                 f"no symbolic plan candidate matches input arity {input_arity}"
             )
-        if len(matching_candidate_indices) == 1:
-            return self.symbolic_candidates[matching_candidate_indices[0]]
+        if len(self.symbolic_candidates) == 1:
+            return self.symbolic_candidates[0]
         selection_context = PlanSelectionContext(
             input_shapes=context.input_shapes,
             explicit_sizes=self._explicit_sizes,
@@ -382,11 +390,8 @@ class AbstractPlan:
     ) -> TupleRunner:
         """Resolve or compile one cached tuple-output runtime runner."""
         input_arity = len(tensors)
-        specialization_depends_on_shapes = (
-            self._specialization_shape_dependency_by_input_arity.get(
-                input_arity,
-                True,
-            )
+        specialization_depends_on_shapes = self.specialization_depends_on_input_shapes(
+            input_arity
         )
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors
@@ -434,11 +439,8 @@ class AbstractPlan:
     ) -> SingleOutputRunner:
         """Resolve or compile one cached single-output runtime runner."""
         input_arity = len(tensors)
-        specialization_depends_on_shapes = (
-            self._specialization_shape_dependency_by_input_arity.get(
-                input_arity,
-                True,
-            )
+        specialization_depends_on_shapes = self.specialization_depends_on_input_shapes(
+            input_arity
         )
         runtime_context = self._resolve_runtime_context(
             context=context, tensors=tensors

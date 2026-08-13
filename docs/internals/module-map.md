@@ -85,12 +85,12 @@ execution
 the plan runtime. Lowering still owns IR-to-symbolic candidate generation, and
 steps still own primitive specialization/execution.
 
-- **`ir/`** — canonical `IRProgram` operation signatures plus pure route
-  solving and static routing tables. `IRProgram.op_name/lhs/rhs` are the
-  authoritative lowering inputs; its `LoweringTraceStage` sequence is
-  producer-owned conceptual metadata only. The selected `SymbolicPlan.steps`
-  remain the executable description. Call-time route resolution lives in
-  `plans/`.
+- **`ir/`** — canonical lowering sources and traces plus pure route solving and
+  static routing tables. `LoweringSignature` owns the operation name, normalized
+  axis signature, and explicit sizes. `IRProgram.source` is authoritative;
+  `IRProgram.trace` is producer-owned observability metadata. The selected
+  `SymbolicPlan.steps` remain the executable description. Call-time route
+  resolution lives in `plans/`.
 - **`lowering/`** — `LoweringProgram` implementations and the
   IR → symbolic-candidates compiler. Chain search, candidate pruning,
   and feasibility enforcement live here, not in runtime specialization.
@@ -106,6 +106,43 @@ steps still own primitive specialization/execution.
   `runtime.py`). Each step owns its own specialization and arity
   contract. Step-consumed runtime context and primitive scoring helpers
   live here, not in `plans/`.
+
+### Constructing lowering programs
+
+The low-level lowering API uses one source value throughout the planning pipeline:
+
+```python
+from einf.ir import IRProgram, LoweringSignature
+from einf.plans.abstract import AbstractPlan
+from einf.plans.symbolic import SymbolicPlan
+from einf.signature import Signature
+
+source = LoweringSignature(
+    op_name="rearrange",
+    signature=Signature(inputs=lhs, outputs=rhs),
+    explicit_sizes_items=explicit_sizes_items,
+)
+ir_program = IRProgram(source=source, trace=trace)
+symbolic_plan = SymbolicPlan(source=source, kind="permute", steps=steps)
+abstract_plan = AbstractPlan(source=source, lowering=lowering)
+```
+
+Code that implements `LoweringProgram` now receives `source` in `ir_program()`.
+Its `symbolic_candidates()` method receives only the resulting `IRProgram`;
+explicit sizes are available through `ir_program.source`. The old separate
+`op_name`, `lhs`, `rhs`, and `explicit_sizes_items` arguments are not retained.
+The exported functions in `einf.lowering.builders` now follow the same boundary:
+pass `(ir_program, reducer_plan)` rather than passing explicit sizes separately.
+`einf.lowering.build_symbolic_candidates_from_ir()` also reads sizes from the IR.
+
+`IRProgram` and `SymbolicPlan` likewise no longer accept independent structural
+fields. Read `IRProgram.op_name`, `lhs`, `rhs`, and arity through their derived
+properties when needed. `SymbolicPlan.input_arity` and `output_arity` are also
+derived from its source. A trace may change without changing source compatibility
+or compiled candidates.
+
+Use `IRProgram.from_source(source)` when the default trace is appropriate. It
+replaces the standalone default-IR factory.
 
 ### Constructing einsum programs
 

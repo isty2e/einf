@@ -12,12 +12,25 @@ from einf.steps.einsum.equation import build_contract_equation
 
 def build_contract_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `contract`."""
+    """Build one symbolic plan for ``contract``.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound contract IR.
+    reducer_plan : ReducerPlan or None
+        Unused reducer configuration accepted by the shared builder contract.
+
+    Returns
+    -------
+    SymbolicPlan
+        Contract plan carrying ``ir_program.source``.
+    """
     lhs = ir_program.lhs
     rhs = ir_program.rhs
+    explicit_sizes_items = ir_program.explicit_sizes_items
     _ = reducer_plan
     program = build_einsum_symbolic_program_from_sides(
         lhs=lhs,
@@ -42,9 +55,8 @@ def build_contract_symbolic_plan(
             )
     step = EinsumSymbolicStep(program=program)
     return SymbolicPlan(
+        source=ir_program.source,
         kind="contract",
-        input_arity=len(lhs),
-        output_arity=len(rhs),
         steps=(step,),
     )
 

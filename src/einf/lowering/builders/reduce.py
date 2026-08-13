@@ -1,7 +1,8 @@
 from einf.axis import AxisSide, AxisTerms
-from einf.ir import IRProgram, build_default_ir_program
+from einf.ir import IRProgram, LoweringSignature
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPhase, ReducerPlan
+from einf.signature import Signature
 from einf.steps.base import SymbolicStep
 from einf.steps.reduce import ReduceSymbolicStep, build_reduce_symbolic_program
 
@@ -43,12 +44,30 @@ def _build_reduce_steps(
 
 def build_reduce_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `reduce`."""
+    """Build one symbolic plan for ``reduce``.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound reduce IR.
+    reducer_plan : ReducerPlan or None
+        Ordered reducer phases, or ``None`` for the default sum reducer.
+
+    Returns
+    -------
+    SymbolicPlan
+        Reduce plan carrying ``ir_program.source``.
+
+    Raises
+    ------
+    ValueError
+        If the source is not unary.
+    """
     lhs = ir_program.lhs
     rhs = ir_program.rhs
+    explicit_sizes_items = ir_program.explicit_sizes_items
     if len(lhs) != 1 or len(rhs) != 1:
         raise ValueError("reduce symbolic plan requires unary lhs/rhs")
 
@@ -71,22 +90,22 @@ def build_reduce_symbolic_plan(
     )
 
     if reduce_rhs != rhs:
-        rearrange_ir_program = build_default_ir_program(
-            op_name="rearrange",
-            lhs=reduce_rhs,
-            rhs=rhs,
+        rearrange_ir_program = IRProgram.from_source(
+            LoweringSignature(
+                op_name="rearrange",
+                signature=Signature(inputs=reduce_rhs, outputs=rhs),
+                explicit_sizes_items=explicit_sizes_items,
+            )
         )
         rearrange_plan = build_rearrange_symbolic_plan(
             rearrange_ir_program,
-            explicit_sizes_items,
             None,
         )
         steps.extend(rearrange_plan.steps)
 
     return SymbolicPlan(
+        source=ir_program.source,
         kind="reduce",
-        input_arity=len(lhs),
-        output_arity=len(rhs),
         steps=tuple(steps),
     )
 

@@ -3,7 +3,7 @@ from itertools import permutations
 
 from einf.axis import AxisInt, AxisSide, AxisTerms
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.ir import IRProgram
+from einf.ir import IRProgram, LoweringSignature
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPlan
 from einf.steps.axis_slice import (
@@ -83,9 +83,8 @@ def _build_view_safe_plan_from_rearrange(
     """Convert a rearrange-lowered plan into strict view-safe primitives."""
     if not rearrange_plan.steps:
         return SymbolicPlan(
+            source=rearrange_plan.source,
             kind="view",
-            input_arity=rearrange_plan.input_arity,
-            output_arity=rearrange_plan.output_arity,
             steps=(),
         )
 
@@ -107,9 +106,8 @@ def _build_view_safe_plan_from_rearrange(
         converted_steps.append(step)
 
     return SymbolicPlan(
+        source=rearrange_plan.source,
         kind="view",
-        input_arity=rearrange_plan.input_arity,
-        output_arity=rearrange_plan.output_arity,
         steps=tuple(converted_steps),
     )
 
@@ -124,9 +122,8 @@ def _build_unresolved_axis_slice_view_plan(
     if not isinstance(step, AxisSliceSymbolicStep):
         return None
     return SymbolicPlan(
+        source=rearrange_plan.source,
         kind="view",
-        input_arity=rearrange_plan.input_arity,
-        output_arity=rearrange_plan.output_arity,
         steps=(
             replace(
                 step,
@@ -138,6 +135,7 @@ def _build_unresolved_axis_slice_view_plan(
 
 def _build_axis_permute_then_axis_slice_view_plan(
     *,
+    source: LoweringSignature,
     lhs: AxisSide,
     rhs: AxisSide,
     explicit_sizes_items: tuple[tuple[str, int], ...],
@@ -180,9 +178,8 @@ def _build_axis_permute_then_axis_slice_view_plan(
             explicit_sizes_items=explicit_sizes_items,
         )
         return SymbolicPlan(
+            source=source,
             kind="view",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(axis_permute_step, axis_slice_step),
         )
     return None
@@ -190,16 +187,32 @@ def _build_axis_permute_then_axis_slice_view_plan(
 
 def build_view_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `view` from strict primitives only."""
+    """Build one symbolic plan for ``view`` from strict primitives.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound view IR.
+    reducer_plan : ReducerPlan or None
+        Unused reducer configuration accepted by the shared builder contract.
+
+    Returns
+    -------
+    SymbolicPlan
+        Strict view plan carrying ``ir_program.source``.
+
+    Raises
+    ------
+    ValidationError
+        If no zero-copy lowering can represent the source.
+    """
     _ = reducer_plan
     try:
         rearrange_plan = build_rearrange_symbolic_plan(
-            ir_program=ir_program,
-            explicit_sizes_items=explicit_sizes_items,
-            reducer_plan=None,
+            ir_program,
+            None,
         )
     except ValidationError as error:
         if error.code == ErrorCode.AXIS_EXPRESSION_TOO_COMPLEX.value:
@@ -210,9 +223,10 @@ def build_view_symbolic_plan(
     if view_safe_plan is not None:
         return view_safe_plan
     permute_axis_slice_plan = _build_axis_permute_then_axis_slice_view_plan(
+        source=ir_program.source,
         lhs=ir_program.lhs,
         rhs=ir_program.rhs,
-        explicit_sizes_items=explicit_sizes_items,
+        explicit_sizes_items=ir_program.explicit_sizes_items,
     )
     if permute_axis_slice_plan is not None:
         return permute_axis_slice_plan

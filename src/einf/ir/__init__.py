@@ -1,11 +1,11 @@
 from .model import (
     IRProgram,
+    LoweringSignature,
     LoweringTraceStage,
-    build_default_ir_program,
 )
 
 __all__ = [
     "IRProgram",
+    "LoweringSignature",
     "LoweringTraceStage",
-    "build_default_ir_program",
 ]
