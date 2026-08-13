@@ -1,4 +1,7 @@
+from collections.abc import Iterable, Iterator
+
 import pytest
+from typing_extensions import Self
 
 from einf import ErrorCode, ValidationError, ax, axes, einop
 from einf.axis import AxisTermBase, AxisTerms
@@ -248,6 +251,26 @@ def test_chain_search_shares_candidate_budget_across_carriers(
     }
 
 
+class _ComparisonProbeToken(str):
+    comparisons: list[int]
+
+    def __new__(
+        cls,
+        value: str,
+        comparisons: list[int],
+    ) -> Self:
+        token = super().__new__(cls, value)
+        token.comparisons = comparisons
+        return token
+
+    def __eq__(self, other: object) -> bool:
+        self.comparisons[0] += 1
+        return super().__eq__(other)
+
+    def __hash__(self) -> int:
+        return super().__hash__()
+
+
 class _MembershipProbeAxis(AxisTermBase):
     def __init__(
         self,
@@ -255,10 +278,12 @@ class _MembershipProbeAxis(AxisTermBase):
         token: str,
         hash_value: int,
         comparisons: list[int],
+        token_comparisons: list[int],
     ) -> None:
         self._token = token
         self._hash_value = hash_value
         self._comparisons = comparisons
+        self._token_comparisons = token_comparisons
 
     def __hash__(self) -> int:
         return self._hash_value
@@ -271,7 +296,10 @@ class _MembershipProbeAxis(AxisTermBase):
         return self._token
 
     def stable_token(self) -> str:
-        return f"probe:{self._token}"
+        return _ComparisonProbeToken(
+            f"probe:{self._token}",
+            self._token_comparisons,
+        )
 
     def axis_names(self) -> set[str]:
         return set()
@@ -280,28 +308,46 @@ class _MembershipProbeAxis(AxisTermBase):
         return set()
 
 
+class _CountingAxisSet(set[AxisTermBase]):
+    iterations: int
+
+    def __init__(self, terms: Iterable[AxisTermBase]) -> None:
+        super().__init__(terms)
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[AxisTermBase]:
+        self.iterations += 1
+        return super().__iter__()
+
+
 def test_subset_scoring_does_not_repeat_membership_work_per_candidate() -> None:
     ordered_terms = AxisTerms(axes(*(f"ordered_{index}" for index in range(10))))
     target_comparisons = [0]
     remaining_comparisons = [0]
-    target_terms: set[AxisTermBase] = {
+    target_token_comparisons = [0]
+    remaining_token_comparisons = [0]
+    target_terms = _CountingAxisSet(
         _MembershipProbeAxis(
             token=f"target_{index}",
             hash_value=hash(ordered_terms[index % len(ordered_terms)]),
             comparisons=target_comparisons,
+            token_comparisons=target_token_comparisons,
         )
         for index in range(30)
-    }
-    remaining_terms: set[AxisTermBase] = {
+    )
+    remaining_terms = _CountingAxisSet(
         _MembershipProbeAxis(
             token=f"remaining_{index}",
             hash_value=hash(ordered_terms[index % len(ordered_terms)]),
             comparisons=remaining_comparisons,
+            token_comparisons=remaining_token_comparisons,
         )
         for index in range(60)
-    }
+    )
     target_comparisons[0] = 0
     remaining_comparisons[0] = 0
+    target_token_comparisons[0] = 0
+    remaining_token_comparisons[0] = 0
 
     candidates = all_subset_axis_lists(
         ordered_terms=ordered_terms,
@@ -310,8 +356,12 @@ def test_subset_scoring_does_not_repeat_membership_work_per_candidate() -> None:
     )
 
     assert len(candidates) == 1_024
+    assert target_terms.iterations <= 1
+    assert remaining_terms.iterations <= 1
     assert target_comparisons[0] <= len(ordered_terms) * len(target_terms)
     assert remaining_comparisons[0] <= len(ordered_terms) * len(remaining_terms)
+    assert target_token_comparisons[0] <= len(ordered_terms) * len(target_terms)
+    assert remaining_token_comparisons[0] <= len(ordered_terms) * len(remaining_terms)
 
 
 def test_subset_bitmask_scoring_preserves_candidate_order() -> None:
@@ -335,7 +385,7 @@ def test_subset_bitmask_scoring_preserves_candidate_order() -> None:
     )
 
 
-def test_subset_scoring_uses_stable_tokens_to_break_score_ties() -> None:
+def test_subset_scoring_preserves_declared_sequence_in_token_ties() -> None:
     earlier, middle, later = axes(
         "subset_tie_a",
         "subset_tie_m",
@@ -343,7 +393,7 @@ def test_subset_scoring_uses_stable_tokens_to_break_score_ties() -> None:
     )
 
     candidates = all_subset_axis_lists(
-        ordered_terms=AxisTerms((later, middle, earlier)),
+        ordered_terms=AxisTerms((middle, later, earlier)),
         target_terms=set(),
         remaining_terms=set(),
     )
@@ -354,7 +404,7 @@ def test_subset_scoring_uses_stable_tokens_to_break_score_ties() -> None:
         ax[middle],
         ax[later],
         ax[middle, earlier],
+        ax[middle, later],
         ax[later, earlier],
-        ax[later, middle],
-        ax[later, middle, earlier],
+        ax[middle, later, earlier],
     )
