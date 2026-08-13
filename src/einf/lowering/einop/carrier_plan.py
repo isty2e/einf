@@ -4,7 +4,11 @@ from einf.signature import Signature
 
 from .base_plan import build_einop_execution_plan_base
 from .equation import build_einop_equations
-from .model import EinopLoweringPlan
+from .model import (
+    CarrierEinopLoweringPlan,
+    DirectEinsumEinopLoweringPlan,
+    EinopChainSearchRequest,
+)
 
 
 def infer_carrier_candidates(
@@ -68,8 +72,20 @@ def infer_carrier_candidates(
 def try_build_carrier_then_unary_plan(
     *,
     analysis_signature: Signature,
-) -> EinopLoweringPlan | None:
-    """Try one single-einsum carrier plan followed by unary tail lowering."""
+) -> CarrierEinopLoweringPlan | None:
+    """Try one einsum carrier followed by unary tail lowering.
+
+    Parameters
+    ----------
+    analysis_signature : Signature
+        Canonical input and output axes to lower.
+
+    Returns
+    -------
+    CarrierEinopLoweringPlan | None
+        The complete carrier plan, or ``None`` when no candidate has an
+        executable unary tail.
+    """
     carrier_candidates = infer_carrier_candidates(analysis_signature=analysis_signature)
     for carrier in carrier_candidates:
         try:
@@ -88,15 +104,18 @@ def try_build_carrier_then_unary_plan(
             analysis_signature=stage_signature,
             has_reducer_plan=False,
         )
-        if stage_plan.kind == "search_chain":
+        if isinstance(stage_plan, EinopChainSearchRequest):
             continue
-        if stage_plan.kind == "einsum" and len(stage_plan.equations) > 1:
+        if (
+            isinstance(stage_plan, DirectEinsumEinopLoweringPlan)
+            and len(stage_plan.equations) > 1
+        ):
             continue
 
-        return EinopLoweringPlan(
-            kind="einsum_carrier_then_unary",
-            equations=(carrier_equation,),
+        return CarrierEinopLoweringPlan(
+            equation=carrier_equation,
             intermediate=carrier,
+            tail=stage_plan,
         )
     return None
 

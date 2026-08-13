@@ -172,6 +172,60 @@ dataclasses, but each has its own field layout. Serializers and introspection
 code that assumed the former shared layout must dispatch on the concrete
 variant.
 
+### Constructing einop lowering plans
+
+`einf.lowering.einop` exposes the canonical plans produced before symbolic-step
+construction. The variants keep primitive routing, direct equations, layout
+normalization, and composite carrier strategies separate:
+
+- `PrimitiveEinopLoweringPlan` carries one `EinopPrimitiveRoute`.
+- `DirectEinsumEinopLoweringPlan` carries one or more independent equations.
+- `LayoutNormalizedEinopLoweringPlan` carries a required logical-layout
+  normalization.
+- `CarrierEinopLoweringPlan` carries one carrier equation, its intermediate
+  axes, and the canonical unary tail plan.
+- `ChainEinopLoweringPlan` carries the carrier input, ordered binary equations,
+  final intermediate axes, and the canonical unary tail plan.
+- `EinopChainSearchRequest` is a non-executable result from base planning. The
+  complete planner resolves it before returning an `EinopLoweringPlan`.
+
+`EinopLoweringPlan` is now a closed union alias. Replace direct construction of
+its former `kind` and nullable fields with the matching concrete variant:
+
+```python
+from einf import ax, axes
+from einf.lowering.einop import (
+    CarrierEinopLoweringPlan,
+    DirectEinsumEinopLoweringPlan,
+    EinopPrimitiveRoute,
+    PrimitiveEinopLoweringPlan,
+)
+
+a, b, c, d = axes("a", "b", "c", "d")
+direct_plan = DirectEinsumEinopLoweringPlan(
+    equations=("ab,bc->ac",),
+)
+tail_plan = PrimitiveEinopLoweringPlan(
+    route=EinopPrimitiveRoute.REARRANGE,
+)
+carrier_plan = CarrierEinopLoweringPlan(
+    equation="abc,cd->abd",
+    intermediate=ax[a, b, d],
+    tail=tail_plan,
+)
+```
+
+The former primitive `kind` strings map to `EinopPrimitiveRoute`, and
+`kind="einsum"` maps to the direct variant. Layout metadata maps to the
+layout-normalized variant. Carrier and chain plans now store an executable
+`tail` instead of a `tail_kind`; symbolic construction consumes that plan
+without selecting the tail again.
+
+`build_einop_execution_plan_base()` may return either an executable plan or an
+`EinopChainSearchRequest`. `build_einop_execution_plan()` always returns an
+executable plan. The union alias is not a dataclass; each concrete plan variant
+remains one.
+
 The runtime projection carries different facts.
 `EinsumRuntimeProgram.native_matmul_equations` contains only resolved equations
 already proven equivalent to native `matmul`.
