@@ -127,13 +127,33 @@ symbolic_plan = SymbolicPlan(source=source, kind="permute", steps=steps)
 abstract_plan = AbstractPlan(source=source, lowering=lowering)
 ```
 
-Code that implements `LoweringProgram` now receives `source` in `ir_program()`.
-Its `symbolic_candidates()` method receives only the resulting `IRProgram`;
+Call the lowering protocol with these forms:
+
+```python
+ir_program = lowering.ir_program(source)
+symbolic_candidates = lowering.symbolic_candidates(ir_program=ir_program)
+```
+
+`LoweringProgram.ir_program()` takes `source` positionally. Its
+`symbolic_candidates()` method takes only the resulting `IRProgram` as a keyword;
 explicit sizes are available through `ir_program.source`. The old separate
 `op_name`, `lhs`, `rhs`, and `explicit_sizes_items` arguments are not retained.
-The exported functions in `einf.lowering.builders` now follow the same boundary:
-pass `(ir_program, reducer_plan)` rather than passing explicit sizes separately.
-`einf.lowering.build_symbolic_candidates_from_ir()` also reads sizes from the IR.
+
+The exported functions in `einf.lowering.builders` accept the IR and reducer plan
+positionally:
+
+```python
+symbolic_plan = build_rearrange_symbolic_plan(ir_program, reducer_plan)
+```
+
+The compiler entry point keeps keyword-only arguments:
+
+```python
+symbolic_candidates = build_symbolic_candidates_from_ir(
+    ir_program=ir_program,
+    reducer_plan=reducer_plan,
+)
+```
 
 `IRProgram` and `SymbolicPlan` likewise no longer accept independent structural
 fields. Read `IRProgram.op_name`, `lhs`, `rhs`, and arity through their derived
@@ -141,8 +161,24 @@ properties when needed. `SymbolicPlan.input_arity` and `output_arity` are also
 derived from its source. A trace may change without changing source compatibility
 or compiled candidates.
 
-Use `IRProgram.from_source(source)` when the default trace is appropriate. It
-replaces the standalone default-IR factory.
+`einf.ir.build_default_ir_program` has been removed. Replace
+
+```python
+ir_program = build_default_ir_program(op_name=op_name, lhs=lhs, rhs=rhs)
+```
+
+with
+
+```python
+source = LoweringSignature(
+    op_name=op_name,
+    signature=Signature(inputs=lhs, outputs=rhs),
+    explicit_sizes_items=explicit_sizes_items,
+)
+ir_program = IRProgram.from_source(source)
+```
+
+Construct the owning plan with `AbstractPlan(source=source, lowering=lowering)`.
 
 ### Constructing einsum programs
 

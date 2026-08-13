@@ -46,9 +46,10 @@ the plan-owned lowering protocol seam:
 - `lowering: LoweringProgram`
 
 `LoweringSignature` groups the operation name, normalized axis `Signature`, and
-explicit size bindings. `AbstractPlan` accepts an `IRProgram` or `SymbolicPlan`
-only when its source matches exactly. This check runs during plan construction,
-before candidates enter runtime caches.
+explicit size bindings. During construction, `AbstractPlan` asks its
+`LoweringProgram` for an `IRProgram` and its symbolic candidates, then verifies
+that every returned artifact has the same source. The check runs before candidates
+enter runtime caches.
 
 During initialization it lowers once into:
 
