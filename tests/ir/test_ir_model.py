@@ -130,7 +130,7 @@ def test_default_lowering_compiles_independently_of_observability_trace() -> Non
     assert alternate_trace_candidates[0].source == source
 
 
-def test_abstract_plan_accepts_alternate_trace_for_the_same_source() -> None:
+def test_abstract_plan_accepts_alternate_trace_for_equivalent_source() -> None:
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
@@ -140,8 +140,14 @@ def test_abstract_plan_accepts_alternate_trace_for_the_same_source() -> None:
         rhs,
         explicit_sizes_items=(("d", 2),),
     )
+    artifact_source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
     alternate_trace_ir = IRProgram(
-        source=source,
+        source=artifact_source,
         trace=(LoweringTraceStage.GATHER,),
     )
     candidate = SymbolicPlan(
@@ -160,6 +166,43 @@ def test_abstract_plan_accepts_alternate_trace_for_the_same_source() -> None:
 
     assert abstract_plan.ir_program is alternate_trace_ir
     assert abstract_plan.symbolic_candidates == (candidate,)
+    assert artifact_source == source
+    assert artifact_source is not source
+
+
+def test_abstract_plan_accepts_candidate_with_equivalent_source() -> None:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
+    source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    candidate_source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    candidate = SymbolicPlan(
+        source=candidate_source,
+        kind="route",
+        steps=(),
+    )
+
+    abstract_plan = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(
+            candidates=(candidate,),
+            ir=IRProgram(source=source),
+        ),
+    )
+
+    assert abstract_plan.symbolic_candidates == (candidate,)
+    assert candidate_source == source
+    assert candidate_source is not source
 
 
 def test_abstract_plan_rejects_ir_with_other_explicit_sizes() -> None:
@@ -214,7 +257,7 @@ def test_abstract_plan_rejects_ir_from_another_operation() -> None:
         )
 
 
-def test_abstract_plan_rejects_ir_from_another_axis_signature() -> None:
+def test_abstract_plan_rejects_ir_from_another_input_signature() -> None:
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
@@ -230,6 +273,33 @@ def test_abstract_plan_rejects_ir_from_another_axis_signature() -> None:
             "repeat",
             foreign_lhs,
             rhs,
+            explicit_sizes_items=(("d", 2),),
+        )
+    )
+
+    with pytest.raises(ValueError, match="IR source"):
+        AbstractPlan(
+            source=source,
+            lowering=StaticLoweringProgram(candidates=(), ir=foreign_ir),
+        )
+
+
+def test_abstract_plan_rejects_ir_from_another_output_signature() -> None:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
+    source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    foreign_rhs = AxisSide.from_spec(ax[b, d, n], side_name="rhs")
+    foreign_ir = IRProgram(
+        source=_source(
+            "repeat",
+            lhs,
+            foreign_rhs,
             explicit_sizes_items=(("d", 2),),
         )
     )
@@ -297,7 +367,7 @@ def test_abstract_plan_rejects_candidate_from_another_operation() -> None:
         )
 
 
-def test_abstract_plan_rejects_candidate_from_another_axis_signature() -> None:
+def test_abstract_plan_rejects_candidate_from_another_input_signature() -> None:
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
@@ -313,6 +383,35 @@ def test_abstract_plan_rejects_candidate_from_another_axis_signature() -> None:
             "repeat",
             foreign_lhs,
             rhs,
+            explicit_sizes_items=(("d", 2),),
+        ),
+        kind="route",
+        steps=(),
+    )
+
+    with pytest.raises(ValueError, match="symbolic plan source"):
+        AbstractPlan(
+            source=source,
+            lowering=StaticLoweringProgram(candidates=(foreign_candidate,)),
+        )
+
+
+def test_abstract_plan_rejects_candidate_from_another_output_signature() -> None:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, n, d], side_name="rhs")
+    source = _source(
+        "repeat",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("d", 2),),
+    )
+    foreign_rhs = AxisSide.from_spec(ax[b, d, n], side_name="rhs")
+    foreign_candidate = SymbolicPlan(
+        source=_source(
+            "repeat",
+            lhs,
+            foreign_rhs,
             explicit_sizes_items=(("d", 2),),
         ),
         kind="route",

@@ -734,6 +734,27 @@ def test_select_symbolic_plan_prefers_lower_score() -> None:
     )
 
 
+def test_select_symbolic_plan_rejects_context_input_arity_mismatch() -> None:
+    lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
+    candidate = SymbolicPlan(
+        source=source,
+        kind="route",
+        steps=(),
+    )
+    abstract = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,)),
+    )
+    context = PlanSelectionContext(
+        input_shapes=((2, 3, 4), (4, 5)),
+        explicit_sizes={},
+    )
+
+    with pytest.raises(ValueError, match="input arity 2"):
+        abstract.select_symbolic_plan(context)
+
+
 def test_select_symbolic_plan_uses_selection_cache() -> None:
     _CountingScoreSymbolicStep.calls.clear()
     lhs, rhs = _unary_side()
@@ -910,6 +931,27 @@ def test_abstract_plan_builds_route_runner_kernel() -> None:
     assert isinstance(runner_kernel, RouteRunnerKernel)
     assert runner_kernel.input_arity == 2
     assert runner_kernel.output_indices == (1, 0)
+
+
+def test_runtime_selection_rejects_context_input_arity_mismatch() -> None:
+    lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
+    candidate = SymbolicPlan(
+        source=source,
+        kind="route",
+        steps=(),
+    )
+    abstract = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,)),
+    )
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3, 4), (4, 5)),
+        backend_profile=None,
+    )
+
+    with pytest.raises(ValueError, match="input arity 2"):
+        abstract._select_runtime_symbolic_plan(context=context)
 
 
 def test_abstract_plan_builds_step_chain_runner_kernel() -> None:
