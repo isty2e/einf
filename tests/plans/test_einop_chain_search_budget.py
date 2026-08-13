@@ -1,7 +1,11 @@
 from collections.abc import Iterable, Iterator
 
 import pytest
-from typing_extensions import Self
+
+try:
+    from typing import Self
+except ImportError:  # pragma: no cover
+    from typing_extensions import Self
 
 from einf import ErrorCode, ValidationError, ax, axes, einop
 from einf.axis import AxisTermBase, AxisTerms
