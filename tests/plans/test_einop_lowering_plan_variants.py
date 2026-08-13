@@ -1,4 +1,5 @@
 from dataclasses import fields
+from typing import get_args
 
 import pytest
 
@@ -9,6 +10,7 @@ from einf.lowering.einop import (
     ChainEinopLoweringPlan,
     DirectEinsumEinopLoweringPlan,
     EinopChainSearchRequest,
+    EinopLeafLoweringPlan,
     EinopLoweringPlan,
     EinopPrimitiveRoute,
     LayoutNormalizedEinopLoweringPlan,
@@ -66,6 +68,14 @@ def test_einop_lowering_variants_expose_only_owned_facts() -> None:
     )
 
 
+def test_einop_leaf_lowering_plan_is_the_complete_exported_leaf_union() -> None:
+    assert get_args(EinopLeafLoweringPlan) == (
+        PrimitiveEinopLoweringPlan,
+        DirectEinsumEinopLoweringPlan,
+        LayoutNormalizedEinopLoweringPlan,
+    )
+
+
 def test_einop_primitive_routes_are_closed() -> None:
     assert tuple(EinopPrimitiveRoute) == (
         EinopPrimitiveRoute.ROUTE,
@@ -111,7 +121,7 @@ def test_chain_search_does_not_invoke_tail_builder_for_unary_input() -> None:
         outputs=(ax[a, b], ax[b, a]),
     )
 
-    def fail_if_called(_signature: Signature) -> EinopLoweringPlan:
+    def fail_if_called(_signature: Signature) -> EinopLeafLoweringPlan:
         raise AssertionError("unary input must not enter carrier-chain search")
 
     plan = build_symbolic_einsum_chain_plan(
@@ -247,9 +257,8 @@ def test_chain_search_owns_order_carrier_and_canonical_tail() -> None:
 
     plan = build_symbolic_einsum_chain_plan(
         analysis_signature=signature,
-        tail_builder=lambda tail_signature: build_einop_execution_plan(
-            analysis_signature=tail_signature,
-            has_reducer_plan=False,
+        tail_builder=lambda _tail_signature: PrimitiveEinopLoweringPlan(
+            route=EinopPrimitiveRoute.REARRANGE,
         ),
     )
 
@@ -257,4 +266,6 @@ def test_chain_search_owns_order_carrier_and_canonical_tail() -> None:
     assert plan.carrier_index == 0
     assert plan.chain_order == (1, 2)
     assert plan.intermediate == ax[b, h + w, k]
-    assert plan.tail == PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REARRANGE)
+    assert plan.tail == PrimitiveEinopLoweringPlan(
+        route=EinopPrimitiveRoute.REARRANGE,
+    )

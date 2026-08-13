@@ -6,9 +6,20 @@ from .carrier_plan import try_build_carrier_then_unary_plan
 from .model import (
     DirectEinsumEinopLoweringPlan,
     EinopChainSearchRequest,
+    EinopLeafLoweringPlan,
     EinopLoweringPlan,
 )
 from .search_plan import build_symbolic_einsum_chain_plan
+
+
+def _build_terminal_leaf_plan(analysis_signature: Signature) -> EinopLeafLoweringPlan:
+    plan = build_einop_execution_plan(
+        analysis_signature=analysis_signature,
+        has_reducer_plan=False,
+    )
+    if not isinstance(plan, EinopLeafLoweringPlan):
+        raise TypeError("terminal einop planning must return a leaf lowering plan")
+    return plan
 
 
 def build_einop_execution_plan(
@@ -59,10 +70,7 @@ def build_einop_execution_plan(
 
     chain_plan = build_symbolic_einsum_chain_plan(
         analysis_signature=analysis_signature,
-        tail_builder=lambda signature: build_einop_execution_plan(
-            analysis_signature=signature,
-            has_reducer_plan=False,
-        ),
+        tail_builder=_build_terminal_leaf_plan,
     )
     if chain_plan is not None:
         return chain_plan

@@ -238,7 +238,10 @@ but their signatures and result types follow the same variant model:
 
 ```python
 from einf import ax, axes
-from einf.lowering.einop import build_einop_execution_plan
+from einf.lowering.einop import (
+    EinopLeafLoweringPlan,
+    build_einop_execution_plan,
+)
 from einf.lowering.einop.carrier_plan import try_build_carrier_then_unary_plan
 from einf.lowering.einop.search_plan import build_symbolic_einsum_chain_plan
 from einf.signature import Signature
@@ -249,15 +252,24 @@ signature = Signature(
     outputs=(ax[b, h, k], ax[b, w, k]),
 )
 
+
+def build_terminal_tail(
+    terminal_signature: Signature,
+) -> EinopLeafLoweringPlan:
+    plan = build_einop_execution_plan(
+        analysis_signature=terminal_signature,
+        has_reducer_plan=False,
+    )
+    if not isinstance(plan, EinopLeafLoweringPlan):
+        raise TypeError("terminal planner returned a composite plan")
+    return plan
+
 carrier_plan = try_build_carrier_then_unary_plan(
     analysis_signature=signature,
 )
 chain_plan = build_symbolic_einsum_chain_plan(
     analysis_signature=signature,
-    tail_builder=lambda terminal_signature: build_einop_execution_plan(
-        analysis_signature=terminal_signature,
-        has_reducer_plan=False,
-    ),
+    tail_builder=build_terminal_tail,
 )
 ```
 
@@ -266,8 +278,9 @@ chain_plan = build_symbolic_einsum_chain_plan(
 single-item `equations` tuple; `intermediate` is unchanged, and `tail` contains
 the unary leaf plan that symbolic construction will consume.
 
-`build_symbolic_einsum_chain_plan()` now requires `tail_builder` and returns
-`ChainEinopLoweringPlan | None`. Its `equations`, `intermediate`,
+`build_symbolic_einsum_chain_plan()` now requires a `tail_builder` that returns
+`EinopLeafLoweringPlan`, and the helper returns `ChainEinopLoweringPlan | None`.
+Its `equations`, `intermediate`,
 `carrier_index`, and `chain_order` fields retain their meanings. The executable
 `tail` replaces `tail_kind`, so callers no longer select the terminal plan a
 second time.

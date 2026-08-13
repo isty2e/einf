@@ -18,11 +18,10 @@ from .equation import (
     ordered_unique_axis_terms,
 )
 from .model import (
-    CarrierEinopLoweringPlan,
     ChainEinopLoweringPlan,
     DirectEinsumEinopLoweringPlan,
     EinopChainSearchRequest,
-    EinopLoweringPlan,
+    EinopLeafLoweringPlan,
     EinopPrimitiveRoute,
     PrimitiveEinopLoweringPlan,
 )
@@ -31,7 +30,7 @@ from .model import (
 def build_symbolic_einsum_chain_plan(
     *,
     analysis_signature: Signature,
-    tail_builder: Callable[[Signature], EinopLoweringPlan],
+    tail_builder: Callable[[Signature], EinopLeafLoweringPlan],
 ) -> ChainEinopLoweringPlan | None:
     """Search for a symbolic carrier-chain plan.
 
@@ -39,7 +38,7 @@ def build_symbolic_einsum_chain_plan(
     ----------
     analysis_signature : Signature
         Canonical input and output axes to lower.
-    tail_builder : Callable[[Signature], EinopLoweringPlan]
+    tail_builder : Callable[[Signature], EinopLeafLoweringPlan]
         Complete planner for a terminal unary signature.
 
     Returns
@@ -174,11 +173,6 @@ def build_symbolic_einsum_chain_plan(
                 and len(stage_plan.equations) > 1
                 else stage_plan
             )
-            if isinstance(
-                tail_plan,
-                (CarrierEinopLoweringPlan, ChainEinopLoweringPlan),
-            ):
-                raise TypeError("chain tail builder must return a leaf lowering plan")
             return ChainEinopLoweringPlan(
                 equations=equations,
                 intermediate=carrier_terms,
