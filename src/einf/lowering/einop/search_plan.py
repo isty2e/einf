@@ -228,16 +228,16 @@ def build_symbolic_einsum_chain_plan(
             next_remaining_indices = tuple(
                 index for index in remaining_indices if index != next_index
             )
-            remaining_terms = {
-                term
-                for index in next_remaining_indices
-                for term in input_axis_lists[index]
-            }
             ordered_terms = ordered_unique_axis_terms(
                 carrier_terms,
                 next_terms,
             )
             search_budget.reserve(1 << len(ordered_terms))
+            remaining_terms = {
+                term
+                for index in next_remaining_indices
+                for term in input_axis_lists[index]
+            }
             candidate_axis_lists = all_subset_axis_lists(
                 ordered_terms=ordered_terms,
                 target_terms=target_terms,

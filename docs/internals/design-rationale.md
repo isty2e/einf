@@ -102,7 +102,9 @@ defeat the primitive vocabulary.
   candidate budget covers the complete chain search, and each subset
   space reserves its candidates before materialization. Signatures that
   exceed the limit fail during planning without allocating the oversized
-  candidate table.
+  candidate table. Candidate scoring projects target and remaining-axis
+  membership onto the subset basis once, so unrelated axes are not
+  rescanned for every candidate.
 
 - **Fast-paths re-expressed as plan variants.** For example, a
   single-einsum carrier plan (`einsum_carrier_then_unary`) competes

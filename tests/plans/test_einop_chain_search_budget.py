@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+
 import pytest
 
 from einf import ErrorCode, ValidationError, ax, axes, einop
@@ -7,6 +9,7 @@ from einf.lowering.einop import (
     EinopLeafLoweringPlan,
     EinopPrimitiveRoute,
     PrimitiveEinopLoweringPlan,
+    all_subset_axis_lists,
 )
 from einf.lowering.einop import search_plan as search_plan_module
 from einf.signature import Signature
@@ -175,3 +178,124 @@ def test_chain_search_default_limit_rejects_oversized_first_space(
         "limit": 65_536,
         "attempted": 131_072,
     }
+
+
+def test_public_single_output_preserves_chain_search_limit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        search_plan_module,
+        "_DEFAULT_EINOP_CHAIN_SEARCH_CANDIDATE_LIMIT",
+        7,
+    )
+    a, b, c, d, contracted, left, right = axes(
+        "single_limit_a",
+        "single_limit_b",
+        "single_limit_c",
+        "single_limit_d",
+        "single_limit_contracted",
+        "single_limit_left",
+        "single_limit_right",
+    )
+
+    with pytest.raises(ValidationError) as error:
+        einop(
+            (
+                ax[a, a, b, contracted, left + right],
+                ax[a, c, contracted],
+                ax[a, d, contracted],
+            ),
+            ax[a],
+        )
+
+    assert error.value.code == ErrorCode.EINOP_PLANNING_TOO_COMPLEX.value
+    assert error.value.data["attempted"] == 32
+
+
+def test_chain_search_shares_candidate_budget_across_carriers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        search_plan_module,
+        "_DEFAULT_EINOP_CHAIN_SEARCH_CANDIDATE_LIMIT",
+        100,
+    )
+    a, b, c, contracted, retained_left, retained_right = axes(
+        "carrier_limit_a",
+        "carrier_limit_b",
+        "carrier_limit_c",
+        "carrier_limit_contracted",
+        "carrier_limit_left",
+        "carrier_limit_right",
+    )
+    signature = Signature(
+        inputs=(
+            ax[a, a, b, contracted, retained_left, retained_right],
+            ax[a, c, contracted],
+        ),
+        outputs=(ax[a, c],),
+    )
+
+    with pytest.raises(ValidationError) as error:
+        search_plan_module.build_symbolic_einsum_chain_plan(
+            analysis_signature=signature,
+            tail_builder=_terminal_tail,
+        )
+
+    assert error.value.data == {
+        "operation": "einop",
+        "complexity_kind": "chain_search_candidates",
+        "limit": 100,
+        "attempted": 128,
+    }
+
+
+class _CountingAxisSet(set[AxisTermBase]):
+    iterations: int
+
+    def __init__(self, terms: tuple[AxisTermBase, ...]) -> None:
+        super().__init__(terms)
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[AxisTermBase]:
+        self.iterations += 1
+        return super().__iter__()
+
+
+def test_subset_scoring_does_not_rescan_unrelated_axes_per_candidate() -> None:
+    ordered_terms = AxisTerms(axes(*(f"ordered_{index}" for index in range(10))))
+    target_terms = _CountingAxisSet((ordered_terms[0], ordered_terms[1]))
+    remaining_terms = _CountingAxisSet(
+        axes(*(f"unrelated_{index}" for index in range(60)))
+    )
+
+    candidates = all_subset_axis_lists(
+        ordered_terms=ordered_terms,
+        target_terms=target_terms,
+        remaining_terms=remaining_terms,
+    )
+
+    assert len(candidates) == 1_024
+    assert target_terms.iterations <= 1
+    assert remaining_terms.iterations <= 1
+
+
+def test_subset_bitmask_scoring_preserves_candidate_order() -> None:
+    a, b, c = axes("subset_order_a", "subset_order_b", "subset_order_c")
+
+    candidates = all_subset_axis_lists(
+        ordered_terms=AxisTerms((a, b, c)),
+        target_terms={a},
+        remaining_terms={b},
+    )
+
+    assert candidates == (
+        ax[a, b],
+        ax[a, b, c],
+        ax[a],
+        ax[a, c],
+        ax[b],
+        ax[b, c],
+        ax[()],
+        ax[c],
+    )

@@ -65,36 +65,33 @@ def all_subset_axis_lists(
     candidate_rows: list[tuple[int, int, int, int, str, AxisTerms]] = []
     total_terms = len(ordered_terms)
     total_masks = 1 << total_terms
+    target_mask = 0
+    remaining_mask = 0
+    ordered_tokens: list[str] = []
+    for index, term in enumerate(ordered_terms):
+        bit = 1 << index
+        if term in target_terms:
+            target_mask |= bit
+        if term in remaining_terms:
+            remaining_mask |= bit
+        ordered_tokens.append(term.stable_token())
+    redundant_mask = (total_masks - 1) & ~(target_mask | remaining_mask)
+
     for mask in range(total_masks):
         selected_terms: list[AxisTermBase] = []
-        selected_set: set[AxisTermBase] = set()
+        selected_tokens: list[str] = []
         for index, term in enumerate(ordered_terms):
             if mask & (1 << index):
                 selected_terms.append(term)
-                selected_set.add(term)
+                selected_tokens.append(ordered_tokens[index])
 
-        target_miss = sum(
-            1
-            for term in target_terms
-            if term in ordered_terms and term not in selected_set
-        )
-        remaining_miss = sum(
-            1
-            for term in remaining_terms
-            if term in ordered_terms and term not in selected_set
-        )
-        redundant_selected = sum(
-            1
-            for term in selected_set
-            if term not in target_terms and term not in remaining_terms
-        )
         candidate_rows.append(
             (
-                target_miss,
-                remaining_miss,
-                redundant_selected,
+                (target_mask & ~mask).bit_count(),
+                (remaining_mask & ~mask).bit_count(),
+                (redundant_mask & mask).bit_count(),
                 len(selected_terms),
-                "|".join(term.stable_token() for term in selected_terms),
+                "|".join(selected_tokens),
                 AxisTerms(tuple(selected_terms)),
             )
         )
