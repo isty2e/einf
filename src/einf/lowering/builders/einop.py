@@ -445,6 +445,8 @@ def build_einop_symbolic_plan(
             has_reducer_plan=reducer_plan is not None,
         )
     except ValidationError as error:
+        if error.code == ErrorCode.EINOP_PLANNING_TOO_COMPLEX.value:
+            raise
         if "einop layout normalization" in error.related:
             raise
         if len(rhs) != 1:

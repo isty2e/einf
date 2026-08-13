@@ -194,5 +194,5 @@ Current concrete lowering provides:
 1. default lowering for `view`, `rearrange`, `repeat`, `reduce`, `contract`, and `einop`,
 2. `einop` decomposition into primitive symbolic steps,
 3. single-einsum carrier plans when representable,
-4. deterministic chain search fallback for contraction-bearing `einop`,
+4. bounded deterministic chain search fallback for contraction-bearing `einop`,
 5. deterministic validation errors when no staged lowering exists.
