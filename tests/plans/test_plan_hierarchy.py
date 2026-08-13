@@ -225,6 +225,20 @@ def _source(
     )
 
 
+def _binary_contract_plan_with_one_candidate() -> AbstractPlan:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec((ax[b, n], ax[n, d]), side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, d], side_name="rhs")
+    source = _source("contract", lhs, rhs)
+    default_lowering = DefaultLoweringProgram()
+    ir_program = default_lowering.ir_program(source)
+    candidate = default_lowering.symbolic_candidates(ir_program=ir_program)[0]
+    return AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,), ir=ir_program),
+    )
+
+
 def test_abstract_plan_delegates_to_lowering_program() -> None:
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
@@ -734,7 +748,7 @@ def test_select_symbolic_plan_prefers_lower_score() -> None:
     )
 
 
-def test_select_symbolic_plan_rejects_context_input_arity_mismatch() -> None:
+def test_select_symbolic_plan_rejects_excess_context_inputs() -> None:
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
     candidate = SymbolicPlan(
@@ -752,6 +766,17 @@ def test_select_symbolic_plan_rejects_context_input_arity_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="input arity 2"):
+        abstract.select_symbolic_plan(context)
+
+
+def test_select_symbolic_plan_rejects_missing_context_inputs() -> None:
+    abstract = _binary_contract_plan_with_one_candidate()
+    context = PlanSelectionContext(
+        input_shapes=((2, 3),),
+        explicit_sizes={},
+    )
+
+    with pytest.raises(ValueError, match="input arity 1"):
         abstract.select_symbolic_plan(context)
 
 
@@ -933,7 +958,7 @@ def test_abstract_plan_builds_route_runner_kernel() -> None:
     assert runner_kernel.output_indices == (1, 0)
 
 
-def test_runtime_selection_rejects_context_input_arity_mismatch() -> None:
+def test_runtime_selection_rejects_excess_context_inputs() -> None:
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
     candidate = SymbolicPlan(
@@ -951,6 +976,17 @@ def test_runtime_selection_rejects_context_input_arity_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="input arity 2"):
+        abstract._select_runtime_symbolic_plan(context=context)
+
+
+def test_runtime_selection_rejects_missing_context_inputs() -> None:
+    abstract = _binary_contract_plan_with_one_candidate()
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3),),
+        backend_profile=None,
+    )
+
+    with pytest.raises(ValueError, match="input arity 1"):
         abstract._select_runtime_symbolic_plan(context=context)
 
 

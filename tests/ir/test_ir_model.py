@@ -205,6 +205,36 @@ def test_abstract_plan_accepts_candidate_with_equivalent_source() -> None:
     assert candidate_source is not source
 
 
+def test_abstract_plan_rejects_foreign_candidate_after_valid_candidate() -> None:
+    b, n = axes("b", "n")
+    lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
+    rhs = AxisSide.from_spec(ax[n, b], side_name="rhs")
+    source = _source("rearrange", lhs, rhs)
+    valid_first = SymbolicPlan(
+        source=source,
+        kind="valid-first",
+        steps=(),
+    )
+    foreign_middle = SymbolicPlan(
+        source=_source("einop", lhs, rhs),
+        kind="foreign-middle",
+        steps=(),
+    )
+    valid_last = SymbolicPlan(
+        source=source,
+        kind="valid-last",
+        steps=(),
+    )
+
+    with pytest.raises(ValueError, match="candidate 1"):
+        AbstractPlan(
+            source=source,
+            lowering=StaticLoweringProgram(
+                candidates=(valid_first, foreign_middle, valid_last),
+            ),
+        )
+
+
 def test_abstract_plan_rejects_ir_with_other_explicit_sizes() -> None:
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n], side_name="lhs")
