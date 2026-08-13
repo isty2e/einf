@@ -273,9 +273,9 @@ def test_symbolic_step_projects_direct_and_chain_variants_to_runtime() -> None:
 
 
 def test_nonzero_carrier_chain_preserves_execution_projection_and_score() -> None:
-    first = np.arange(35, dtype=np.float64).reshape(5, 7)
-    carrier = np.arange(6, dtype=np.float64).reshape(2, 3)
-    second = np.arange(15, dtype=np.float64).reshape(3, 5)
+    first = np.arange(1, 7, dtype=np.float64).reshape(6, 1)
+    carrier = np.arange(2, 8, dtype=np.float64).reshape(6, 1)
+    second = np.arange(3, 9, dtype=np.float64).reshape(1, 6)
     tensors = (first, carrier, second)
     input_shapes = tuple(tensor.shape for tensor in tensors)
     step = EinsumSymbolicStep(
@@ -308,7 +308,7 @@ def test_nonzero_carrier_chain_preserves_execution_projection_and_score() -> Non
             explicit_sizes={},
         )
     ) == SymbolicStepScore(
-        peak_einsum_numel=35,
+        peak_einsum_numel=36,
         materialize_numel=0,
         allocation_count=1,
         kernel_count=2,
