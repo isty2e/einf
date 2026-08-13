@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from einf.axis import (
     AxisExpr,
@@ -8,7 +9,7 @@ from einf.axis import (
     expand_products_for_terms,
     flatten_add_children,
 )
-from einf.diagnostics import ValidationError
+from einf.diagnostics import ErrorCode, ValidationError
 from einf.signature import Signature
 
 from .base_plan import build_einop_execution_plan_base
@@ -25,6 +26,42 @@ from .model import (
     EinopPrimitiveRoute,
     PrimitiveEinopLoweringPlan,
 )
+
+_DEFAULT_EINOP_CHAIN_SEARCH_CANDIDATE_LIMIT = 65_536
+
+
+def _chain_search_limit_error(*, limit: int, attempted: int) -> ValidationError:
+    """Build the stable diagnostic for excessive chain-search work."""
+    return ValidationError(
+        code=ErrorCode.EINOP_PLANNING_TOO_COMPLEX,
+        message="einop planning exceeded the chain search candidate limit",
+        help="simplify the n-ary einop signature or split it into smaller operations",
+        related=("einop lowering",),
+        data={
+            "operation": "einop",
+            "complexity_kind": "chain_search_candidates",
+            "limit": limit,
+            "attempted": attempted,
+        },
+    )
+
+
+@dataclass(slots=True)
+class _EinopChainSearchBudget:
+    """Candidate-materialization budget for one complete chain search."""
+
+    limit: int
+    used: int = 0
+
+    def reserve(self, count: int) -> None:
+        """Reserve one complete subset space before materializing it."""
+        attempted = self.used + count
+        if attempted > self.limit:
+            raise _chain_search_limit_error(
+                limit=self.limit,
+                attempted=attempted,
+            )
+        self.used = attempted
 
 
 def build_symbolic_einsum_chain_plan(
@@ -50,6 +87,8 @@ def build_symbolic_einsum_chain_plan(
     ------
     TypeError
         If ``tail_builder`` returns a composite lowering plan.
+    ValidationError
+        If deterministic chain search exceeds its candidate limit.
     """
     input_axis_lists = analysis_signature.inputs
     if len(input_axis_lists) < 2:
@@ -58,6 +97,9 @@ def build_symbolic_einsum_chain_plan(
     output_axis_lists = analysis_signature.outputs
     target_terms = {term for axis_list in output_axis_lists for term in axis_list}
     failed_states: set[tuple[AxisTerms, tuple[int, ...]]] = set()
+    search_budget = _EinopChainSearchBudget(
+        limit=_DEFAULT_EINOP_CHAIN_SEARCH_CANDIDATE_LIMIT
+    )
 
     def is_multi_output_split_feasible(
         carrier_terms: AxisTerms,
@@ -195,6 +237,7 @@ def build_symbolic_einsum_chain_plan(
                 carrier_terms,
                 next_terms,
             )
+            search_budget.reserve(1 << len(ordered_terms))
             candidate_axis_lists = all_subset_axis_lists(
                 ordered_terms=ordered_terms,
                 target_terms=target_terms,
