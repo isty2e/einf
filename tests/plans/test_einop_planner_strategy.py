@@ -58,3 +58,72 @@ def test_einop_carrier_builder_consumes_preselected_tail(
 
     assert plan["kind"] == "einsum_carrier_then_unary"
     assert len(calls) == 1
+
+
+def test_einop_chain_execution_preserves_planner_order() -> None:
+    a, b, c, d = axes("chain_a", "chain_b", "chain_c", "chain_d")
+    op = einop(
+        (ax[a, b], ax[a, c], ax[a, d]),
+        (ax[a], ax[c]),
+    )
+    first = np.arange(1, 7, dtype=np.float64).reshape(2, 3)
+    second = np.arange(1, 9, dtype=np.float64).reshape(2, 4)
+    third = np.arange(1, 11, dtype=np.float64).reshape(2, 5)
+
+    actual = op(first, second, third)
+
+    assert op.plan_dict()["kind"] == "einsum_chain_then_unary"
+    np.testing.assert_array_equal(
+        actual[0],
+        np.einsum("ab,ac,ad->a", first, second, third),
+    )
+    np.testing.assert_array_equal(
+        actual[1],
+        np.einsum("ab,ac,ad->c", first, second, third),
+    )
+
+
+def test_einop_chain_builder_consumes_preselected_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Signature, bool]] = []
+
+    def counting_build_einop_execution_plan(
+        *,
+        analysis_signature: Signature,
+        has_reducer_plan: bool,
+    ) -> EinopLoweringPlan:
+        calls.append((analysis_signature, has_reducer_plan))
+        return build_einop_execution_plan(
+            analysis_signature=analysis_signature,
+            has_reducer_plan=has_reducer_plan,
+        )
+
+    monkeypatch.setattr(
+        einop_builder_module,
+        "build_einop_execution_plan",
+        counting_build_einop_execution_plan,
+    )
+    a, b, c, d = axes(
+        "chain_call_a",
+        "chain_call_b",
+        "chain_call_c",
+        "chain_call_d",
+    )
+    op = einop(
+        (ax[a, b], ax[a, c], ax[a, d]),
+        (ax[a], ax[c]),
+    )
+
+    plan = op.plan_dict()
+
+    assert plan["kind"] == "einsum_chain_then_unary"
+    assert calls == [
+        (
+            Signature(
+                inputs=(ax[a, b], ax[a, c], ax[a, d]),
+                outputs=(ax[a], ax[c]),
+            ),
+            False,
+        )
+    ]

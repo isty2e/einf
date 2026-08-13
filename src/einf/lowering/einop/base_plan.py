@@ -7,7 +7,7 @@ from .equation import build_einop_equations, has_nary_contraction_candidate
 from .model import (
     DirectEinsumEinopLoweringPlan,
     EinopChainSearchRequest,
-    EinopLoweringPlan,
+    EinopLeafLoweringPlan,
     EinopPrimitiveRoute,
     LayoutNormalizedEinopLoweringPlan,
     PrimitiveEinopLoweringPlan,
@@ -18,7 +18,7 @@ def build_einop_execution_plan_base(
     *,
     analysis_signature: Signature,
     has_reducer_plan: bool,
-) -> EinopLoweringPlan | EinopChainSearchRequest:
+) -> EinopLeafLoweringPlan | EinopChainSearchRequest:
     """Build an einop plan before carrier-chain search.
 
     Parameters
@@ -30,7 +30,7 @@ def build_einop_execution_plan_base(
 
     Returns
     -------
-    EinopLoweringPlan | EinopChainSearchRequest
+    EinopLeafLoweringPlan | EinopChainSearchRequest
         An executable base plan, or a request for carrier-chain search.
 
     Raises

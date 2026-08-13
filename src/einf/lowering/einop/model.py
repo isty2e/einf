@@ -138,6 +138,17 @@ class LayoutNormalizedEinopLoweringPlan:
         return "layout_normalized"
 
 
+EinopLeafLoweringPlan: TypeAlias = (
+    PrimitiveEinopLoweringPlan
+    | DirectEinsumEinopLoweringPlan
+    | LayoutNormalizedEinopLoweringPlan
+)
+
+
+def _is_einop_leaf_lowering_plan(candidate: EinopLeafLoweringPlan) -> bool:
+    return type(candidate) in get_args(EinopLeafLoweringPlan)
+
+
 @dataclass(frozen=True, slots=True)
 @final
 class CarrierEinopLoweringPlan:
@@ -149,7 +160,7 @@ class CarrierEinopLoweringPlan:
         Equation that materializes the carrier tensor.
     intermediate : AxisTerms
         Logical axis terms of the carrier tensor.
-    tail : EinopLoweringPlan
+    tail : EinopLeafLoweringPlan
         Canonical unary plan consuming the carrier.
 
     Raises
@@ -160,15 +171,17 @@ class CarrierEinopLoweringPlan:
 
     equation: str
     intermediate: AxisTerms
-    tail: "EinopLoweringPlan"
+    tail: EinopLeafLoweringPlan
 
     def __post_init__(self) -> None:
         if type(self.equation) is not str or not self.equation:
             raise TypeError("carrier einop lowering requires a non-empty equation")
         if not isinstance(self.intermediate, AxisTerms):
             raise TypeError("carrier einop lowering requires intermediate axis terms")
-        if not _is_einop_lowering_plan(self.tail):
-            raise TypeError("carrier einop lowering requires an executable tail plan")
+        if not _is_einop_leaf_lowering_plan(self.tail):
+            raise TypeError(
+                "carrier einop lowering requires a unary executable tail plan"
+            )
 
     @property
     def symbolic_kind(self) -> str:
@@ -197,7 +210,7 @@ class ChainEinopLoweringPlan:
         Input index used as the initial carrier.
     chain_order : tuple[int, ...]
         Remaining input indices in execution order.
-    tail : EinopLoweringPlan
+    tail : EinopLeafLoweringPlan
         Canonical unary plan consuming the final carrier.
 
     Raises
@@ -213,7 +226,7 @@ class ChainEinopLoweringPlan:
     intermediate: AxisTerms
     carrier_index: int
     chain_order: tuple[int, ...]
-    tail: "EinopLoweringPlan"
+    tail: EinopLeafLoweringPlan
 
     def __post_init__(self) -> None:
         _validate_equations(self.equations, owner="chain einop lowering")
@@ -225,8 +238,10 @@ class ChainEinopLoweringPlan:
             raise TypeError("chain einop lowering order must be a tuple")
         if any(type(index) is not int for index in self.chain_order):
             raise TypeError("chain einop lowering order must contain integer indices")
-        if not _is_einop_lowering_plan(self.tail):
-            raise TypeError("chain einop lowering requires an executable tail plan")
+        if not _is_einop_leaf_lowering_plan(self.tail):
+            raise TypeError(
+                "chain einop lowering requires a unary executable tail plan"
+            )
         if len(self.chain_order) != len(self.equations):
             raise ValueError("chain einop lowering requires one equation per edge")
 
@@ -266,17 +281,12 @@ EinopLoweringPlan: TypeAlias = (
     | CarrierEinopLoweringPlan
     | ChainEinopLoweringPlan
 )
-
-
-def _is_einop_lowering_plan(candidate: EinopLoweringPlan) -> bool:
-    return type(candidate) in get_args(EinopLoweringPlan)
-
-
 __all__ = [
     "CarrierEinopLoweringPlan",
     "ChainEinopLoweringPlan",
     "DirectEinsumEinopLoweringPlan",
     "EinopChainSearchRequest",
+    "EinopLeafLoweringPlan",
     "EinopLoweringPlan",
     "EinopPrimitiveRoute",
     "LayoutNormalizedEinopLoweringPlan",

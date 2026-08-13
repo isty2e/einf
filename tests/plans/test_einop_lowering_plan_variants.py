@@ -132,10 +132,10 @@ def test_layout_variant_rejects_identity_normalization() -> None:
         )
 
 
-def test_composite_variants_require_executable_tail_plans() -> None:
+def test_composite_variants_require_unary_executable_tail_plans() -> None:
     a, b = axes("a", "b")
 
-    with pytest.raises(TypeError, match="requires an executable tail plan"):
+    with pytest.raises(TypeError, match="requires a unary executable tail plan"):
         CarrierEinopLoweringPlan(
             equation="ab->ab",
             intermediate=ax[a, b],
@@ -152,12 +152,46 @@ def test_composite_variants_reject_subclassed_executable_plans() -> None:
     )
     extended_plan = extended_plan_type(route=EinopPrimitiveRoute.REARRANGE)
 
-    with pytest.raises(TypeError, match="requires an executable tail plan"):
+    with pytest.raises(TypeError, match="requires a unary executable tail plan"):
         CarrierEinopLoweringPlan(
             equation="ab->ab",
             intermediate=ax[a, b],
             tail=extended_plan,
         )
+
+
+def test_composite_variants_reject_composite_tail_plans() -> None:
+    a, c = axes("a", "c")
+    primitive_tail = PrimitiveEinopLoweringPlan(route=EinopPrimitiveRoute.REARRANGE)
+    carrier_tail = CarrierEinopLoweringPlan(
+        equation="ab,bc->ac",
+        intermediate=ax[a, c],
+        tail=primitive_tail,
+    )
+    chain_tail = ChainEinopLoweringPlan(
+        equations=("ab,bc->ac",),
+        intermediate=ax[a, c],
+        carrier_index=0,
+        chain_order=(1,),
+        tail=primitive_tail,
+    )
+
+    for composite_tail in (carrier_tail, chain_tail):
+        with pytest.raises(TypeError, match="requires a unary executable tail plan"):
+            CarrierEinopLoweringPlan(
+                equation="ab,bc->ac",
+                intermediate=ax[a, c],
+                tail=composite_tail,  # type: ignore[arg-type]
+            )
+
+        with pytest.raises(TypeError, match="requires a unary executable tail plan"):
+            ChainEinopLoweringPlan(
+                equations=("ab,bc->ac",),
+                intermediate=ax[a, c],
+                carrier_index=0,
+                chain_order=(1,),
+                tail=composite_tail,  # type: ignore[arg-type]
+            )
 
 
 @pytest.mark.parametrize(

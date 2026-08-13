@@ -18,6 +18,7 @@ from .equation import (
     ordered_unique_axis_terms,
 )
 from .model import (
+    CarrierEinopLoweringPlan,
     ChainEinopLoweringPlan,
     DirectEinsumEinopLoweringPlan,
     EinopChainSearchRequest,
@@ -45,6 +46,11 @@ def build_symbolic_einsum_chain_plan(
     -------
     ChainEinopLoweringPlan | None
         The complete chain plan, or ``None`` when no chain is feasible.
+
+    Raises
+    ------
+    TypeError
+        If ``tail_builder`` returns a composite lowering plan.
     """
     input_axis_lists = analysis_signature.inputs
     if len(input_axis_lists) < 2:
@@ -168,6 +174,11 @@ def build_symbolic_einsum_chain_plan(
                 and len(stage_plan.equations) > 1
                 else stage_plan
             )
+            if isinstance(
+                tail_plan,
+                (CarrierEinopLoweringPlan, ChainEinopLoweringPlan),
+            ):
+                raise TypeError("chain tail builder must return a leaf lowering plan")
             return ChainEinopLoweringPlan(
                 equations=equations,
                 intermediate=carrier_terms,
