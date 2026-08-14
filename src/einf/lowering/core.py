@@ -5,8 +5,7 @@ try:
 except ImportError:  # pragma: no cover
     from typing_extensions import Self
 
-from einf.axis import AxisSide
-from einf.ir import IRProgram, build_default_ir_program
+from einf.ir import IRProgram, LoweringSignature
 from einf.plans.lowering_protocol import LoweringProgram
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPlan
@@ -20,25 +19,40 @@ class EmptyLoweringProgram(LoweringProgram):
 
     def ir_program(
         self,
-        *,
-        op_name: str,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
+        source: LoweringSignature,
+        /,
     ) -> IRProgram:
-        _ = explicit_sizes_items
-        return build_default_ir_program(
-            op_name=op_name,
-            lhs=lhs,
-            rhs=rhs,
-        )
+        """Build default IR for a source with no candidate lowering.
+
+        Parameters
+        ----------
+        source : LoweringSignature
+            Canonical structural input.
+
+        Returns
+        -------
+        IRProgram
+            Source-bound IR with the default trace.
+        """
+        return IRProgram.from_source(source)
 
     def symbolic_candidates(
         self,
         *,
         ir_program: IRProgram,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
     ) -> tuple[SymbolicPlan, ...]:
+        """Return no candidates for an IR program.
+
+        Parameters
+        ----------
+        ir_program : IRProgram
+            Source-bound lowering IR.
+
+        Returns
+        -------
+        tuple[SymbolicPlan, ...]
+            Empty candidate sequence.
+        """
         return ()
 
 
@@ -51,27 +65,42 @@ class StaticLoweringProgram(LoweringProgram):
 
     def ir_program(
         self,
-        *,
-        op_name: str,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
+        source: LoweringSignature,
+        /,
     ) -> IRProgram:
-        _ = explicit_sizes_items
+        """Return the configured IR or build one for the source.
+
+        Parameters
+        ----------
+        source : LoweringSignature
+            Canonical structural input.
+
+        Returns
+        -------
+        IRProgram
+            Configured or default source-bound IR.
+        """
         if self.ir is not None:
             return self.ir
-        return build_default_ir_program(
-            op_name=op_name,
-            lhs=lhs,
-            rhs=rhs,
-        )
+        return IRProgram.from_source(source)
 
     def symbolic_candidates(
         self,
         *,
         ir_program: IRProgram,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
     ) -> tuple[SymbolicPlan, ...]:
+        """Return the configured symbolic candidates.
+
+        Parameters
+        ----------
+        ir_program : IRProgram
+            Source-bound lowering IR supplied by the caller.
+
+        Returns
+        -------
+        tuple[SymbolicPlan, ...]
+            Configured candidate sequence.
+        """
         return self.candidates
 
 
@@ -91,28 +120,42 @@ class DefaultLoweringProgram(LoweringProgram):
         self,
         *,
         ir_program: IRProgram,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
     ) -> tuple[SymbolicPlan, ...]:
+        """Compile default symbolic candidates for an IR program.
+
+        Parameters
+        ----------
+        ir_program : IRProgram
+            Source-bound lowering IR.
+
+        Returns
+        -------
+        tuple[SymbolicPlan, ...]
+            Ordered default candidates.
+        """
         return build_symbolic_candidates_from_ir(
             ir_program=ir_program,
-            explicit_sizes_items=explicit_sizes_items,
             reducer_plan=self.reducer_plan,
         )
 
     def ir_program(
         self,
-        *,
-        op_name: str,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
+        source: LoweringSignature,
+        /,
     ) -> IRProgram:
-        _ = explicit_sizes_items
-        return build_default_ir_program(
-            op_name=op_name,
-            lhs=lhs,
-            rhs=rhs,
-        )
+        """Build default IR for a structural source.
+
+        Parameters
+        ----------
+        source : LoweringSignature
+            Canonical structural input.
+
+        Returns
+        -------
+        IRProgram
+            Source-bound IR with the default trace.
+        """
+        return IRProgram.from_source(source)
 
 
 __all__ = [

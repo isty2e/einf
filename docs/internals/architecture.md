@@ -7,7 +7,7 @@ Status: Non-normative architecture note
 Define the internal execution hierarchy for `TensorOp`:
 
 1. `TensorOp`: public operation value and call boundary.
-2. `AbstractPlan`: ingress-normalized operation definition plus a lowering protocol.
+2. `AbstractPlan`: one structural lowering source plus a lowering protocol.
 3. `SymbolicPlan`: ordered symbolic primitive steps with deterministic scoring.
 4. `RuntimeStep` chain: executable primitive steps specialized for one call shape/backend.
 
@@ -39,14 +39,17 @@ Constructor-time validation that is not owned by a concrete primitive step lives
 
 ### AbstractPlan
 
-`AbstractPlan` lives in `plans/abstract.py`. It contains the normalized operation
-shape and the plan-owned lowering protocol seam:
+`AbstractPlan` lives in `plans/abstract.py`. It contains one structural source and
+the plan-owned lowering protocol seam:
 
-- `op_name: str`
-- `lhs: AxisSide`
-- `rhs: AxisSide`
-- `explicit_sizes_items: tuple[tuple[str, int], ...]`
+- `source: LoweringSignature`
 - `lowering: LoweringProgram`
+
+`LoweringSignature` groups the operation name, normalized axis `Signature`, and
+explicit size bindings. During construction, `AbstractPlan` asks its
+`LoweringProgram` for an `IRProgram` and its symbolic candidates, then verifies
+that every returned artifact has the same source. The check runs before candidates
+enter runtime caches.
 
 During initialization it lowers once into:
 
@@ -68,6 +71,8 @@ consumes the protocol. Concrete implementations live in `lowering/`:
 
 `einf.lowering.LoweringProgram` remains a re-export of the plan-owned protocol for
 convenient imports, but the canonical owner is `plans/lowering_protocol.py`.
+The protocol receives a `LoweringSignature` and carries that source through the IR
+and every symbolic candidate. Observability traces are not part of source identity.
 
 ### SymbolicPlan
 
@@ -75,12 +80,12 @@ convenient imports, but the canonical owner is `plans/lowering_protocol.py`.
 steps:
 
 - `kind: str`
-- `input_arity: int`
-- `output_arity: int`
+- `source: LoweringSignature`
 - `steps: tuple[SymbolicStep, ...]`
 
-It validates step arity continuity, specializes symbolic steps into runtime steps,
-executes the runtime chain, and computes deterministic plan scores.
+Input and output arity come from `source.signature`; callers cannot configure them
+independently. `SymbolicPlan` validates step continuity, specializes symbolic steps
+into runtime steps, executes the runtime chain, and computes deterministic scores.
 
 ### SymbolicStep
 
@@ -126,7 +131,7 @@ runtime execution, and backend-specific fast paths where applicable.
 Current package ownership:
 
 - `operations/`: public op construction, `TensorOp`, call execution glue, constructor validation.
-- `ir/`: lowering IR nodes, pure route solving, and static route tables.
+- `ir/`: lowering source/trace models, pure route solving, and static route tables.
 - `lowering/`: concrete lowering implementations and IR-to-symbolic-candidate builders.
 - `plans/`: abstract/symbolic plan contracts, plan-owned lowering protocol, selection/cache/fusion/route runtime/runners/rendering.
 - `steps/`: primitive symbolic/runtime step contracts, models, compilation, specialization, and execution.

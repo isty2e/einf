@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from einf import ax, axes, einop
-from einf.axis import AxisSide
+from einf.ir import LoweringSignature
 from einf.lowering.builders import einop as einop_builder_module
 from einf.lowering.einop import (
     ChainEinopLoweringPlan,
@@ -114,21 +114,18 @@ def test_einop_chain_builder_consumes_preselected_tail(
     )
     projected_plans: list[EinopLoweringPlan] = []
     build_selected_plan = einop_builder_module._build_selected_einop_symbolic_plan
+    source = LoweringSignature(op_name="einop", signature=signature)
 
     def observe_selected_plan(
         *,
+        source: LoweringSignature,
         execution_plan: EinopLoweringPlan,
-        lhs: AxisSide,
-        rhs: AxisSide,
-        explicit_sizes_items: tuple[tuple[str, int], ...],
         reducer_plan: ReducerPlan | None,
     ) -> SymbolicPlan:
         projected_plans.append(execution_plan)
         return build_selected_plan(
+            source=source,
             execution_plan=execution_plan,
-            lhs=lhs,
-            rhs=rhs,
-            explicit_sizes_items=explicit_sizes_items,
             reducer_plan=reducer_plan,
         )
 
@@ -138,13 +135,12 @@ def test_einop_chain_builder_consumes_preselected_tail(
         observe_selected_plan,
     )
     symbolic_plan = observe_selected_plan(
+        source=source,
         execution_plan=chain_plan,
-        lhs=signature.inputs,
-        rhs=signature.outputs,
-        explicit_sizes_items=(),
         reducer_plan=None,
     )
 
     assert symbolic_plan.kind == "einsum_chain_then_unary"
+    assert symbolic_plan.source == source
     assert projected_plans[0] is chain_plan
     assert projected_plans[1] is stored_tail

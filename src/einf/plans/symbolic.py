@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+from einf.ir import LoweringSignature
 from einf.steps.base import (
     RuntimeSpecializationContext,
     RuntimeStep,
@@ -22,14 +23,50 @@ class SymbolicPlanRuntimeCaches:
 
 @dataclass(frozen=True, slots=True)
 class SymbolicPlan:
-    """Symbolic program composed of ordered symbolic steps."""
+    """Represent one source-bound symbolic program.
 
+    Parameters
+    ----------
+    source : LoweringSignature
+        Structural operation from which this plan was lowered.
+    kind : str
+        Symbolic strategy label used for selection and rendering.
+    steps : tuple[SymbolicStep[StepProgram], ...]
+        Ordered primitive symbolic instructions.
+
+    Raises
+    ------
+    ValueError
+        If the step chain does not preserve the source arity contract.
+    """
+
+    source: LoweringSignature
     kind: str
-    input_arity: int
-    output_arity: int
     steps: tuple[SymbolicStep[StepProgram], ...]
     requires_einsum_backend: bool = field(init=False)
     _runtime: SymbolicPlanRuntimeCaches = field(init=False, repr=False, compare=False)
+
+    @property
+    def input_arity(self) -> int:
+        """Return the number of input tensors.
+
+        Returns
+        -------
+        int
+            Input arity declared by the lowering signature.
+        """
+        return self.source.input_arity
+
+    @property
+    def output_arity(self) -> int:
+        """Return the number of output tensors.
+
+        Returns
+        -------
+        int
+            Output arity declared by the lowering signature.
+        """
+        return self.source.output_arity
 
     def __post_init__(self) -> None:
         """Validate symbolic step chain arities."""

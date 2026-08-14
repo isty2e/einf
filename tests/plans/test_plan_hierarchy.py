@@ -8,6 +8,7 @@ import einf.steps.reduce.step as reduce_step_module
 from einf import ax, axes
 from einf.axis import AxisSide, AxisTerms
 from einf.backend import BACKEND_RESOLVER, BackendProfile
+from einf.ir import LoweringSignature
 from einf.lowering import DefaultLoweringProgram, StaticLoweringProgram
 from einf.plans.abstract import AbstractPlan
 from einf.plans.runners import RouteRunnerKernel, StepChainRunnerKernel
@@ -15,6 +16,7 @@ from einf.plans.scoring import SymbolicPlanScore
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.callable import CallableReducerBinding
 from einf.reduction.schema import ReducerName
+from einf.signature import Signature
 from einf.steps.axis_slice import AxisSliceSymbolicStep
 from einf.steps.base import (
     RuntimeSpecializationContext,
@@ -209,12 +211,40 @@ def _unary_side() -> tuple[AxisSide, AxisSide]:
     return lhs, rhs
 
 
+def _source(
+    op_name: str,
+    lhs: AxisSide,
+    rhs: AxisSide,
+    *,
+    explicit_sizes_items: tuple[tuple[str, int], ...] = (),
+) -> LoweringSignature:
+    return LoweringSignature(
+        op_name=op_name,
+        signature=Signature(inputs=lhs, outputs=rhs),
+        explicit_sizes_items=explicit_sizes_items,
+    )
+
+
+def _binary_contract_plan_with_one_candidate() -> AbstractPlan:
+    b, n, d = axes("b", "n", "d")
+    lhs = AxisSide.from_spec((ax[b, n], ax[n, d]), side_name="lhs")
+    rhs = AxisSide.from_spec(ax[b, d], side_name="rhs")
+    source = _source("contract", lhs, rhs)
+    default_lowering = DefaultLoweringProgram()
+    ir_program = default_lowering.ir_program(source)
+    candidate = default_lowering.symbolic_candidates(ir_program=ir_program)[0]
+    return AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,), ir=ir_program),
+    )
+
+
 def test_abstract_plan_delegates_to_lowering_program() -> None:
     lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
     symbolic = SymbolicPlan(
+        source=source,
         kind="rearrange",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _IdentitySymbolicStep(
                 name="identity",
@@ -225,10 +255,7 @@ def test_abstract_plan_delegates_to_lowering_program() -> None:
     )
     lowering = StaticLoweringProgram(candidates=(symbolic,))
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=source,
         lowering=lowering,
     )
 
@@ -237,10 +264,10 @@ def test_abstract_plan_delegates_to_lowering_program() -> None:
 
 
 def test_symbolic_plan_execute_specializes_all_steps() -> None:
+    lhs, rhs = _unary_side()
     plan = SymbolicPlan(
+        source=_source("rearrange", lhs, rhs),
         kind="identity",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _IdentitySymbolicStep(
                 name="identity",
@@ -261,10 +288,10 @@ def test_symbolic_plan_execute_specializes_all_steps() -> None:
 
 
 def test_symbolic_plan_execute_runs_steps_in_order() -> None:
+    lhs, rhs = _unary_side()
     plan = SymbolicPlan(
+        source=_source("rearrange", lhs, rhs),
         kind="identity",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _IdentitySymbolicStep(
                 name="identity",
@@ -285,11 +312,11 @@ def test_symbolic_plan_execute_runs_steps_in_order() -> None:
 
 
 def test_plan_construction_rejects_arity_mismatch() -> None:
+    lhs, rhs = _unary_side()
     try:
         _ = SymbolicPlan(
+            source=_source("rearrange", lhs, rhs),
             kind="bad",
-            input_arity=1,
-            output_arity=1,
             steps=(
                 _IdentitySymbolicStep(
                     name="bad-step",
@@ -363,15 +390,9 @@ def test_default_lowering_program_emits_expected_symbolic_steps() -> None:
     lowering = DefaultLoweringProgram()
 
     def lower_one(op_name: str, lhs_side: AxisSide, rhs_side: AxisSide) -> SymbolicPlan:
-        ir_program = lowering.ir_program(
-            op_name=op_name,
-            lhs=lhs_side,
-            rhs=rhs_side,
-            explicit_sizes_items=(),
-        )
+        ir_program = lowering.ir_program(_source(op_name, lhs_side, rhs_side))
         return lowering.symbolic_candidates(
             ir_program=ir_program,
-            explicit_sizes_items=(),
         )[0]
 
     plan = lower_one("contract", lhs, rhs)
@@ -497,15 +518,16 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     assert isinstance(einsum_runtime, EinsumRuntimeStep)
 
     lowering = DefaultLoweringProgram()
+    contract_lhs = AxisSide.from_spec(
+        (ax[b, n, d], ax[d, j]),
+        side_name="lhs",
+    )
+    contract_rhs = AxisSide.from_spec(ax[b, n, j], side_name="rhs")
     einop_contract_ir = lowering.ir_program(
-        op_name="einop",
-        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
-        rhs=AxisSide.from_spec(ax[b, n, j], side_name="rhs"),
-        explicit_sizes_items=(),
+        _source("einop", contract_lhs, contract_rhs)
     )
     einop_contract_plan = lowering.symbolic_candidates(
         ir_program=einop_contract_ir,
-        explicit_sizes_items=(),
     )[0]
     contract_outputs = einop_contract_plan.execute(
         einsum_context,
@@ -513,15 +535,9 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     )
     assert len(contract_outputs) == 1
 
-    contract_ir = lowering.ir_program(
-        op_name="contract",
-        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
-        rhs=AxisSide.from_spec(ax[b, n, j], side_name="rhs"),
-        explicit_sizes_items=(),
-    )
+    contract_ir = lowering.ir_program(_source("contract", contract_lhs, contract_rhs))
     contract_plan = lowering.symbolic_candidates(
         ir_program=contract_ir,
-        explicit_sizes_items=(),
     )[0]
     assert contract_plan.kind == "contract"
     assert einop_contract_plan.kind == "contract"
@@ -538,11 +554,16 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
     assert contract_step.program.allow_native_matmul
     assert einop_contract_step.program.allow_native_matmul
 
+    route_lhs = AxisSide.from_spec(
+        (ax[b, n, d], ax[d, j]),
+        side_name="lhs",
+    )
+    route_rhs = AxisSide.from_spec(
+        (ax[d, j], ax[b, n, d]),
+        side_name="rhs",
+    )
     route_abstract_plan = AbstractPlan(
-        op_name="rearrange",
-        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
-        rhs=AxisSide.from_spec((ax[d, j], ax[b, n, d]), side_name="rhs"),
-        explicit_sizes_items=(),
+        source=_source("rearrange", route_lhs, route_rhs),
         lowering=DefaultLoweringProgram(),
     )
     routed_outputs = route_abstract_plan.execute(
@@ -641,10 +662,10 @@ def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> N
         output_arity=1,
         counter_key="cache-hit",
     )
+    lhs, rhs = _unary_side()
     plan = SymbolicPlan(
+        source=_source("rearrange", lhs, rhs),
         kind="counting",
-        input_arity=1,
-        output_arity=1,
         steps=(step,),
     )
     context = RuntimeSpecializationContext(
@@ -666,55 +687,12 @@ def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> N
     assert _CountingSymbolicStep.calls["cache-hit"] == 2
 
 
-def test_select_symbolic_plan_uses_input_arity() -> None:
-    one = SymbolicPlan(
-        kind="one",
-        input_arity=1,
-        output_arity=1,
-        steps=(
-            _IdentitySymbolicStep(
-                name="one",
-                input_arity=1,
-                output_arity=1,
-            ),
-        ),
-    )
-    two = SymbolicPlan(
-        kind="two",
-        input_arity=2,
-        output_arity=1,
-        steps=(
-            _IdentitySymbolicStep(
-                name="two",
-                input_arity=2,
-                output_arity=1,
-            ),
-        ),
-    )
-    context = RuntimeSpecializationContext(
-        input_shapes=((2, 3), (3, 4)),
-        backend_profile=None,
-    )
-
-    lhs, rhs = _unary_side()
-    abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
-        lowering=StaticLoweringProgram(candidates=(one, two)),
-    )
-    selected = abstract.select_symbolic_plan(
-        PlanSelectionContext(input_shapes=context.input_shapes, explicit_sizes={})
-    )
-    assert selected.kind == "two"
-
-
 def test_select_symbolic_plan_prefers_lower_score() -> None:
+    lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
     higher = SymbolicPlan(
+        source=source,
         kind="higher",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _ScoredSymbolicStep(
                 name="higher-step",
@@ -730,9 +708,8 @@ def test_select_symbolic_plan_prefers_lower_score() -> None:
         ),
     )
     lower = SymbolicPlan(
+        source=source,
         kind="lower",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _ScoredSymbolicStep(
                 name="lower-step",
@@ -751,12 +728,8 @@ def test_select_symbolic_plan_prefers_lower_score() -> None:
         input_shapes=((2, 3),),
         backend_profile=None,
     )
-    lhs, rhs = _unary_side()
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=source,
         lowering=StaticLoweringProgram(candidates=(higher, lower)),
     )
     selected = abstract.select_symbolic_plan(
@@ -775,12 +748,50 @@ def test_select_symbolic_plan_prefers_lower_score() -> None:
     )
 
 
+def test_select_symbolic_plan_rejects_excess_context_inputs() -> None:
+    lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
+    candidate = SymbolicPlan(
+        source=source,
+        kind="route",
+        steps=(),
+    )
+    abstract = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,)),
+    )
+    context = PlanSelectionContext(
+        input_shapes=((2, 3, 4), (4, 5)),
+        explicit_sizes={},
+    )
+
+    with pytest.raises(ValueError, match="input arity 2"):
+        abstract.select_symbolic_plan(context)
+
+
+def test_select_symbolic_plan_rejects_missing_context_inputs() -> None:
+    abstract = _binary_contract_plan_with_one_candidate()
+    context = PlanSelectionContext(
+        input_shapes=((2, 3),),
+        explicit_sizes={},
+    )
+
+    with pytest.raises(ValueError, match="input arity 1"):
+        abstract.select_symbolic_plan(context)
+
+
 def test_select_symbolic_plan_uses_selection_cache() -> None:
     _CountingScoreSymbolicStep.calls.clear()
+    lhs, rhs = _unary_side()
+    source = _source(
+        "rearrange",
+        lhs,
+        rhs,
+        explicit_sizes_items=(("n", 3),),
+    )
     higher = SymbolicPlan(
+        source=source,
         kind="higher",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _CountingScoreSymbolicStep(
                 name="higher-step",
@@ -797,9 +808,8 @@ def test_select_symbolic_plan_uses_selection_cache() -> None:
         ),
     )
     lower = SymbolicPlan(
+        source=source,
         kind="lower",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _CountingScoreSymbolicStep(
                 name="lower-step",
@@ -819,12 +829,8 @@ def test_select_symbolic_plan_uses_selection_cache() -> None:
         input_shapes=((2, 3),),
         backend_profile=None,
     )
-    lhs, rhs = _unary_side()
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(("n", 3),),
+        source=source,
         lowering=StaticLoweringProgram(candidates=(higher, lower)),
     )
 
@@ -847,10 +853,10 @@ def test_select_symbolic_plan_uses_selection_cache() -> None:
 
 def test_abstract_plan_execute_runs_symbolic_then_runtime() -> None:
     lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
     symbolic = SymbolicPlan(
+        source=source,
         kind="identity",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _IdentitySymbolicStep(
                 name="identity",
@@ -860,10 +866,7 @@ def test_abstract_plan_execute_runs_symbolic_then_runtime() -> None:
         ),
     )
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=source,
         lowering=StaticLoweringProgram(candidates=(symbolic,)),
     )
     tensor = np.arange(6).reshape(2, 3)
@@ -882,10 +885,7 @@ def test_abstract_plan_execute_rearrange_runs_real_runtime_step() -> None:
     lhs = AxisSide.from_spec(ax[b, n, d], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, d, n], side_name="rhs")
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=_source("rearrange", lhs, rhs),
         lowering=DefaultLoweringProgram(),
     )
     tensor = np.arange(24).reshape(2, 3, 4)
@@ -907,10 +907,7 @@ def test_abstract_plan_execute_einop_contract_runs_real_runtime_step() -> None:
     lhs = AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, j], side_name="rhs")
     abstract = AbstractPlan(
-        op_name="einop",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=_source("einop", lhs, rhs),
         lowering=DefaultLoweringProgram(),
     )
     left = np.arange(24).reshape(2, 3, 4).astype(np.float32)
@@ -928,11 +925,16 @@ def test_abstract_plan_execute_einop_contract_runs_real_runtime_step() -> None:
 
 def test_abstract_plan_builds_route_runner_kernel() -> None:
     b, n, d, j = axes("b", "n", "d", "j")
+    lhs = AxisSide.from_spec(
+        (ax[b, n, d], ax[d, j]),
+        side_name="lhs",
+    )
+    rhs = AxisSide.from_spec(
+        (ax[d, j], ax[b, n, d]),
+        side_name="rhs",
+    )
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs"),
-        rhs=AxisSide.from_spec((ax[d, j], ax[b, n, d]), side_name="rhs"),
-        explicit_sizes_items=(),
+        source=_source("rearrange", lhs, rhs),
         lowering=DefaultLoweringProgram(),
     )
     context = RuntimeSpecializationContext(
@@ -956,12 +958,44 @@ def test_abstract_plan_builds_route_runner_kernel() -> None:
     assert runner_kernel.output_indices == (1, 0)
 
 
+def test_runtime_selection_rejects_excess_context_inputs() -> None:
+    lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
+    candidate = SymbolicPlan(
+        source=source,
+        kind="route",
+        steps=(),
+    )
+    abstract = AbstractPlan(
+        source=source,
+        lowering=StaticLoweringProgram(candidates=(candidate,)),
+    )
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3, 4), (4, 5)),
+        backend_profile=None,
+    )
+
+    with pytest.raises(ValueError, match="input arity 2"):
+        abstract._select_runtime_symbolic_plan(context=context)
+
+
+def test_runtime_selection_rejects_missing_context_inputs() -> None:
+    abstract = _binary_contract_plan_with_one_candidate()
+    context = RuntimeSpecializationContext(
+        input_shapes=((2, 3),),
+        backend_profile=None,
+    )
+
+    with pytest.raises(ValueError, match="input arity 1"):
+        abstract._select_runtime_symbolic_plan(context=context)
+
+
 def test_abstract_plan_builds_step_chain_runner_kernel() -> None:
     lhs, rhs = _unary_side()
+    source = _source("rearrange", lhs, rhs)
     symbolic = SymbolicPlan(
+        source=source,
         kind="identity",
-        input_arity=1,
-        output_arity=1,
         steps=(
             _IdentitySymbolicStep(
                 name="identity",
@@ -971,10 +1005,7 @@ def test_abstract_plan_builds_step_chain_runner_kernel() -> None:
         ),
     )
     abstract = AbstractPlan(
-        op_name="rearrange",
-        lhs=lhs,
-        rhs=rhs,
-        explicit_sizes_items=(),
+        source=source,
         lowering=StaticLoweringProgram(candidates=(symbolic,)),
     )
     context = RuntimeSpecializationContext(

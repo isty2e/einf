@@ -186,7 +186,7 @@ def test_static_analysis_constructs_no_runtime_planning_artifacts() -> None:
             side_effect=AssertionError("analysis constructed AbstractPlan"),
         ),
         patch.object(
-            tensor_op_module.TensorOpExecutionStrategy,
+            tensor_op_module._TensorOpExecutionStrategy,
             "from_plan",
             side_effect=AssertionError("analysis constructed execution strategy"),
         ),

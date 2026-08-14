@@ -1,6 +1,6 @@
 from einf.axis import AxisTerms, ScalarAxisTerms, expand_products_for_terms
 from einf.diagnostics import ErrorCode, ValidationError
-from einf.ir import IRProgram
+from einf.ir import IRProgram, LoweringSignature
 from einf.plans.symbolic import SymbolicPlan
 from einf.reduction.schema import ReducerPlan
 from einf.steps.axis_slice import (
@@ -59,6 +59,7 @@ def _resolve_expanded_permutation(
 
 def _build_unary_rearrange_plan(
     *,
+    source: LoweringSignature,
     lhs_terms: AxisTerms,
     rhs_terms: AxisTerms,
     explicit_sizes_items: tuple[tuple[str, int], ...],
@@ -85,9 +86,8 @@ def _build_unary_rearrange_plan(
                 return None
             if lhs_terms == rhs_terms:
                 return SymbolicPlan(
+                    source=source,
                     kind="route",
-                    input_arity=1,
-                    output_arity=1,
                     steps=(),
                 )
             reshape_step = ReshapeSymbolicStep(
@@ -95,26 +95,23 @@ def _build_unary_rearrange_plan(
                 explicit_sizes_items=explicit_sizes_items,
             )
             return SymbolicPlan(
+                source=source,
                 kind="reshape",
-                input_arity=1,
-                output_arity=1,
                 steps=(reshape_step,),
             )
         identity = tuple(range(len(permutation)))
         if permutation == identity:
             return SymbolicPlan(
+                source=source,
                 kind="route",
-                input_arity=1,
-                output_arity=1,
                 steps=(),
             )
         permute_step = PermuteSymbolicStep(
             program=build_permute_symbolic_program(permutation)
         )
         return SymbolicPlan(
+            source=source,
             kind="permute",
-            input_arity=1,
-            output_arity=1,
             steps=(permute_step,),
         )
 
@@ -144,17 +141,15 @@ def _build_unary_rearrange_plan(
                     )
                 )
             return SymbolicPlan(
+                source=source,
                 kind="rearrange",
-                input_arity=1,
-                output_arity=1,
                 steps=tuple(steps),
             )
 
     if lhs_terms == rhs_terms:
         return SymbolicPlan(
+            source=source,
             kind="route",
-            input_arity=1,
-            output_arity=1,
             steps=(),
         )
 
@@ -163,24 +158,37 @@ def _build_unary_rearrange_plan(
         explicit_sizes_items=explicit_sizes_items,
     )
     return SymbolicPlan(
+        source=source,
         kind="reshape",
-        input_arity=1,
-        output_arity=1,
         steps=(reshape_step,),
     )
 
 
 def build_rearrange_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `rearrange` from canonical sides."""
+    """Build one symbolic plan for ``rearrange``.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound rearrange IR.
+    reducer_plan : ReducerPlan or None
+        Unused reducer configuration accepted by the shared builder contract.
+
+    Returns
+    -------
+    SymbolicPlan
+        Rearrange plan carrying ``ir_program.source``.
+    """
     lhs = ir_program.lhs
     rhs = ir_program.rhs
+    explicit_sizes_items = ir_program.explicit_sizes_items
     _ = reducer_plan
     if len(lhs) == 1 and len(rhs) == 1:
         unary_plan = _build_unary_rearrange_plan(
+            source=ir_program.source,
             lhs_terms=lhs[0],
             rhs_terms=rhs[0],
             explicit_sizes_items=explicit_sizes_items,
@@ -196,9 +204,8 @@ def build_rearrange_symbolic_plan(
             explicit_sizes_items=explicit_sizes_items,
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="axis_slice",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(axis_slice_step,),
         )
 
@@ -210,9 +217,8 @@ def build_rearrange_symbolic_plan(
             explicit_sizes_items=explicit_sizes_items,
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="concat",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(concat_step,),
         )
 
@@ -224,9 +230,8 @@ def build_rearrange_symbolic_plan(
             explicit_sizes_items=explicit_sizes_items,
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="permute",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(axis_permute_step,),
         )
 
@@ -238,9 +243,8 @@ def build_rearrange_symbolic_plan(
             explicit_sizes_items=explicit_sizes_items,
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="axis_slice",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(axis_slice_step,),
         )
 
@@ -263,9 +267,8 @@ def build_rearrange_symbolic_plan(
 
     if len(lhs) == len(rhs):
         return SymbolicPlan(
+            source=ir_program.source,
             kind="route",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(),
         )
 

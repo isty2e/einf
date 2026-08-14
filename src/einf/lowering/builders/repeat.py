@@ -8,12 +8,30 @@ from einf.steps.permute import PermuteSymbolicStep, build_permute_symbolic_progr
 
 def build_repeat_symbolic_plan(
     ir_program: IRProgram,
-    explicit_sizes_items: tuple[tuple[str, int], ...],
     reducer_plan: ReducerPlan | None,
 ) -> SymbolicPlan:
-    """Build one symbolic plan for `repeat`."""
+    """Build one symbolic plan for ``repeat``.
+
+    Parameters
+    ----------
+    ir_program : IRProgram
+        Source-bound repeat IR.
+    reducer_plan : ReducerPlan or None
+        Unused reducer configuration accepted by the shared builder contract.
+
+    Returns
+    -------
+    SymbolicPlan
+        Repeat plan carrying ``ir_program.source``.
+
+    Raises
+    ------
+    ValueError
+        If the source is not unary.
+    """
     lhs = ir_program.lhs
     rhs = ir_program.rhs
+    explicit_sizes_items = ir_program.explicit_sizes_items
     _ = reducer_plan
     if len(lhs) != 1 or len(rhs) != 1:
         raise ValueError("repeat primitive lowering requires unary 1->1 signature")
@@ -28,9 +46,8 @@ def build_repeat_symbolic_plan(
             output_index is not None for output_index in compiled.output_to_input
         ):
             return SymbolicPlan(
+                source=ir_program.source,
                 kind="repeat",
-                input_arity=len(lhs),
-                output_arity=len(rhs),
                 steps=(permute_step,),
             )
 
@@ -49,9 +66,8 @@ def build_repeat_symbolic_plan(
             program=permuted_program,
         )
         return SymbolicPlan(
+            source=ir_program.source,
             kind="repeat",
-            input_arity=len(lhs),
-            output_arity=len(rhs),
             steps=(permute_step, expand_step),
         )
 
@@ -62,9 +78,8 @@ def build_repeat_symbolic_plan(
         program=expand_program,
     )
     return SymbolicPlan(
+        source=ir_program.source,
         kind="repeat",
-        input_arity=len(lhs),
-        output_arity=len(rhs),
         steps=(expand_step,),
     )
 

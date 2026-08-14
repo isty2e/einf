@@ -49,13 +49,12 @@ simplifying boundaries between `TensorOp`, `AbstractPlan`,
 
 ### `TensorOp` → `AbstractPlan`
 
-`TensorOp` carries what the user asked for, plus call-site policy
-(sizes, reducer, backend hints). `AbstractPlan` strips everything that
-is not part of the operation definition and its lowering policy: no
-`explicit_sizes`, no `backend_profile`, no duplicated `Signature`
-field. Those are call-time concerns. Keeping them out of
-`AbstractPlan` is what lets the same op definition plan once and
-specialize many times.
+`TensorOp` carries what the user asked for, plus execution policy such
+as its reducer. `AbstractPlan` keeps the structural facts needed by
+lowering in one `LoweringSignature`: operation name, normalized axis
+signature, and explicit sizes. Backend profiles and concrete input
+shapes remain call-time concerns. This split lets the same operation
+plan once and specialize many times.
 
 ### `AbstractPlan` → `SymbolicPlan`
 
@@ -67,6 +66,11 @@ specialization is how we guarantee that per-call overhead does not
 depend on the search space size.
 
 An `AbstractPlan` may yield multiple `SymbolicPlan` candidates.
+Every candidate must carry the same `LoweringSignature` as the
+`AbstractPlan` and its `IRProgram`. This prevents a candidate compiled
+for another operation, axis signature, or size binding from entering
+selection or runtime caches. Trace metadata stays outside that identity
+because it explains lowering without changing executable semantics.
 Lowering must prune aggressively before runtime:
 
 - infeasible candidates are removed,
