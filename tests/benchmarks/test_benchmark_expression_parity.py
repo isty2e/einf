@@ -9,6 +9,7 @@ import pytest
 import benchmarks.compare.expression_parity as expression_parity_module
 import benchmarks.harness.profiler as profiler_module
 from benchmarks.compare.expression_parity import (
+    BatchFactory,
     ExpressionCaseResult,
     ExpressionObservation,
     ExpressionParityCase,
@@ -16,12 +17,6 @@ from benchmarks.compare.expression_parity import (
     ExpressionRun,
     ExpressionRunnerSpec,
     ExpressionSemantics,
-    _find_case,
-    _render_markdown,
-    _round_orders,
-    _run_dynamic_case,
-    _to_json,
-    _validate_output,
     main,
 )
 from benchmarks.harness import (
@@ -33,6 +28,7 @@ from benchmarks.harness import (
     TimingSummary,
     dynamic_sizes_for_scale,
 )
+from benchmarks.harness.types import NumpyArray
 
 
 def _summary(*, mean_ms: float = 5.6) -> TimingSummary:
@@ -107,8 +103,8 @@ def _case(
             make_runner=make_runner,
         )
 
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
-        return generator.backend_batch((generator.randn_numpy((2,)),))
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
+        return (generator.randn_numpy((2,)),)
 
     return ExpressionParityCase(
         name="expression_case",
@@ -128,7 +124,7 @@ def _with_target_runner(
     /,
     *,
     make_runner: Callable[[], Callable[[tuple[Array, ...]], Array]],
-    batch_factory: Callable[[TensorGenerator], tuple[Array, ...]] | None = None,
+    batch_factory: BatchFactory | None = None,
 ) -> ExpressionParityCase:
     target = case.target
     replacement = ExpressionRunnerSpec(
@@ -151,7 +147,7 @@ def _with_target_runner(
 
 
 def test_find_case_exposes_target_and_strategy_semantics() -> None:
-    case = _find_case(
+    case = expression_parity_module._find_case(
         sizes=dynamic_sizes_for_scale("large"),
         case_name="einop_contract_split_dynamic",
     )
@@ -244,7 +240,7 @@ def test_expression_strategy_requires_stable_identity() -> None:
 def test_round_orders_balance_strategy_positions_across_rounds() -> None:
     strategy_names = ["target", "equivalent", "lower_bound"]
 
-    orders = _round_orders(
+    orders = expression_parity_module._round_orders(
         strategy_names=strategy_names,
         rounds=6,
         coordinates_per_round=2,
@@ -274,7 +270,7 @@ def test_rotated_schedule_bounds_execution_position_imbalance(
     coordinates_per_round: int,
 ) -> None:
     strategy_names = [f"strategy_{index}" for index in range(strategy_count)]
-    round_orders = _round_orders(
+    round_orders = expression_parity_module._round_orders(
         strategy_names=strategy_names,
         rounds=rounds,
         coordinates_per_round=coordinates_per_round,
@@ -300,7 +296,7 @@ def test_rotated_schedule_bounds_execution_position_imbalance(
 
 
 def test_validate_output_uses_runner_specific_reference() -> None:
-    case = _find_case(
+    case = expression_parity_module._find_case(
         sizes=dynamic_sizes_for_scale("medium"),
         case_name="einop_contract_split_dynamic",
     )
@@ -313,7 +309,7 @@ def test_validate_output_uses_runner_specific_reference() -> None:
     batch = (lhs, rhs)
     output = runner_spec.reference(batch)
 
-    _validate_output(
+    expression_parity_module._validate_output(
         backend=BackendSpec(name="numpy"),
         runner_spec=runner_spec,
         expected=(np.asarray(output),),
@@ -353,7 +349,7 @@ def test_run_dynamic_case_rejects_runner_input_mutation() -> None:
     )
 
     with pytest.raises(ValueError, match="read-only"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=mutation_case,
             config=DynamicTaskConfig(
                 scale="medium",
@@ -401,7 +397,7 @@ def test_run_dynamic_case_isolates_strategy_reference_inputs() -> None:
         runner_specs=runner_specs,
     )
 
-    result = _run_dynamic_case(
+    result = expression_parity_module._run_dynamic_case(
         case=mutation_case,
         config=_dynamic_config(),
         profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -438,7 +434,7 @@ def test_run_dynamic_case_validates_every_measured_coordinate() -> None:
     )
 
     with pytest.raises(ValueError, match="value mismatch"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=late_wrong_case,
             config=_dynamic_config(),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -450,9 +446,9 @@ def test_run_dynamic_case_validates_every_measured_coordinate() -> None:
 
 
 def test_run_dynamic_case_rejects_shape_first_timed_output() -> None:
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
         size = generator.draw_dimension(base=4)
-        return generator.backend_batch((np.arange(1, size + 1, dtype=np.float32),))
+        return (np.arange(1, size + 1, dtype=np.float32),)
 
     seen_shapes: set[tuple[int, ...]] = set()
 
@@ -475,7 +471,7 @@ def test_run_dynamic_case_rejects_shape_first_timed_output() -> None:
     )
 
     with pytest.raises(ValueError, match="value mismatch"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=case,
             config=_dynamic_config(),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -505,7 +501,7 @@ def test_run_dynamic_case_rejects_repeat_specific_timed_output() -> None:
     )
 
     with pytest.raises(ValueError, match="value mismatch"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=case,
             config=_dynamic_config(repeats=2),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -518,11 +514,11 @@ def test_run_dynamic_case_rejects_input_shape_drift() -> None:
     case = _case()
     generation_count = 0
 
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
         nonlocal generation_count
         generation_count += 1
         size = 2 if generation_count <= 2 else 3
-        return generator.backend_batch((generator.randn_numpy((size,)),))
+        return (generator.randn_numpy((size,)),)
 
     drifting_case = ExpressionParityCase(
         name=case.name,
@@ -533,7 +529,7 @@ def test_run_dynamic_case_rejects_input_shape_drift() -> None:
     )
 
     with pytest.raises(RuntimeError, match="repeated input produced different shapes"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=drifting_case,
             config=_dynamic_config(repeats=2),
             profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -545,7 +541,7 @@ def test_run_dynamic_case_rejects_input_shape_drift() -> None:
 def test_run_dynamic_case_validates_every_measured_execution() -> None:
     runner_events: list[tuple[str, int, np.ndarray]] = []
 
-    result = _run_dynamic_case(
+    result = expression_parity_module._run_dynamic_case(
         case=_case(runner_events=runner_events),
         config=_dynamic_config(
             batches=3,
@@ -585,7 +581,7 @@ def test_measurement_constructs_each_runner_once(
         lambda: next(clock_tick),
     )
 
-    _run_dynamic_case(
+    expression_parity_module._run_dynamic_case(
         case=_case(factory_events=factory_events),
         config=DynamicTaskConfig(
             scale="medium",
@@ -624,7 +620,7 @@ def test_run_dynamic_case_interleaves_paired_batches_and_preserves_identity(
         lambda: next(clock_iterator),
     )
 
-    result = _run_dynamic_case(
+    result = expression_parity_module._run_dynamic_case(
         case=case,
         config=DynamicTaskConfig(
             scale="medium",
@@ -703,7 +699,7 @@ def test_run_dynamic_case_preserves_latency_identity_across_rounds(
         lambda: next(clock_iterator),
     )
 
-    result = _run_dynamic_case(
+    result = expression_parity_module._run_dynamic_case(
         case=_case(),
         config=DynamicTaskConfig(
             scale="medium",
@@ -734,13 +730,13 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
     batch_references: list[ReferenceType[np.ndarray]] = []
     live_batches_before_generation: list[int] = []
 
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
         live_batches_before_generation.append(
             sum(reference() is not None for reference in batch_references)
         )
         batch = generator.randn_numpy((2,))
         batch_references.append(ref(batch))
-        return generator.backend_batch((batch,))
+        return (batch,)
 
     bounded_case = ExpressionParityCase(
         name=case.name,
@@ -756,7 +752,7 @@ def test_run_dynamic_case_releases_batches_before_regeneration(
         lambda: next(clock_tick),
     )
 
-    _run_dynamic_case(
+    expression_parity_module._run_dynamic_case(
         case=bounded_case,
         config=DynamicTaskConfig(
             scale="medium",
@@ -785,7 +781,7 @@ def test_run_dynamic_case_rejects_partial_round_orders(
     )
 
     with pytest.raises(RuntimeError, match="full strategy permutations"):
-        _run_dynamic_case(
+        expression_parity_module._run_dynamic_case(
             case=_case(),
             config=DynamicTaskConfig(
                 scale="medium",
@@ -890,7 +886,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
         rounds=1,
         round_order_seed=1234,
     )
-    case_result = _run_dynamic_case(
+    case_result = expression_parity_module._run_dynamic_case(
         case=case,
         config=config,
         profiler=Profiler(backend=BackendSpec(name="numpy")),
@@ -912,7 +908,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
         "git_dirty": False,
         "content_sha256": "1" * 64,
     }
-    payload = _to_json(
+    payload = expression_parity_module._to_json(
         report,
         backend=BackendSpec(name="numpy"),
         config=config,
@@ -969,7 +965,7 @@ def test_expression_parity_renderers_preserve_inference_contract(
     assert case_payload["observations"][0]["unit_index"] == 0
     assert case_payload["comparisons"][0]["target"] == "target"
 
-    markdown = _render_markdown(report)
+    markdown = expression_parity_module._render_markdown(report)
     path = tmp_path / "expression-parity.md"
     path.write_text(markdown, encoding="utf-8")
 

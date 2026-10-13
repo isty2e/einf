@@ -533,6 +533,17 @@ the next coordinate. The strategies run back-to-back, with their order rotated
 from one deterministic shuffle across all measured coordinates. Warmup uses a
 separate continuous rotation.
 
+Expression case factories generate NumPy inputs on the host. The executor uses
+those arrays for private reference snapshots and materializes the target batch
+once per coordinate; it does not read target inputs back to the host. Outputs
+still return to the host for the existing numerical check after each timer stops.
+
+Custom `ExpressionParityCase.batch_factory` functions receive a NumPy-backed
+`TensorGenerator` and must return a tuple of NumPy arrays. Return arrays directly
+instead of calling `generator.backend_batch(...)`; target materialization belongs
+to the executor. The layout audit follows the same factory contract and performs
+its own Torch materialization. Device-producing factory results are rejected.
+
 Every timed strategy output is checked against its reference after that call's
 timer stops. A mismatch aborts report generation. The check covers every repeat,
 not a sample of shapes or a separately generated output.
