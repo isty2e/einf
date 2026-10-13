@@ -1,9 +1,5 @@
 from abc import ABC, abstractmethod
-
-try:
-    from typing import Self
-except ImportError:  # pragma: no cover
-    from typing_extensions import Self
+from typing import Self
 
 
 class AxisTermBase(ABC):

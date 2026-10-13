@@ -1,11 +1,5 @@
-import sys
 from collections.abc import Callable
-from typing import TypeVar
-
-if sys.version_info >= (3, 11):
-    from typing import Self, assert_type
-else:
-    from typing_extensions import Self, assert_type
+from typing import Self, TypeVar, assert_type
 
 from einf import (
     ReducibleTensorOp,

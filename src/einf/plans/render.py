@@ -1,9 +1,4 @@
-from typing import Literal
-
-try:
-    from typing import NotRequired, TypedDict
-except ImportError:  # pragma: no cover
-    from typing_extensions import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from einf.axis import AxisSide
 from einf.signature import Signature

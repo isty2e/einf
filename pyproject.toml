@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 name = "einf"
 dynamic = ["version"]
 description = "Tensor DSL with axis signatures and first-class TensorOp transforms."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "array-api-compat>=1.13",
   "opt_einsum>=3.4",
@@ -78,6 +78,9 @@ version-file = "src/einf/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP"]
 
 [tool.basedpyright]
 include = ["src", "tests"]

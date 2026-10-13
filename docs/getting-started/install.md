@@ -1,6 +1,7 @@
 # Install
 
-`einf` targets Python `>=3.10`.
+`einf` requires Python `>=3.11`. Python 3.10 is no longer supported; upgrade
+your interpreter before installing this version.
 
 `einf` is not on PyPI. Install directly from the Git repository:
 

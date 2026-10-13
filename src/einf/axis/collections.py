@@ -1,9 +1,5 @@
 from collections.abc import Iterator
-
-try:
-    from typing import Self
-except ImportError:  # pragma: no cover
-    from typing_extensions import Self
+from typing import Self
 
 from .base import AxisTermBase, ScalarAxisTermBase
 from .terms import Axis, AxisInt, AxisPack

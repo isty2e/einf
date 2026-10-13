@@ -1,14 +1,31 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from types import MappingProxyType
 
 from einf.axis import AxisSide
 from einf.signature import Signature
 
 
-class LoweringTraceStage(str, Enum):
+class LoweringTraceStage(StrEnum):
     """Non-semantic stage label used to explain default lowering."""
+
+    __str__ = Enum.__str__
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the qualified member name.
+
+        Parameters
+        ----------
+        format_spec : str
+            String format specification applied to the member name.
+
+        Returns
+        -------
+        str
+            Formatted qualified member name.
+        """
+        return Enum.__format__(self, format_spec)
 
     ASSEMBLE = "assemble"
     TRANSFORM = "transform"

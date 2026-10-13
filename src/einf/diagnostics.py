@@ -1,12 +1,29 @@
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Literal, TypeAlias
 
 DiagnosticSeverity: TypeAlias = Literal["error"]
 DiagnosticValue: TypeAlias = str | int | bool
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Canonical internal diagnostic codes."""
+
+    __str__ = Enum.__str__
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the qualified member name.
+
+        Parameters
+        ----------
+        format_spec : str
+            String format specification applied to the member name.
+
+        Returns
+        -------
+        str
+            Formatted qualified member name.
+        """
+        return Enum.__format__(self, format_spec)
 
     DIM_SOLVE_ERROR = "dim_solve_error"
     DIM_SOLVE_TOO_COMPLEX = "dim_solve_too_complex"

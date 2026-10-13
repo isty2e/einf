@@ -1,10 +1,10 @@
 import sys
-from typing import Protocol, overload, type_check_only
+from typing import Protocol, Self, overload, type_check_only
 
 if sys.version_info >= (3, 13):
-    from typing import ParamSpec, Self, TypeVar, Unpack
+    from typing import ParamSpec, TypeVar
 else:
-    from typing_extensions import ParamSpec, Self, TypeVar, Unpack
+    from typing_extensions import ParamSpec, TypeVar
 
 from ..axis import AxisSide, AxisTerms
 from ..plans.abstract import AbstractPlan
@@ -723,7 +723,7 @@ def view(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
 ) -> TensorOpInference1ToMany: ...
 @overload
@@ -903,7 +903,7 @@ def rearrange(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
 ) -> TensorOpInference1ToMany: ...
 @overload
@@ -916,7 +916,7 @@ def rearrange(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
     rhs: AxisTerms,
 ) -> TensorOpInferenceManyTo1: ...
@@ -930,7 +930,7 @@ def rearrange(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
     rhs: tuple[
         AxisTerms,
@@ -940,7 +940,7 @@ def rearrange(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
 ) -> TensorOpInferenceManyToMany: ...
 def repeat(lhs: AxisTerms, rhs: AxisTerms) -> TensorOpInference1To1: ...
@@ -978,7 +978,7 @@ def contract(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
     rhs: AxisTerms,
 ) -> TensorOpInferenceManyTo1: ...
@@ -1159,7 +1159,7 @@ def einop(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
 ) -> EinopTensorOpInference1ToMany: ...
 @overload
@@ -1172,7 +1172,7 @@ def einop(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
     rhs: AxisTerms,
 ) -> EinopTensorOpInferenceManyTo1: ...
@@ -1186,7 +1186,7 @@ def einop(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
     rhs: tuple[
         AxisTerms,
@@ -1196,7 +1196,7 @@ def einop(
         AxisTerms,
         AxisTerms,
         AxisTerms,
-        Unpack[tuple[AxisTerms, ...]],
+        *tuple[AxisTerms, ...],
     ],
 ) -> EinopTensorOpInferenceManyToMany: ...
 

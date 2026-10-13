@@ -11,7 +11,7 @@ backends.
 pip install git+https://github.com/isty2e/einf.git
 ```
 
-Python `>=3.10`. Extras (`analysis`, `lsp`, `dev`, `docs`) and the
+Python `>=3.11`. Extras (`analysis`, `lsp`, `dev`, `docs`) and the
 contributor editable install are documented in
 [docs/getting-started/install.md](docs/getting-started/install.md).
 

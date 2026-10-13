@@ -12,8 +12,8 @@ ANNOTATION_CASE = REPO_ROOT / "tests/package/typing_cases/tensorop_annotations.p
 _DUMMY_TENSOR_SNIPPET = """
 from collections.abc import Iterator
 from types import EllipsisType
-from typing import TypeAlias
-from typing_extensions import Self, override
+from typing import Self, TypeAlias
+from typing_extensions import override
 
 IndexKey: TypeAlias = int | slice | EllipsisType | None | tuple[int | slice | EllipsisType | None, ...]
 

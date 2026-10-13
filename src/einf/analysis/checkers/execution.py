@@ -192,7 +192,7 @@ class CheckerExecutor:
                 asyncio.shield(communication),
                 timeout=self._policy.timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             cleanup_completed = await _kill_and_reap(
                 process,
                 communication,

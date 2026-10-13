@@ -1,17 +1,11 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeGuard, cast
+from typing import Never, Protocol, TypeGuard, cast
 
 from array_api_compat import array_namespace
 
-from einf.backend.namespace import output_namespace_matches
-
-try:
-    from typing import Never
-except ImportError:  # pragma: no cover
-    from typing_extensions import Never
-
 from einf.backend import BackendArrayOps, BackendProfile
+from einf.backend.namespace import output_namespace_matches
 from einf.backend.runtime import is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, TensorOpError, ValidationError
 from einf.reduction.callable import ReducerResult

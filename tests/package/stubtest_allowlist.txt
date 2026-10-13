@@ -1,6 +1,7 @@
 # Public annotation protocols omit concrete dataclass construction and metadata.
 einf\.operations\.api\.(TensorOp|ReducibleTensorOp)$
-einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.__match_args__
+# Group generated dataclass members present on different Python versions.
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.(__match_args__|__replace__)
 einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.__post_init__
 einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.from_base_spec
 # ParamSpec requires paired args/kwargs; factory operations accept positional tensors.
