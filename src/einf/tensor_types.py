@@ -1,12 +1,6 @@
 import sys
 from types import EllipsisType
-from typing import Literal, Protocol, TypeAlias, runtime_checkable
-
-try:
-    from typing import Self
-except ImportError:  # pragma: no cover
-    from typing_extensions import Self
-
+from typing import Literal, Protocol, Self, TypeAlias, runtime_checkable
 
 IndexAtom: TypeAlias = int | slice | EllipsisType | None
 IndexKey: TypeAlias = IndexAtom | tuple[IndexAtom, ...]

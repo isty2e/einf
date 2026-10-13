@@ -1,11 +1,7 @@
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing import Self
 
 from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, CheckerExecutionPolicy
 from einf.analysis.parser import SUPPORTED_PARSER_NAMES

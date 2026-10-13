@@ -1,9 +1,5 @@
 from dataclasses import dataclass
-
-try:
-    from typing import Self
-except ImportError:  # pragma: no cover
-    from typing_extensions import Self
+from typing import Self
 
 from einf.ir import IRProgram, LoweringSignature
 from einf.plans.lowering_protocol import LoweringProgram
