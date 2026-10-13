@@ -153,12 +153,16 @@ def _run_adapter(
     return asyncio.run(execute())
 
 
-def test_pyright_adapter_parses_json_output() -> None:
+def test_pyright_adapter_parses_json_output(tmp_path: Path) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("\n\nvalue: int = 1 + 2\n", encoding="utf-8")
+    payload = json.loads(PYRIGHT_OUTPUT)
+    payload["generalDiagnostics"][0]["file"] = str(target)
     adapter = PyrightAdapter(name="basedpyright", executable="basedpyright")
     result = adapter.parse_output(
-        stdout=PYRIGHT_OUTPUT,
+        stdout=json.dumps(payload),
         stderr="",
-        request=_request(Path("/tmp")),
+        request=_request(tmp_path),
         limits=_TEST_LIMITS,
     )
 
@@ -168,7 +172,7 @@ def test_pyright_adapter_parses_json_output() -> None:
     assert diagnostic.tool == "basedpyright"
     assert diagnostic.code == "reportAssignmentType"
     assert diagnostic.severity == "warning"
-    assert diagnostic.path == Path("/tmp/sample.py").resolve(strict=False)
+    assert diagnostic.path == target.resolve(strict=False)
     assert diagnostic.span == TextSpan(
         start=TextPosition(line=3, column=16),
         end=TextPosition(line=3, column=17),
@@ -265,10 +269,13 @@ def test_pyrefly_adapter_rejects_invalid_severity() -> None:
         assert result.failures[0].kind == "output_parse_error"
 
 
-def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records() -> (
-    None
-):
+def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("\n\nvalue: int = 1 + 2\n", encoding="utf-8")
     pyright_record = json.loads(PYRIGHT_OUTPUT)["generalDiagnostics"][0]
+    pyright_record["file"] = str(target)
     pyrefly_record = json.loads(PYREFLY_OUTPUT)["errors"][0]
     cases: tuple[tuple[CheckerAdapter, str], ...] = (
         (
@@ -301,7 +308,7 @@ def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records()
         result = adapter.parse_output(
             stdout=stdout,
             stderr="",
-            request=_request(Path("/tmp")),
+            request=_request(tmp_path),
             limits=_TEST_LIMITS,
         )
 
