@@ -6,7 +6,7 @@ are imported directly from the top-level `einf` namespace.
 ```python
 from einf import ax, axes, packs, symbols
 from einf import rearrange, reduce, contract, einop, repeat, view
-from einf import TensorOp, Signature, Axis, AxisPack, AxisExpr, AxisInt
+from einf import TensorOp, ReducibleTensorOp, Signature, Axis, AxisPack, AxisExpr, AxisInt
 from einf import TensorLike, Reducer, ReducerCallable, ReducerName
 from einf import ValidationError, ExecutionError, ErrorCode
 ```
@@ -41,6 +41,10 @@ called with concrete tensors and reused across calls.
       show_root_heading: true
 
 ## TensorOp
+
+For typed operation parameters, use `TensorOp[[T], R]` or
+`ReducibleTensorOp[[T], R]`. See [Annotating an op](../../concepts/tensorop-as-value.md#annotating-an-op)
+for multiple inputs, tuple outputs, and reducer-capable annotations.
 
 ::: einf.TensorOp
     options:

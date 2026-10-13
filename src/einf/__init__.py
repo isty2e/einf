@@ -1,6 +1,15 @@
 from .axis import Axis, AxisExpr, AxisInt, AxisPack, ax, axes, packs, symbols
 from .diagnostics import ErrorCode, ExecutionError, ValidationError
-from .operations import TensorOp, contract, einop, rearrange, reduce, repeat, view
+from .operations import (
+    ReducibleTensorOp,
+    TensorOp,
+    contract,
+    einop,
+    rearrange,
+    reduce,
+    repeat,
+    view,
+)
 from .reduction.schema import Reducer, ReducerCallable, ReducerName
 from .signature import Signature
 from .tensor_types import TensorLike
@@ -15,6 +24,7 @@ __all__ = [
     "Reducer",
     "ReducerCallable",
     "ReducerName",
+    "ReducibleTensorOp",
     "Signature",
     "TensorLike",
     "TensorOp",

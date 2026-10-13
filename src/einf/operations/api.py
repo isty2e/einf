@@ -2,6 +2,9 @@ from ..axis import AxisSide, AxisTerms
 from .kind import OperationKind
 from .tensor_op import TensorOp
 
+# Reducer capability is a static view; runtime discovery uses supports_reducer.
+ReducibleTensorOp = TensorOp
+
 
 def view(
     lhs: AxisTerms | AxisSide,
@@ -87,4 +90,13 @@ def einop(
     )
 
 
-__all__ = ["TensorOp", "contract", "einop", "rearrange", "reduce", "repeat", "view"]
+__all__ = [
+    "ReducibleTensorOp",
+    "TensorOp",
+    "contract",
+    "einop",
+    "rearrange",
+    "reduce",
+    "repeat",
+    "view",
+]

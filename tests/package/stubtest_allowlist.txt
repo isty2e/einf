@@ -1,6 +1,9 @@
-# The public protocol intentionally omits concrete construction and capability details.
-einf\.operations\.api\.TensorOp$
-einf\.operations\.api\.TensorOp\.__match_args__
-einf\.operations\.api\.TensorOp\.__post_init__
-einf\.operations\.api\.TensorOp\.from_base_spec
+# Public annotation protocols omit concrete dataclass construction and metadata.
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)$
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.__match_args__
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.__post_init__
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.from_base_spec
+# ParamSpec requires paired args/kwargs; factory operations accept positional tensors.
+einf\.operations\.api\.(TensorOp|ReducibleTensorOp)\.__call__
+# The base annotation deliberately omits reducer customization.
 einf\.operations\.api\.TensorOp\.reduce_by

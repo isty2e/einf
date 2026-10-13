@@ -1,7 +1,13 @@
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import final, overload
+from typing import Generic, final, overload
+
+if sys.version_info >= (3, 13):
+    from typing import ParamSpec, TypeVar
+else:
+    from typing_extensions import ParamSpec, TypeVar
 
 from ..axis import AxisSide, AxisTerms
 from ..backend import BackendExecutionIdentity
@@ -23,6 +29,9 @@ from .cache import (
 from .definition import TensorOpDefinition
 from .execution import execute_tensor_op_call, extract_input_shapes
 from .kind import OperationKind
+
+_Inputs = ParamSpec("_Inputs", default=...)
+_Output_co = TypeVar("_Output_co", covariant=True, default=object)
 
 RuntimeTypeKey = tuple[type[object], ...]
 RuntimeRunnerKey = tuple[RuntimeTypeKey, BackendExecutionIdentity]
@@ -102,8 +111,15 @@ class TensorOpRunnerCache:
 
 @final
 @dataclass(frozen=True, slots=True)
-class TensorOp:
-    """Executable transform backed by canonical semantics and runtime state."""
+class TensorOp(Generic[_Inputs, _Output_co]):
+    """Executable transform backed by canonical semantics and runtime state.
+
+    Notes
+    -----
+    Type arguments describe existing operations; they do not change execution
+    or validate annotations at runtime. Use the public factories to create
+    operations.
+    """
 
     _definition: TensorOpDefinition
     _abstract_plan: AbstractPlan = field(init=False, repr=False, compare=False)

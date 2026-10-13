@@ -107,6 +107,53 @@ mx   = base.reduce_by(np.max)              # another one
 `with_sizes` and `reduce_by` compose; each returns a fully-formed op
 with its own compiled plan.
 
+## Annotating an op
+
+Use `TensorOp[[T], R]` when a function or variable needs a specific
+call signature. The list describes positional tensor inputs; the result
+type describes one tensor or a tuple of outputs.
+
+```python
+from typing import TypeVar
+
+from einf import ReducibleTensorOp, TensorLike, TensorOp
+
+T = TypeVar("T", bound=TensorLike)
+
+def apply(op: TensorOp[[T], T], tensor: T) -> T:
+    return op(tensor)
+
+def apply_binary(op: TensorOp[[T, T], T], left: T, right: T) -> T:
+    return op(left, right)
+
+def split(op: TensorOp[[T], tuple[T, T]], tensor: T) -> tuple[T, T]:
+    return op(tensor)
+
+def apply_mean(op: ReducibleTensorOp[[T], T], tensor: T) -> T:
+    return op.reduce_by("mean")(tensor)
+```
+
+Both annotations retain read-only operation metadata, `plan()`,
+`plan_dict()`, and `with_sizes()`. `ReducibleTensorOp` also retains
+`reduce_by()`. Configuration preserves the annotated call signature.
+An op can still be passed where a matching `Callable` is required.
+
+Leave constructor results unannotated when inference is enough. A bare
+`TensorOp` remains useful for metadata-only code, but its call result is
+`object`, not a specific tensor type.
+
+These are static annotations, not runtime wrappers or additional tensor
+checks. `ReducibleTensorOp` is an alias of `TensorOp` at runtime, so
+`isinstance(op, ReducibleTensorOp)` does not test reducer support. Use
+`op.supports_reducer` for that query.
+
+Pyrefly is the primary checker for explicit operation annotations; the
+installed-wheel checks also verify them with mypy. Pyright/BasedPyright
+can reject assignment of an inferred, generic constructor result to a
+parameterized `TensorOp` protocol. That matching boundary is not supported
+by those checkers here; their constructor inference, direct-call, and bare
+`TensorOp` coverage remain in place.
+
 ## What it unlocks
 
 - **Pass ops as arguments.** A transformer block can take its
