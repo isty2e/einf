@@ -83,6 +83,12 @@ If its source cannot be read or decoded, the diagnostic text is retained with
 `span: null` and a checker failure. Malformed or out-of-bounds ranges are
 rejected as malformed checker output.
 
+Position conversion accepts regular source files up to 8 MiB and shares an
+8 MiB source-read budget across one checker result. It rejects FIFOs, devices
+and over-budget sources, retaining their diagnostic text with `span: null`
+and a checker failure. These are byte and memory bounds, not a deadline for
+filesystem syscalls; the checker timeout still applies only to the subprocess.
+
 ## CI integration
 
 The CLI is designed for CI gates:

@@ -1,4 +1,8 @@
+import io
+import os
+import stat
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -21,6 +25,8 @@ from einf.analysis.model import DiagnosticSeverity, TextPosition, TextSpan
 
 _Utf16Range = tuple[int, int, int, int]
 _ParsedDiagnostic = tuple[CheckerDiagnostic, _Utf16Range | None]
+_SOURCE_BYTE_LIMIT = 8 * 1024 * 1024
+_SOURCE_READ_CHUNK_BYTES = 8192
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,21 +250,44 @@ def _normalize_spans(
     *,
     tool: str,
 ) -> CheckerResult:
-    requested_lines: dict[Path, set[int]] = {}
+    requested_offsets: dict[Path, dict[int, set[int]]] = {}
     for entry in entries:
         if isinstance(entry, CheckerFailure):
             continue
         diagnostic, coordinates = entry
         if coordinates is not None:
-            lines = requested_lines.setdefault(diagnostic.path, set())
-            lines.update((coordinates[0], coordinates[2]))
+            offsets = requested_offsets.setdefault(diagnostic.path, {})
+            for line, offset in (
+                (coordinates[0], coordinates[1]),
+                (coordinates[2], coordinates[3]),
+            ):
+                offsets.setdefault(line, set()).add(offset)
 
-    source_lines: dict[Path, dict[int, str] | CheckerFailure] = {}
-    for path, lines in requested_lines.items():
+    source_columns: dict[Path, dict[int, dict[int, int]] | CheckerFailure] = {}
+    bytes_read = 0
+
+    def read_chunk(descriptor: int) -> bytes:
+        nonlocal bytes_read
+        if bytes_read > _SOURCE_BYTE_LIMIT:
+            raise OSError("source normalization exceeds the 8 MiB read budget")
+        chunk = os.read(
+            descriptor,
+            min(_SOURCE_READ_CHUNK_BYTES, _SOURCE_BYTE_LIMIT - bytes_read + 1),
+        )
+        bytes_read += len(chunk)
+        if bytes_read > _SOURCE_BYTE_LIMIT:
+            raise OSError("source normalization exceeds the 8 MiB read budget")
+        return chunk
+
+    for path, offsets in requested_offsets.items():
         try:
-            source_lines[path] = _read_source_lines(path, lines)
+            lines = _read_source_lines(path, set(offsets), read_chunk=read_chunk)
+            source_columns[path] = {
+                line: _character_columns(content, offsets[line])
+                for line, content in lines.items()
+            }
         except (OSError, UnicodeError) as error:
-            source_lines[path] = CheckerFailure(
+            source_columns[path] = CheckerFailure(
                 tool=tool,
                 kind="output_parse_error",
                 message=f"{tool} cannot normalize diagnostic positions for {path}: {error}",
@@ -274,12 +303,12 @@ def _normalize_spans(
 
         diagnostic, coordinates = entry
         if coordinates is not None:
-            lines = source_lines[diagnostic.path]
-            if isinstance(lines, CheckerFailure):
+            columns = source_columns[diagnostic.path]
+            if isinstance(columns, CheckerFailure):
                 if failure is None:
-                    failure = lines
+                    failure = columns
             else:
-                span = _span_from_utf16_range(coordinates, lines)
+                span = _span_from_utf16_range(coordinates, columns)
                 if span is None:
                     if failure is None:
                         failure = CheckerFailure(
@@ -300,12 +329,18 @@ def _normalize_spans(
     )
 
 
-def _read_source_lines(path: Path, requested_lines: set[int]) -> dict[int, str]:
+def _read_source_lines(
+    path: Path,
+    requested_lines: set[int],
+    *,
+    read_chunk: Callable[[int], bytes],
+) -> dict[int, str]:
+    data = _read_regular_source(path, read_chunk=read_chunk)
     lines: dict[int, str] = {}
     last_requested_line = max(requested_lines)
     last_index = -1
     ends_with_newline = True
-    with path.open(encoding="utf-8") as source:
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8") as source:
         for last_index, line in enumerate(source):
             ends_with_newline = line.endswith("\n")
             if last_index in requested_lines:
@@ -319,16 +354,44 @@ def _read_source_lines(path: Path, requested_lines: set[int]) -> dict[int, str]:
     return lines
 
 
+def _read_regular_source(
+    path: Path, *, read_chunk: Callable[[int], bytes]
+) -> bytearray:
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise OSError("diagnostic source is not a regular file")
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOCTTY", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("diagnostic source is not a regular file")
+        if metadata.st_size > _SOURCE_BYTE_LIMIT:
+            raise OSError("diagnostic source exceeds the 8 MiB file-size limit")
+
+        data = bytearray()
+        while chunk := read_chunk(descriptor):
+            data.extend(chunk)
+        return data
+    finally:
+        os.close(descriptor)
+
+
 def _span_from_utf16_range(
     coordinates: _Utf16Range,
-    lines: dict[int, str],
+    columns: dict[int, dict[int, int]],
 ) -> TextSpan | None:
     start_line, start_offset, end_line, end_offset = coordinates
-    if start_line not in lines or end_line not in lines:
+    if start_line not in columns or end_line not in columns:
         return None
 
-    start_column = _character_column(lines[start_line], start_offset)
-    end_column = _character_column(lines[end_line], end_offset)
+    start_column = columns[start_line].get(start_offset)
+    end_column = columns[end_line].get(end_offset)
     if start_column is None or end_column is None:
         return None
     return TextSpan(
@@ -337,15 +400,23 @@ def _span_from_utf16_range(
     )
 
 
-def _character_column(line: str, offset: int) -> int | None:
+def _character_columns(line: str, offsets: set[int]) -> dict[int, int]:
+    if line.isascii():
+        return {offset: offset for offset in offsets if offset <= len(line)}
+
+    columns = {0: 0} if 0 in offsets else {}
+    last_requested_offset = max(offsets)
+    if last_requested_offset == 0:
+        return columns
+
     units = 0
     for column, character in enumerate(line):
-        if units == offset:
-            return column
         units += 2 if ord(character) > 0xFFFF else 1
-        if units > offset:
-            return None
-    return len(line) if units == offset else None
+        if units in offsets:
+            columns[units] = column + 1
+        if units >= last_requested_offset:
+            break
+    return columns
 
 
 __all__ = ["PyrightAdapter"]

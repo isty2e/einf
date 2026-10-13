@@ -1,8 +1,8 @@
 import asyncio
 import json
+import os
 import shutil
 from pathlib import Path
-from typing import TextIO
 
 import pytest
 
@@ -193,13 +193,13 @@ def test_pyright_positions_read_each_file_once_and_preserve_valid_siblings(
     target = tmp_path / "sample.py"
     target.write_text("\U0001f600abc\n\U00010400xyz\n", encoding="utf-8")
     reads: list[Path] = []
-    original_open = Path.open
+    original_open = os.open
 
-    def tracked_open(path: Path, *, encoding: str) -> TextIO:
+    def tracked_open(path: Path, flags: int) -> int:
         reads.append(path)
-        return original_open(path, encoding=encoding)
+        return original_open(path, flags)
 
-    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(os, "open", tracked_open)
 
     result = _parse(
         target, _payload(target, ((0, 2, 0, 5), (0, 1, 0, 2), (1, 2, 1, 5)))
@@ -224,10 +224,10 @@ def test_pyright_positions_preserve_range_less_diagnostics_without_source_access
     payload = json.loads(_payload(target, ((0, 0, 0, 1),)))
     del payload["generalDiagnostics"][0]["range"]
 
-    def denied_open(path: Path, *, encoding: str) -> TextIO:
+    def denied_open(path: Path, flags: int) -> int:
         raise AssertionError("a range-less diagnostic does not need source text")
 
-    monkeypatch.setattr(Path, "open", denied_open)
+    monkeypatch.setattr(os, "open", denied_open)
 
     result = _parse(target, json.dumps(payload))
 
@@ -259,11 +259,12 @@ def test_pyright_positions_report_permission_failure_without_losing_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "sample.py"
+    target.write_text("x\n", encoding="utf-8")
 
-    def denied_open(path: Path, *, encoding: str) -> TextIO:
+    def denied_open(path: Path, flags: int) -> int:
         raise PermissionError("source access denied")
 
-    monkeypatch.setattr(Path, "open", denied_open)
+    monkeypatch.setattr(os, "open", denied_open)
 
     result = _parse(target, _payload(target, ((0, 0, 0, 1),)))
 
@@ -280,10 +281,10 @@ def test_pyright_positions_enforce_field_limits_before_source_access(
     payload = json.loads(_payload(target, ((0, 0, 0, 1), (0, 0, 0, 1))))
     payload["generalDiagnostics"][1]["message"] = "x" * 4097
 
-    def denied_open(path: Path, *, encoding: str) -> TextIO:
+    def denied_open(path: Path, flags: int) -> int:
         raise AssertionError("field limits must precede source I/O")
 
-    monkeypatch.setattr(Path, "open", denied_open)
+    monkeypatch.setattr(os, "open", denied_open)
 
     result = PyrightAdapter(
         name="basedpyright", executable="basedpyright"
