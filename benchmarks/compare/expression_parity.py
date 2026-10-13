@@ -32,7 +32,7 @@ from benchmarks.harness.receipt import (
     validation_coverage_payload,
 )
 from benchmarks.harness.result import DynamicInputUnit
-from benchmarks.harness.types import Array, NumpyArray, Output, Runner
+from benchmarks.harness.types import Array, NumpyArray, Output, Runner, TorchTensor
 from benchmarks.shared.artifacts import publish_receipt
 from benchmarks.shared.metadata import (
     einf_source_receipt_metadata,
@@ -63,7 +63,7 @@ else:
 ExpressionSemantics = Literal["output_equivalent", "lower_bound"]
 # References receive private snapshots; they must not mutate them and must be deterministic.
 Reference = Callable[[tuple[NumpyArray, ...]], Output]
-BatchFactory = Callable[[TensorGenerator], tuple[Array, ...]]
+BatchFactory = Callable[[TensorGenerator], tuple[NumpyArray, ...]]
 RunnerFactory = Callable[[], Runner]
 
 CASE_SEED_STRIDE = 1009
@@ -94,7 +94,27 @@ class ExpressionRunnerSpec:
 
 @dataclass(frozen=True, slots=True)
 class ExpressionParityCase:
-    """Dynamic benchmark case with multiple competing expression strategies."""
+    """Define one host-generated workload and its expression strategies.
+
+    Parameters
+    ----------
+    name : str
+        Stable case identifier.
+    description : str
+        Description displayed in benchmark reports.
+    target_name : str
+        Name of the available, output-equivalent comparison target.
+    batch_factory : BatchFactory
+        Generate a tuple of NumPy arrays using a NumPy TensorGenerator.
+        The executor, not the factory, materializes target tensors.
+    runner_specs : tuple[ExpressionRunnerSpec, ...]
+        Strategies and their individual output references.
+
+    Raises
+    ------
+    ValueError
+        If strategy names are not unique or the target is invalid.
+    """
 
     name: str
     description: str
@@ -280,12 +300,45 @@ def _rotate_order(order: tuple[str, ...], *, offset: int) -> tuple[str, ...]:
     return order[index:] + order[:index]
 
 
-def _numpy_batch(
+def generate_expression_numpy_batch(
     *,
-    backend: BackendSpec,
-    batch: tuple[Array, ...],
+    case: ExpressionParityCase,
+    generator: TensorGenerator,
 ) -> tuple[NumpyArray, ...]:
-    return tuple(backend.to_numpy_array(item) for item in batch)
+    """Generate host inputs without copying them or materializing target tensors.
+
+    Parameters
+    ----------
+    case : ExpressionParityCase
+        Definition containing the host input factory.
+    generator : TensorGenerator
+        NumPy-backed generator whose RNG determines the input stream.
+
+    Returns
+    -------
+    tuple[NumpyArray, ...]
+        The factory's NumPy input arrays, without a snapshot copy.
+
+    Raises
+    ------
+    ValueError
+        If the generator is not NumPy-backed.
+    TypeError
+        If the factory does not return a tuple of NumPy arrays.
+    """
+    if generator.backend.name != "numpy":
+        raise ValueError("expression input generation requires a NumPy generator")
+
+    batch = case.batch_factory(generator)
+    if not isinstance(batch, tuple):
+        raise TypeError("expression input factory must return a tuple of NumPy arrays")
+    for index, array in enumerate(batch):
+        if not isinstance(array, np.ndarray):
+            raise TypeError(
+                f"expression input factory must return NumPy arrays; "
+                f"input[{index}] has type {type(array)!r}"
+            )
+    return batch
 
 
 def _validate_output(
@@ -327,13 +380,13 @@ def _batch_einop_contract_split(
     *,
     generator: TensorGenerator,
     sizes: BenchSizes,
-) -> tuple[Array, ...]:
+) -> tuple[NumpyArray, ...]:
     b_dim = generator.draw_dimension(base=sizes.b)
     n_dim = generator.draw_dimension(base=sizes.n)
     d_dim = generator.draw_dimension(base=sizes.d)
     lhs = generator.randn_numpy((b_dim, (sizes.h + sizes.w) * sizes.r, n_dim))
     rhs = generator.randn_numpy((n_dim, d_dim))
-    return generator.backend_batch((lhs, rhs))
+    return (lhs, rhs)
 
 
 def _reference_contract_only(inputs: tuple[NumpyArray, ...]) -> Output:
@@ -358,7 +411,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
     split_index = sizes.h * sizes.r
     second_split = sizes.w * sizes.r
 
-    def torch_pair(inputs: tuple[Array, ...]) -> tuple[Array, Array]:
+    def torch_pair(inputs: tuple[Array, ...]) -> tuple[TorchTensor, TorchTensor]:
         lhs, rhs = inputs
         if torch is None:
             raise RuntimeError("torch is not available")
@@ -366,7 +419,7 @@ def _build_gap_cases(*, sizes: BenchSizes) -> tuple[ExpressionParityCase, ...]:
             raise TypeError("expression parity benchmark requires torch tensor inputs")
         return lhs, rhs
 
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
         return _batch_einop_contract_split(generator=generator, sizes=sizes)
 
     def make_einf_runner() -> Runner:
@@ -557,6 +610,7 @@ def _run_dynamic_case(
 ) -> ExpressionCaseResult:
     available_specs = tuple(spec for spec in case.runner_specs if spec.available)
     runs: dict[str, ExpressionRun] = {}
+    numpy_backend = BackendSpec(name="numpy")
 
     def batch_seed(*, round_index: int, batch_index: int) -> int:
         return derive_coordinate_seed(
@@ -566,15 +620,18 @@ def _run_dynamic_case(
             stream_index=batch_index,
         )
 
-    def make_batch(*, round_index: int, batch_index: int) -> tuple[Array, ...]:
-        return case.batch_factory(
-            TensorGenerator.from_seed(
-                backend=backend,
+    def make_numpy_batch(
+        *, round_index: int, batch_index: int
+    ) -> tuple[NumpyArray, ...]:
+        return generate_expression_numpy_batch(
+            case=case,
+            generator=TensorGenerator.from_seed(
+                backend=numpy_backend,
                 seed=batch_seed(
                     round_index=round_index,
                     batch_index=batch_index,
                 ),
-            )
+            ),
         )
 
     measured_batch_count = config.batches - config.warmup_batches
@@ -607,10 +664,12 @@ def _run_dynamic_case(
     realized_units: list[DynamicInputUnit] = []
     for round_index, round_order in enumerate(round_orders):
         for batch_index in range(config.warmup_batches):
-            batch = make_batch(
+            numpy_batch = make_numpy_batch(
                 round_index=round_index,
                 batch_index=batch_index,
             )
+            batch = backend.to_backend_batch(numpy_batch)
+            del numpy_batch
             batch_order = _rotate_order(
                 warmup_round_orders[round_index],
                 offset=batch_index,
@@ -625,10 +684,11 @@ def _run_dynamic_case(
 
         for repeat_index in range(config.repeats):
             for measured_batch_index in range(measured_batch_count):
-                batch = make_batch(
+                numpy_batch = make_numpy_batch(
                     round_index=round_index,
                     batch_index=(config.warmup_batches + measured_batch_index),
                 )
+                batch = backend.to_backend_batch(numpy_batch)
                 input_shapes = tuple(
                     tuple(int(dimension) for dimension in array.shape)
                     for array in batch
@@ -661,7 +721,7 @@ def _run_dynamic_case(
                     offset=(repeat_index * measured_batch_count + measured_batch_index),
                 )
                 numpy_batch = tuple(
-                    array.copy() for array in _numpy_batch(backend=backend, batch=batch)
+                    np.asarray(array, dtype=np.float32) for array in numpy_batch
                 )
                 for order_position, name in enumerate(batch_order):
                     spec = spec_by_name[name]

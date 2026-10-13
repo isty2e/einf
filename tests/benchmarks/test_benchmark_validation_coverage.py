@@ -147,8 +147,8 @@ def _expression_case(
             make_runner=make_runner,
         )
 
-    def batch_factory(generator: TensorGenerator) -> tuple[Array, ...]:
-        return generator.backend_batch((np.asarray([1.0, 2.0], dtype=np.float32),))
+    def batch_factory(generator: TensorGenerator) -> tuple[NumpyArray, ...]:
+        return (np.asarray([1.0, 2.0], dtype=np.float32),)
 
     return ExpressionParityCase(
         name="non_target_validation",

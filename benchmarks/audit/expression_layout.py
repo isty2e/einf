@@ -9,8 +9,13 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol, cast
 
-from benchmarks.compare.expression_parity import ExpressionParityCase, build_gap_cases
+from benchmarks.compare.expression_parity import (
+    ExpressionParityCase,
+    build_gap_cases,
+    generate_expression_numpy_batch,
+)
 from benchmarks.harness import (
     BackendSpec,
     TensorGenerator,
@@ -18,7 +23,7 @@ from benchmarks.harness import (
     torch,
 )
 from benchmarks.harness.config import BenchSizes
-from benchmarks.harness.types import Array, TorchTensor
+from benchmarks.harness.types import Array, Output, TorchTensor
 from benchmarks.shared.artifacts import publish_receipt
 from benchmarks.shared.metadata import version_or_missing
 from einf import ax, axes, einop
@@ -29,9 +34,15 @@ except ImportError:
     einops = None
 
 try:
-    import einx
+    import einx as _einx
 except ImportError:
     einx = None
+else:
+
+    class _EinxModule(Protocol):
+        def dot(self, expression: str, *tensors: Array) -> Output: ...
+
+    einx = cast(_EinxModule, _einx)
 
 
 ArrayBatch = tuple[Array, ...]
@@ -224,6 +235,7 @@ def _build_audited_runner_specs(
         def run(inputs: ArrayBatch) -> AuditedRun:
             lhs, rhs = _torch_pair(inputs)
             contracted = einx_module.dot("b t n, n d -> b t d", lhs, rhs)
+            assert torch is not None
             if not isinstance(contracted, torch.Tensor):
                 raise TypeError("expected torch tensor from einx dot")
             out0 = contracted[:, :split_index, :]
@@ -243,6 +255,7 @@ def _build_audited_runner_specs(
     def make_torch_matmul_split_runner() -> AuditedRunner:
         def run(inputs: ArrayBatch) -> AuditedRun:
             lhs, rhs = _torch_pair(inputs)
+            assert torch is not None
             contracted = torch.matmul(lhs, rhs)
             split_outputs = contracted.split((split_index, second_split), dim=1)
             out0, out1 = split_outputs
@@ -261,6 +274,7 @@ def _build_audited_runner_specs(
     def make_torch_matmul_slice_runner() -> AuditedRunner:
         def run(inputs: ArrayBatch) -> AuditedRun:
             lhs, rhs = _torch_pair(inputs)
+            assert torch is not None
             contracted = torch.matmul(lhs, rhs)
             out0 = contracted[:, :split_index, :]
             out1 = contracted[:, split_index:, :]
@@ -320,9 +334,15 @@ def _make_batches(
     count: int,
 ) -> list[ArrayBatch]:
     backend = BackendSpec(name="torch")
+    numpy_backend = BackendSpec(name="numpy")
     return [
-        case.batch_factory(
-            TensorGenerator.from_seed(backend=backend, seed=seed + index)
+        backend.to_backend_batch(
+            generate_expression_numpy_batch(
+                case=case,
+                generator=TensorGenerator.from_seed(
+                    backend=numpy_backend, seed=seed + index
+                ),
+            )
         )
         for index in range(count)
     ]
@@ -394,7 +414,7 @@ def _audit_case(
 
 
 def _to_json(report: LayoutAuditReport) -> dict[str, object]:
-    return asdict(report)
+    return dict(asdict(report))
 
 
 def _render_markdown(report: LayoutAuditReport) -> str:

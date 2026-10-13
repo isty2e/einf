@@ -105,6 +105,11 @@ jobs:
           tests/integration/test_array_api_repeat_reduce_execution.py
           tests/integration/test_array_api_view_execution.py
           tests/steps/test_backend_exception_projection.py
+          benchmarks/compare/expression_parity.py
+          benchmarks/audit/expression_layout.py
+          tests/benchmarks/test_benchmark_expression_parity.py
+          tests/benchmarks/test_benchmark_validation_coverage.py
+          tests/benchmarks/test_benchmark_expression_host_inputs.py
       - name: Test optional PyTorch integration
         run: >-
           pytest
@@ -118,3 +123,4 @@ jobs:
           pytest
           tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_in_place_input_mutation
           tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_mutation_without_real_torch
+          tests/benchmarks/test_benchmark_expression_host_inputs.py
