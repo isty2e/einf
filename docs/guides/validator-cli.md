@@ -73,6 +73,16 @@ The current output schema version is `0.3`. Axis token `kind` distinguishes
 scalar axes from axis packs; `relation` records whether the same structural
 symbol appears on both sides of the operation.
 
+Diagnostic spans use one-based lines and zero-based Python character columns,
+not byte offsets or UTF-16 units. Pyright and BasedPyright ranges are converted
+using the saved source file. Keep the file unchanged while its checker runs;
+external checking does not capture an atomic snapshot of concurrent edits.
+
+If Pyright or BasedPyright omits its range, the diagnostic has `span: null`.
+If its source cannot be read or decoded, the diagnostic text is retained with
+`span: null` and a checker failure. Malformed or out-of-bounds ranges are
+rejected as malformed checker output.
+
 ## CI integration
 
 The CLI is designed for CI gates:
