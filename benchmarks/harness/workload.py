@@ -1,6 +1,6 @@
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from fractions import Fraction
 from math import prod
 
@@ -11,8 +11,25 @@ Shape = tuple[int, ...]
 ShapeFactory = Callable[[Mapping[DimensionName, int]], tuple[Shape, ...]]
 
 
-class DimensionMode(str, Enum):
+class DimensionMode(StrEnum):
     """How one workload dimension is resolved for each dynamic batch."""
+
+    __str__ = Enum.__str__
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the qualified member name.
+
+        Parameters
+        ----------
+        format_spec : str
+            String format specification applied to the member name.
+
+        Returns
+        -------
+        str
+            Formatted qualified member name.
+        """
+        return Enum.__format__(self, format_spec)
 
     FIXED = "fixed"
     SAMPLED = "sampled"

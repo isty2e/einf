@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import TypeAlias
 
 from ..axis import AxisTermBase, AxisTerms
@@ -9,8 +9,25 @@ from .callable import CallableReducerBinding, ReducerCallable
 Reducer: TypeAlias = str | ReducerCallable
 
 
-class ReducerName(str, Enum):
+class ReducerName(StrEnum):
     """Closed vocabulary of backend-native reducer names."""
+
+    __str__ = Enum.__str__
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the qualified member name.
+
+        Parameters
+        ----------
+        format_spec : str
+            String format specification applied to the member name.
+
+        Returns
+        -------
+        str
+            Formatted qualified member name.
+        """
+        return Enum.__format__(self, format_spec)
 
     SUM = "sum"
     PROD = "prod"

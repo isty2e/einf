@@ -1,13 +1,30 @@
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import TypeAlias, final, get_args
 
 from einf.axis import AxisTerms
 from einf.einop_layout import EinopLayoutNormalization
 
 
-class EinopPrimitiveRoute(str, Enum):
+class EinopPrimitiveRoute(StrEnum):
     """Closed primitive routes available to einop lowering."""
+
+    __str__ = Enum.__str__
+
+    def __format__(self, format_spec: str) -> str:
+        """Format the qualified member name.
+
+        Parameters
+        ----------
+        format_spec : str
+            String format specification applied to the member name.
+
+        Returns
+        -------
+        str
+            Formatted qualified member name.
+        """
+        return Enum.__format__(self, format_spec)
 
     ROUTE = "route"
     REARRANGE = "rearrange"
