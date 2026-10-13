@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "array-api-compat>=1.13",
   "opt_einsum>=3.4",
-  "typing_extensions>=4.8; python_version < '3.11'",
+  "typing_extensions>=4.12; python_version < '3.13'",
 ]
 
 
@@ -24,6 +24,7 @@ dev = [
   "einops",
   "mypy>=1.19",
   "numpy>=1.26",
+  "pyrefly>=1.3.2",
   "pytest>=8.0",
   "ruff==0.16.0",
   "threadpoolctl>=3.5",
@@ -81,6 +82,8 @@ addopts = "-q"
 [tool.basedpyright]
 include = ["src", "tests"]
 exclude = [
+  # Precise TensorOp annotations are checked by Pyrefly/mypy in the wheel gate.
+  "tests/package/typing_cases/tensorop_annotations.py",
   # Checked by the optional LSP transport job.
   "src/einf/analysis/lsp/cli.py",
   "src/einf/analysis/lsp/hover.py",

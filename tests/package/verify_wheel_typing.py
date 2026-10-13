@@ -7,6 +7,7 @@ from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TYPING_CASE = PACKAGE_DIR / "typing_cases" / "tensorop_contract.py"
+ANNOTATION_CASE = PACKAGE_DIR / "typing_cases" / "tensorop_annotations.py"
 STUBTEST_ALLOWLIST = PACKAGE_DIR / "stubtest_allowlist.txt"
 
 
@@ -65,6 +66,25 @@ def _verify_wheel(wheel: Path) -> None:
 
         typing_case = root / TYPING_CASE.name
         shutil.copy2(TYPING_CASE, typing_case)
+        annotation_case = root / ANNOTATION_CASE.name
+        shutil.copy2(ANNOTATION_CASE, annotation_case)
+        pyrefly_config = root / "pyrefly.toml"
+        pyrefly_config.write_text("", encoding="utf-8")
+        _run(
+            [
+                _require_executable("pyrefly"),
+                "check",
+                "--config",
+                str(pyrefly_config),
+                "--threads",
+                "1",
+                "--python-interpreter-path",
+                str(python),
+                str(typing_case),
+                str(annotation_case),
+            ],
+            cwd=root,
+        )
         _run(
             [
                 _require_executable("basedpyright"),
@@ -81,6 +101,7 @@ def _verify_wheel(wheel: Path) -> None:
                 str(python),
                 "--no-incremental",
                 str(typing_case),
+                str(annotation_case),
             ],
             cwd=root,
         )
