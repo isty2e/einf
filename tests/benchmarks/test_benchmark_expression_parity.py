@@ -311,11 +311,12 @@ def test_validate_output_uses_runner_specific_reference() -> None:
     rhs = np.arange(20, dtype=np.float32).reshape(4, 5)
     batch = (lhs, rhs)
     output = runner_spec.reference(batch)
+    assert isinstance(output, np.ndarray)
 
     expression_parity_module._validate_output(
         backend=BackendSpec(name="numpy"),
         runner_spec=runner_spec,
-        expected=(np.asarray(output),),
+        expected=(output,),
         output=output,
     )
 

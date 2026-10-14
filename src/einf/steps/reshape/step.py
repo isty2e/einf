@@ -175,7 +175,7 @@ class ReshapeRuntimeStep(RuntimeStep[ReshapeSymbolicProgram]):
         )
         target_shape = tuple(
             term_size(term, runtime_context.axis_sizes)
-            for term in runtime_context.rhs_terms[0]
+            for term in iter(runtime_context.rhs_terms[0])
         )
         validate_rearrange_numel(
             input_shape=tensor.shape,

@@ -393,7 +393,7 @@ def _validate_reduce_output_shape(
 ) -> None:
     """Validate reducer output shape against reduced-axis contract."""
     try:
-        expected_shape = tuple(term_size(term, axis_sizes) for term in terms)
+        expected_shape = tuple(term_size(term, axis_sizes) for term in iter(terms))
     except Exception as error:
         raise ValidationError(
             code=ErrorCode.INCONSISTENT_DIMS,

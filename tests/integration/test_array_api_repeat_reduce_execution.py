@@ -28,11 +28,13 @@ from einf.backend import (
     BackendArrayOps,
     BackendFamily,
 )
+from einf.reduction.callable import ReducerResult
 from einf.reduction.schema import CanonicalReducer
 from einf.steps.expand import step as expand_step_module
 from einf.steps.reduce import build as reduce_build_module
 from einf.steps.reduce import runtime as reduce_runtime_module
 from einf.steps.reduce import step as reduce_step_module
+from einf.tensor_types import IndexKey, TensorLike
 
 try:
     import torch
@@ -128,7 +130,7 @@ class _KnownFamilyReducerNamespace:
         tensor: "_KnownFamilyReducerTensor",
         *,
         axis: tuple[int, ...],
-    ) -> "_KnownFamilyReducerTensor":
+    ) -> TensorLike:
         self.sum_calls += 1
         return _KnownFamilyReducerTensor(np.sum(tensor.value, axis=axis), self)
 
@@ -167,7 +169,7 @@ class _KnownFamilyReducerTensor:
         del api_version
         return self.namespace
 
-    def __getitem__(self, key: object) -> "_KnownFamilyReducerTensor":
+    def __getitem__(self, key: IndexKey) -> "_KnownFamilyReducerTensor":
         return _KnownFamilyReducerTensor(self.value[key], self.namespace)
 
     def sum(self, *, axis: tuple[int, ...]) -> "_KnownFamilyReducerTensor":
@@ -952,18 +954,22 @@ def test_reduce_variadic_parameters_are_not_axes_authority(
 ) -> None:
     if variadic_kind == "args":
 
-        def reducer(values: NDArray[np.int64], *axes: object) -> np.int64:
+        def reducer(values: NDArray[np.int64], *axes: object) -> TensorLike:
             assert axes == ()
-            return np.sum(values)
+            result = np.sum(values)
+            assert isinstance(result, TensorLike)
+            return result
 
     else:
 
         def reducer(  # type: ignore[no-redef]
             values: NDArray[np.int64],
             **axis: object,
-        ) -> np.int64:
+        ) -> TensorLike:
             assert axis == {}
-            return np.sum(values)
+            result = np.sum(values)
+            assert isinstance(result, TensorLike)
+            return result
 
     b, h = axes(f"variadic_{variadic_kind}_b", f"variadic_{variadic_kind}_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -974,8 +980,10 @@ def test_reduce_variadic_parameters_are_not_axes_authority(
 
 
 def test_reduce_single_parameter_named_axis_is_tensor_only() -> None:
-    def reducer(axis: NDArray[np.int64]) -> np.int64:
-        return np.sum(axis)
+    def reducer(axis: NDArray[np.int64]) -> TensorLike:
+        result = np.sum(axis)
+        assert isinstance(result, TensorLike)
+        return result
 
     b, h = axes("axis_tensor_b", "axis_tensor_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -1031,8 +1039,10 @@ def test_reduce_scalar_partial_configuration_preserves_tensor_slot() -> None:
 
 
 def test_reduce_tensor_only_scalar_partial_preserves_tensor_slot() -> None:
-    def scaled_total(scale: int, values: NDArray[np.int64]) -> np.int64:
-        return np.sum(values) * scale
+    def scaled_total(scale: int, values: NDArray[np.int64]) -> TensorLike:
+        result = np.sum(values) * scale
+        assert isinstance(result, TensorLike)
+        return result
 
     b, h = axes("tensor_only_partial_b", "tensor_only_partial_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -1078,7 +1088,7 @@ def test_reduce_partial_subclass_is_rejected_at_plan_ingress() -> None:
     calls: list[str] = []
 
     class ReducerPartial(functools.partial):
-        def __call__(self, *args: object, **kwargs: object) -> object:
+        def __call__(self, *args: object, **kwargs: object) -> ReducerResult:
             calls.append("called")
             return super().__call__(*args, **kwargs)
 
@@ -1096,7 +1106,7 @@ def test_reduce_nested_partial_subclass_uses_observable_partial_provenance() -> 
     calls: list[str] = []
 
     class ReducerPartial(functools.partial):
-        def __call__(self, *args: object, **kwargs: object) -> object:
+        def __call__(self, *args: object, **kwargs: object) -> ReducerResult:
             calls.append("called")
             return super().__call__(*args, **kwargs)
 
@@ -1114,6 +1124,7 @@ def test_reduce_nested_partial_subclass_uses_observable_partial_provenance() -> 
         return
 
     expected = reducer(tensor)
+    assert isinstance(expected, np.ndarray)
     default_result = np.sum(tensor, axis=1)
     result = reduce(ax[b, h], ax[b]).reduce_by(reducer)(tensor)
 
@@ -1411,8 +1422,10 @@ def test_reduce_scalar_var_keyword_configuration_is_supported() -> None:
     def reducer(
         values: NDArray[np.int64],
         **configuration: int,
-    ) -> np.int64:
-        return np.sum(values) * configuration.get("scale", 1)
+    ) -> TensorLike:
+        result = np.sum(values) * configuration.get("scale", 1)
+        assert isinstance(result, TensorLike)
+        return result
 
     b, h = axes("var_keyword_config_b", "var_keyword_config_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -1524,7 +1537,8 @@ def test_reduce_partial_bound_axes_must_be_exact(
 
     b, h, d = axes("mismatch_b", "mismatch_h", "mismatch_d")
     tensor = np.arange(2 * 3 * 4).reshape(2, 3, 4)
-    configured = partial(reducer, axis=configured_axes)
+    # Deliberately invalid captured axes exercise runtime ingress rejection.
+    configured = partial(reducer, axis=configured_axes)  # pyrefly: ignore[bad-argument-type]
 
     with pytest.raises(ValidationError) as error:
         _ = reduce(ax[b, h, d], ax[b]).reduce_by(configured)(tensor)
@@ -1821,6 +1835,7 @@ def test_reduce_nested_partial_configuration_is_captured_recursively() -> None:
     b, h = axes("nested_snapshot_b", "nested_snapshot_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
     inner = Reducers().double_sum
+    assert isinstance(inner, functools.partial)
     reducer = partial(inner)
     op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
 
@@ -1853,9 +1868,9 @@ def test_reduce_partial_uses_its_visible_signature_metadata() -> None:
     tensor = np.arange(2 * 3).reshape(2, 3)
 
     explicit_signature = partial(forwarding)
-    explicit_signature.__signature__ = inspect.signature(visible)
+    vars(explicit_signature)["__signature__"] = inspect.signature(visible)
     wrapped_signature = partial(forwarding)
-    wrapped_signature.__wrapped__ = visible
+    vars(wrapped_signature)["__wrapped__"] = visible
 
     for reducer in (explicit_signature, wrapped_signature):
         result = reduce(ax[b, h], ax[b]).reduce_by(reducer)(tensor)
@@ -1888,7 +1903,7 @@ def test_reduce_configured_partial_chain_cannot_own_signature_metadata(
         if metadata_kind == "wrapped":
             functools.update_wrapper(metadata_owner, visible)
         else:
-            metadata_owner.__signature__ = inspect.signature(visible)
+            vars(metadata_owner)["__signature__"] = inspect.signature(visible)
         configured = partial(metadata_owner, axis=(1,))
     else:
         configured = partial(forwarding, axis=(1,))
@@ -1896,7 +1911,7 @@ def test_reduce_configured_partial_chain_cannot_own_signature_metadata(
         if metadata_kind == "wrapped":
             functools.update_wrapper(metadata_owner, visible)
         else:
-            metadata_owner.__signature__ = inspect.signature(visible)
+            vars(metadata_owner)["__signature__"] = inspect.signature(visible)
     b, h = axes("configured_metadata_b", "configured_metadata_h")
 
     with pytest.raises(ValidationError) as error:
@@ -1975,7 +1990,7 @@ def test_reduce_invalid_partial_signature_is_rejected_before_invocation() -> Non
     b, h = axes("invalid_partial_signature_b", "invalid_partial_signature_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
     configured = partial(reducer)
-    configured.__signature__ = "invalid"
+    vars(configured)["__signature__"] = "invalid"
 
     with pytest.raises(ValidationError) as error:
         _ = reduce(ax[b, h], ax[b]).reduce_by(configured)(tensor)
@@ -2117,7 +2132,8 @@ def test_reduce_placeholder_partial_is_rejected_before_invocation() -> None:
 
     b, h = axes("placeholder_b", "placeholder_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
-    configured = partial(reducer, placeholder, 2)
+    # The tensor slot is deliberately invalid; rejection precedes invocation.
+    configured = partial(reducer, placeholder, 2)  # pyrefly: ignore[bad-argument-type]
 
     with pytest.raises(ValidationError) as error:
         _ = reduce(ax[b, h], ax[b]).reduce_by(configured)(tensor)
@@ -2142,8 +2158,9 @@ def test_reduce_nested_placeholder_partial_is_rejected_before_invocation(
         calls.append("called")
         return np.sum(values, axis=axis) * configuration
 
-    inner = partial(reducer, placeholder, 2)
-    inner.marker = "preserve nested partial"
+    # This synthetic Placeholder is interpreted by einf, not Python's partial.
+    inner = partial(reducer, placeholder, 2)  # pyrefly: ignore[bad-argument-type]
+    vars(inner)["marker"] = "preserve nested partial"
     configured = partial(inner)
     b, h = axes("nested_placeholder_b", "nested_placeholder_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -2170,8 +2187,9 @@ def test_reduce_resolved_nested_placeholder_partial_is_supported(
     ) -> NDArray[np.int64]:
         return np.sum(values + offset, axis=axis) * configuration
 
-    inner = partial(reducer, placeholder, 0)
-    inner.marker = "preserve nested partial"
+    # This synthetic Placeholder is interpreted by einf, not Python's partial.
+    inner = partial(reducer, placeholder, 0)  # pyrefly: ignore[bad-argument-type]
+    vars(inner)["marker"] = "preserve nested partial"
     configured = partial(inner, 2)
     b, h = axes("resolved_placeholder_b", "resolved_placeholder_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -2196,7 +2214,7 @@ def test_reduce_native_resolved_placeholder_partial_is_supported() -> None:
         return np.sum(values + offset, axis=axis) * configuration
 
     inner = partial(reducer, placeholder, 0)
-    inner.marker = "preserve nested partial"
+    vars(inner)["marker"] = "preserve nested partial"
     configured = partial(inner, 2)
     b, h = axes("native_resolved_placeholder_b", "native_resolved_placeholder_h")
     tensor = np.arange(2 * 3).reshape(2, 3)
@@ -2347,17 +2365,21 @@ def test_reduce_concrete_invalid_signature_is_not_reported_as_ambiguous(
 ) -> None:
     if signature_kind == "empty":
 
-        def reducer() -> np.int64:
-            return np.int64(0)
+        def reducer() -> TensorLike:
+            result = np.int64(0)
+            assert isinstance(result, TensorLike)
+            return result
 
     else:
 
         def reducer(  # type: ignore[no-redef]
             *,
             axis: tuple[int, ...],
-        ) -> np.int64:
+        ) -> TensorLike:
             _ = axis
-            return np.int64(0)
+            result = np.int64(0)
+            assert isinstance(result, TensorLike)
+            return result
 
     b, h = axes(f"invalid_{signature_kind}_b", f"invalid_{signature_kind}_h")
     op = reduce(ax[b, h], ax[()]).reduce_by(reducer)

@@ -11,6 +11,7 @@ from einf.steps.axis_slice import (
     build_axis_slice_symbolic_program,
     resolve_axis_slice_axis,
 )
+from einf.steps.base import StepProgram, SymbolicStep
 from einf.steps.concat import ConcatSymbolicStep
 from einf.steps.permute import (
     AxisPermuteSymbolicStep,
@@ -88,7 +89,7 @@ def _build_view_safe_plan_from_rearrange(
             steps=(),
         )
 
-    converted_steps = []
+    converted_steps: list[SymbolicStep[StepProgram]] = []
     for step in rearrange_plan.steps:
         if not _is_view_safe_rearrange_step(step):
             return None

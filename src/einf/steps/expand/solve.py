@@ -32,7 +32,7 @@ def _bind_axis_terms_with_axis_sizes(
         return None
 
     bound_terms: list[ScalarAxisTermBase] = []
-    for term in scalar_terms:
+    for term in iter(scalar_terms):
         evaluated = term.evaluate(axis_sizes)
         if evaluated is not None:
             if evaluated < 0:
@@ -80,7 +80,7 @@ def solve_expand_program_from_input_shape(
     scalar_rhs_terms = ScalarAxisTerms.from_spec(bound_rhs_terms)
     try:
         target_shape = tuple(
-            term_size(term, solved.axis_sizes) for term in scalar_rhs_terms
+            term_size(term, solved.axis_sizes) for term in iter(scalar_rhs_terms)
         )
     except KeyError:
         return None

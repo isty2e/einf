@@ -372,10 +372,21 @@ def _touch_tensor(
     raise TypeError(f"unsupported tensor type: {type(tensor)!r}")
 
 
-def _touch_output(
+def touch_profile_output(
     output: TensorOutput,
 ) -> None:
-    """Touch outputs to reduce accidental laziness in timing loops."""
+    """Touch outputs to reduce accidental laziness in profiling loops.
+
+    Parameters
+    ----------
+    output : TensorOutput
+        NumPy or Torch result, optionally containing multiple tensors.
+
+    Raises
+    ------
+    TypeError
+        If a result is not a supported NumPy or Torch tensor.
+    """
     if isinstance(output, tuple):
         for tensor in output:
             _touch_tensor(tensor)
@@ -393,13 +404,13 @@ def _measure_call_median_ms(
 ) -> float:
     """Measure median per-call latency without monkeypatch overhead."""
     for _ in range(warmup):
-        _touch_output(invoke())
+        touch_profile_output(invoke())
 
     samples_ms: list[float] = []
     for _ in range(repeats):
         started = time.perf_counter()
         for _ in range(loops):
-            _touch_output(invoke())
+            touch_profile_output(invoke())
         elapsed_ms = (time.perf_counter() - started) * 1000.0 / float(loops)
         samples_ms.append(elapsed_ms)
     return statistics.median(samples_ms)
@@ -509,11 +520,11 @@ def _measure_stage_ms_per_call(
     stage_clock = _ExclusiveStageClock()
     with _patch_stage_targets(stage_clock):
         for _ in range(warmup):
-            _touch_output(invoke())
+            touch_profile_output(invoke())
         stage_clock.reset()
         started = time.perf_counter()
         for _ in range(loops):
-            _touch_output(invoke())
+            touch_profile_output(invoke())
         instrumented_call_ms = (time.perf_counter() - started) * 1000.0 / float(loops)
 
     stage_ms_per_call = {
@@ -557,7 +568,24 @@ def _profile_case(case: OverheadCase, /) -> CaseResult:
     )
 
 
-def _fixed_sizes(scale: str) -> BenchSizes:
+def profile_sizes(scale: str) -> BenchSizes:
+    """Select the input dimensions shared by the overhead profilers.
+
+    Parameters
+    ----------
+    scale : str
+        Profiling scale: ``"medium"`` or ``"large"``.
+
+    Returns
+    -------
+    BenchSizes
+        Base dimensions for constructing profiling cases.
+
+    Raises
+    ------
+    ValueError
+        If the scale is unsupported.
+    """
     if scale == "medium":
         return BenchSizes(b=16, n=192, d=96, h=32, w=24, r=16, j=128)
     if scale == "large":
@@ -656,13 +684,31 @@ def _build_dynamic_rearrange_split_invoke(
     return invoke
 
 
-def _fixed_cases(
+def build_fixed_overhead_cases(
     *,
     sizes: BenchSizes,
     seed: int,
     scale: str,
     backend: BackendName,
 ) -> tuple[OverheadCase, ...]:
+    """Build fixed-input workloads shared by the overhead profilers.
+
+    Parameters
+    ----------
+    sizes : BenchSizes
+        Input dimensions for the workloads.
+    seed : int
+        Seed for the local NumPy ``RandomState``.
+    scale : str
+        Profiling scale used to choose loop counts.
+    backend : BackendName
+        Backend on which the workloads execute.
+
+    Returns
+    -------
+    tuple[OverheadCase, ...]
+        Cases with preconstructed inputs and operation callables.
+    """
     random_state = np.random.RandomState(seed)
     x_bhwd_np = random_state.randn(sizes.b, sizes.h, sizes.w, sizes.d).astype(
         np.float32
@@ -873,13 +919,31 @@ def _dynamic_batches(
     return batches, split_batches
 
 
-def _dynamic_cases(
+def build_dynamic_overhead_cases(
     *,
     sizes: BenchSizes,
     seed: int,
     scale: str,
     backend: BackendName,
 ) -> tuple[OverheadCase, ...]:
+    """Build varying-input workloads shared by the overhead profilers.
+
+    Parameters
+    ----------
+    sizes : BenchSizes
+        Base dimensions for sampling input shapes.
+    seed : int
+        Seed for the local NumPy ``RandomState``.
+    scale : str
+        Profiling scale used to choose loop counts.
+    backend : BackendName
+        Backend on which the workloads execute.
+
+    Returns
+    -------
+    tuple[OverheadCase, ...]
+        Cases with preconstructed input streams and operation callables.
+    """
     batches, split_batches = _dynamic_batches(
         sizes=sizes,
         seed=seed,
@@ -1002,16 +1066,16 @@ def _profile_scenario(
     seed: int,
     backend: BackendName,
 ) -> ScenarioResult:
-    sizes = _fixed_sizes(scale)
+    sizes = profile_sizes(scale)
     if mode == "fixed":
-        cases = _fixed_cases(
+        cases = build_fixed_overhead_cases(
             sizes=sizes,
             seed=seed,
             scale=scale,
             backend=backend,
         )
     elif mode == "dynamic":
-        cases = _dynamic_cases(
+        cases = build_dynamic_overhead_cases(
             sizes=sizes,
             seed=seed,
             scale=scale,
@@ -1810,7 +1874,7 @@ def _require_distribution_owns_import(
     try:
         imported_package = Path(module_file).resolve(strict=True).parent
         distribution_package = Path(
-            installed_distribution.locate_file(module_name)
+            str(installed_distribution.locate_file(module_name))
         ).resolve(strict=True)
         same_package = imported_package.samefile(distribution_package)
     except OSError as error:

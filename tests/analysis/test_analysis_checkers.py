@@ -277,7 +277,9 @@ def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records(
     pyright_record = json.loads(PYRIGHT_OUTPUT)["generalDiagnostics"][0]
     pyright_record["file"] = str(target)
     pyrefly_record = json.loads(PYREFLY_OUTPUT)["errors"][0]
-    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+    cases: tuple[
+        tuple[PyrightAdapter | PyreflyAdapter | TyAdapter | ZubanAdapter, str], ...
+    ] = (
         (
             PyrightAdapter(name="pyright", executable="pyright"),
             json.dumps(
@@ -319,7 +321,9 @@ def test_json_adapters_preserve_valid_diagnostics_and_reject_malformed_records(
 
 
 def test_text_adapters_preserve_valid_diagnostics_and_reject_malformed_lines() -> None:
-    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+    cases: tuple[
+        tuple[PyrightAdapter | PyreflyAdapter | TyAdapter | ZubanAdapter, str], ...
+    ] = (
         (
             TyAdapter(),
             TY_OUTPUT + "unrecognized ty line\nanother unrecognized ty line\n",
@@ -345,7 +349,9 @@ def test_text_adapters_preserve_valid_diagnostics_and_reject_malformed_lines() -
 
 
 def test_checker_adapters_reject_invalid_report_paths() -> None:
-    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+    cases: tuple[
+        tuple[PyrightAdapter | PyreflyAdapter | TyAdapter | ZubanAdapter, str], ...
+    ] = (
         (
             PyrightAdapter(name="pyright", executable="pyright"),
             json.dumps(
@@ -403,7 +409,9 @@ def test_checker_adapters_reject_invalid_report_paths() -> None:
 
 
 def test_checker_adapters_reject_invalid_diagnostic_coordinates() -> None:
-    cases: tuple[tuple[CheckerAdapter, str], ...] = (
+    cases: tuple[
+        tuple[PyrightAdapter | PyreflyAdapter | TyAdapter | ZubanAdapter, str], ...
+    ] = (
         (
             PyrightAdapter(name="pyright", executable="pyright"),
             json.dumps(

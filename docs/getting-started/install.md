@@ -131,6 +131,27 @@ These checks verify installed import locations and run `einf-validate` with
 AST, with LibCST missing, and after installing the `analysis` extra. They
 also exercise `einf-lsp` before and after installing the `lsp` extra.
 
+Pyrefly is the repository's reference type checker. Its `default` preset and
+import roots are configured in `pyproject.toml`. For the core source and
+test scope, run:
+
+```bash
+pyrefly check --python-interpreter-path "$(which python)"
+```
+
+CI checks optional LSP files in the LSP environment. Its PyTorch job installs
+the analysis and LSP extras too, then checks all source, tests, and benchmark
+code. To run that full check locally, install PyTorch for your platform
+alongside the development extras above, then run:
+
+```bash
+pyrefly check --python-interpreter-path "$(which python)" src tests benchmarks
+```
+
+The wheel checks still exercise public typing with BasedPyright, mypy, and
+ty alongside Pyrefly. These interoperability checks are separate from the
+repository's internal reference checker.
+
 ## Verify
 
 After installing `einf` and NumPy, the following should print shapes without

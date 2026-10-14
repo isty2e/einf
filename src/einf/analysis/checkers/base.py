@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from einf.analysis.checkers.model import (
     CheckerDiagnostic,
@@ -28,10 +28,31 @@ def adapter_supports_limits(callable_object: Callable[..., object]) -> bool:
 
 
 class CheckerAdapter(ABC):
-    """Translate between checker-neutral requests and tool-specific output."""
+    """Translate between checker-neutral requests and tool-specific output.
 
-    name: str
-    executable: str
+    Attributes
+    ----------
+    name : str
+        Checker identifier exposed to consumers.
+    executable : str
+        Executable selected by the concrete adapter.
+
+    Notes
+    -----
+    Consumers read this metadata; concrete adapters own its storage.
+    Mutable adapters and frozen records are both supported.
+    """
+
+    if TYPE_CHECKING:
+
+        @property
+        def name(self) -> str: ...
+
+        @property
+        def executable(self) -> str: ...
+    else:
+        name: str
+        executable: str
 
     @abstractmethod
     def build_command(

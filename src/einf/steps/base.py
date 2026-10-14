@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from inspect import get_annotations, isabstract
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from einf.axis import AxisSide
 from einf.backend import BackendProfile
@@ -72,12 +72,43 @@ StepProgramT_co = TypeVar("StepProgramT_co", bound=StepProgram, covariant=True)
 
 
 class RuntimeStep(ABC, Generic[StepProgramT_co]):
-    """Executable runtime instruction."""
+    """Executable runtime instruction.
 
-    name: str
-    input_arity: int
-    output_arity: int
-    program: StepProgramT_co
+    Attributes
+    ----------
+    name : str
+        Instruction identifier.
+    input_arity : int
+        Number of input tensors.
+    output_arity : int
+        Number of output tensors.
+    program : StepProgramT_co
+        Program owned by this instruction.
+
+    Notes
+    -----
+    Metadata is read-only to consumers. Concrete steps retain direct fields;
+    the typing declarations do not install runtime descriptors.
+    """
+
+    if TYPE_CHECKING:
+
+        @property
+        def name(self) -> str: ...
+
+        @property
+        def input_arity(self) -> int: ...
+
+        @property
+        def output_arity(self) -> int: ...
+
+        @property
+        def program(self) -> StepProgramT_co: ...
+    else:
+        name: str
+        input_arity: int
+        output_arity: int
+        program: StepProgramT_co
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
@@ -126,12 +157,43 @@ class RuntimeStep(ABC, Generic[StepProgramT_co]):
 
 
 class SymbolicStep(ABC, Generic[StepProgramT_co]):
-    """Symbolic instruction that can specialize to a runtime step."""
+    """Symbolic instruction that can specialize to a runtime step.
 
-    name: str
-    input_arity: int
-    output_arity: int
-    program: StepProgramT_co
+    Attributes
+    ----------
+    name : str
+        Instruction identifier.
+    input_arity : int
+        Number of input tensors.
+    output_arity : int
+        Number of output tensors.
+    program : StepProgramT_co
+        Symbolic program owned by this instruction.
+
+    Notes
+    -----
+    Metadata is read-only to consumers. Concrete steps retain direct fields;
+    the typing declarations do not install runtime descriptors.
+    """
+
+    if TYPE_CHECKING:
+
+        @property
+        def name(self) -> str: ...
+
+        @property
+        def input_arity(self) -> int: ...
+
+        @property
+        def output_arity(self) -> int: ...
+
+        @property
+        def program(self) -> StepProgramT_co: ...
+    else:
+        name: str
+        input_arity: int
+        output_arity: int
+        program: StepProgramT_co
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()

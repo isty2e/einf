@@ -89,7 +89,7 @@ def _compile_expand_program(
     ] = []
     rhs_fast_shape_eval_fns: list[Callable[[tuple[int, ...], dict[str, int]], int]] = []
     has_fast_shape_eval = True
-    for rhs_term in scalar_rhs_terms:
+    for rhs_term in iter(scalar_rhs_terms):
         shape_node = compile_shape_node(
             term=rhs_term,
             axis_index_by_name=axis_index_by_name,

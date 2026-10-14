@@ -104,3 +104,24 @@ exclude = [
   "tests/integration/test_array_api_view_execution.py",
 ]
 typeCheckingMode = "standard"
+
+[tool.pyrefly]
+preset = "default"
+search-path = ["src", "."]
+project-includes = ["src", "tests"]
+project-excludes = [
+  # Optional imports are checked in the LSP and full-dependency CI lanes.
+  "src/einf/analysis/lsp/cli.py",
+  "src/einf/analysis/lsp/hover.py",
+  "src/einf/analysis/lsp/inlay_hints.py",
+  "src/einf/analysis/lsp/position_codec.py",
+  "src/einf/analysis/lsp/server.py",
+  "tests/analysis/test_analysis_lsp_position_encoding.py",
+  "tests/analysis/test_analysis_lsp_server.py",
+  "tests/analysis/test_conformance_analysis_lsp.py",
+  "tests/analysis/test_pyright_lsp_positions.py",
+  "tests/integration/test_array_api_contract_einop_execution.py",
+  "tests/integration/test_array_api_rearrange_execution.py",
+  "tests/integration/test_array_api_repeat_reduce_execution.py",
+  "tests/integration/test_array_api_view_execution.py",
+]
