@@ -91,7 +91,7 @@ jobs:
         run: python -m build
       - name: Check wheel VCS version
         run: python tests/package/verify_wheel_version.py dist src/einf/_version.py
-      - name: Check shipped entry points
+      - name: Check wheel and sdist installed entry points
         run: python tests/package/verify_wheel_entrypoints.py dist
       - name: Check base install runtime
         run: python tests/package/verify_wheel_base_install.py dist
