@@ -281,7 +281,7 @@ class CheckerExecutor:
                 limits=self._policy.limits,
             )
         else:
-            result = adapter.normalize_output(  # type: ignore[call-arg]
+            result = adapter.normalize_output(
                 returncode=process.returncode or 0,
                 stdout=_decode_output(stdout_bytes),
                 stderr=_decode_output(stderr_bytes),

@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import opt_einsum
 from array_api_compat import array_namespace
@@ -132,11 +132,36 @@ def _is_binary_matmul_equation(equation: str, /) -> bool:
 
 
 class EinsumSymbolicProgram(SymbolicProgram):
-    """Abstract base for closed einsum symbolic program variants."""
+    """Abstract base for closed einsum symbolic program variants.
 
-    input_arity: int
-    output_arity: int
-    allow_native_matmul: bool
+    Attributes
+    ----------
+    input_arity : int
+        Number of input tensors.
+    output_arity : int
+        Number of output tensors.
+    allow_native_matmul : bool
+        Whether specialization may admit native matmul equations.
+
+    Notes
+    -----
+    Consumers read metadata from the concrete variant's direct fields.
+    """
+
+    if TYPE_CHECKING:
+
+        @property
+        def input_arity(self) -> int: ...
+
+        @property
+        def output_arity(self) -> int: ...
+
+        @property
+        def allow_native_matmul(self) -> bool: ...
+    else:
+        input_arity: int
+        output_arity: int
+        allow_native_matmul: bool
 
     @abstractmethod
     def _resolve_equations(

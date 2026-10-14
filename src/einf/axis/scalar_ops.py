@@ -54,7 +54,7 @@ def flatten_mul_children(term: ScalarAxisTermBase) -> ScalarAxisTerms:
 def expand_products_for_terms(terms: ScalarAxisTerms) -> ScalarAxisTerms:
     """Expand top-level product terms to scalar-factor lists."""
     expanded: list[ScalarAxisTermBase] = []
-    for term in terms:
+    for term in iter(terms):
         if isinstance(term, AxisExpr) and term.operator == "*":
             expanded.extend(iter(flatten_mul_children(term)))
             continue

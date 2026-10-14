@@ -33,6 +33,7 @@ _CHECKER_TIMEOUT_MARGIN_SECONDS = 5.0
 
 class _CommandAdapter(CheckerAdapter):
     name = "stub"
+    executable: str
 
     def __init__(self, *, executable: str, command: tuple[str, ...]) -> None:
         self.executable = executable

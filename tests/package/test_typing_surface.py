@@ -92,9 +92,16 @@ def pyrefly_bin() -> str:
     return binary
 
 
-def _run_pyrefly(binary: str, source_path: Path, tmp_path: Path) -> dict[str, object]:
-    config = tmp_path / "pyrefly.toml"
-    config.write_text("", encoding="utf-8")
+def _run_pyrefly(
+    binary: str,
+    source_path: Path,
+    tmp_path: Path,
+    *,
+    config: Path | None = None,
+) -> dict[str, object]:
+    if config is None:
+        config = tmp_path / "pyrefly.toml"
+        config.write_text("", encoding="utf-8")
     result = run(
         [
             binary,
@@ -118,6 +125,70 @@ def _run_pyrefly(binary: str, source_path: Path, tmp_path: Path) -> dict[str, ob
     assert isinstance(output, dict), result.stdout
     assert (result.returncode == 0) == (output["errors"] == []), output
     return output
+
+
+def test_repository_metadata_supports_frozen_steps_and_mutable_adapters(
+    pyrefly_bin: str, tmp_path: Path
+) -> None:
+    source_path = REPO_ROOT / "tests/package/typing_cases/repository_metadata.py"
+    output = _run_pyrefly(
+        pyrefly_bin, source_path, tmp_path, config=REPO_ROOT / "pyproject.toml"
+    )
+    assert output["errors"] == [], output
+
+    executed = run(
+        [sys.executable, "-I", str(source_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert executed.returncode == 0, executed.stderr
+
+
+@pytest.mark.parametrize(
+    ("import_path", "type_name", "fields"),
+    [
+        (
+            "einf.steps.base",
+            "RuntimeStep[StepProgram]",
+            ("name", "input_arity", "output_arity", "program"),
+        ),
+        (
+            "einf.steps.base",
+            "SymbolicStep[StepProgram]",
+            ("name", "input_arity", "output_arity", "program"),
+        ),
+        ("einf.analysis.checkers", "CheckerAdapter", ("name", "executable")),
+        (
+            "einf.steps.einsum",
+            "EinsumSymbolicProgram",
+            ("input_arity", "output_arity", "allow_native_matmul"),
+        ),
+    ],
+)
+def test_repository_metadata_is_read_only_to_base_consumers(
+    pyrefly_bin: str,
+    tmp_path: Path,
+    import_path: str,
+    type_name: str,
+    fields: tuple[str, ...],
+) -> None:
+    source_path = tmp_path / "metadata_assignment.py"
+    assignments = "\n".join(f"    value.{field} = value.{field}" for field in fields)
+    source_path.write_text(
+        "from einf.steps.base import StepProgram\n"
+        f"from {import_path} import {type_name.split('[')[0]}\n"
+        f"def mutate(value: {type_name}) -> None:\n{assignments}\n",
+        encoding="utf-8",
+    )
+    output = _run_pyrefly(
+        pyrefly_bin, source_path, tmp_path, config=REPO_ROOT / "pyproject.toml"
+    )
+    errors = output["errors"]
+    assert isinstance(errors, list) and len(errors) == len(fields), output
+    assert all(
+        isinstance(error, dict) and error["name"] == "read-only" for error in errors
+    ), output
 
 
 def test_precise_annotations_preserve_call_configuration_and_callable_contracts(

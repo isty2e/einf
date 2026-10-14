@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -129,8 +129,31 @@ class BackendSpec:
         self._synchronize()
 
     @contextmanager
-    def preserve_input_batch(self, batch: tuple[Array, ...]) -> Iterator[None]:
-        """Prevent or detect runner mutation without copying input tensors."""
+    def preserve_input_batch(
+        self, batch: tuple[Array, ...]
+    ) -> Generator[None, None, None]:
+        """Prevent or detect runner mutation without copying input tensors.
+
+        Parameters
+        ----------
+        batch : tuple[Array, ...]
+            Input tensors already materialized on the selected backend.
+
+        Yields
+        ------
+        None
+            Scope with NumPy write protection or Torch mutation monitoring.
+
+        Raises
+        ------
+        TypeError
+            If an input is not a tensor of the selected backend.
+        RuntimeError
+            If the Torch target or mutation counter is unavailable, or a
+            mutation is detected on normal exit.
+        ValueError
+            If restoring a previously writable NumPy input fails.
+        """
         if self.name == "numpy":
             numpy_batch: list[NumpyArray] = []
             protected_ids: set[int] = set()

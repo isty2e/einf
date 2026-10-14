@@ -268,7 +268,7 @@ def test_failed_publication_preserves_existing_file_mode(
 def test_concurrent_publishers_leave_one_complete_receipt(tmp_path: Path) -> None:
     receipt = tmp_path / "receipt.json"
     initial_payload = {"writer": -1, "samples": ["initial"]}
-    payloads = [
+    payloads: list[dict[str, object]] = [
         {"writer": writer, "samples": [str(writer)] * 10_000} for writer in range(8)
     ]
     publish_receipt(receipt, initial_payload)

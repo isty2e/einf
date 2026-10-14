@@ -489,7 +489,7 @@ def test_permute_expand_fusion_preserves_structured_failure() -> None:
     ) -> TensorLike:
         raise original
 
-    route_ops = replace(backend_ops, broadcast_to=fail_broadcast)  # type: ignore[arg-type]
+    route_ops = replace(backend_ops, broadcast_to=fail_broadcast)
     permute_step, expand_step = _build_permute_expand_steps(route_ops)
     fusion = discover_step_fusion((permute_step, expand_step))
     assert fusion is not None
@@ -513,7 +513,7 @@ def test_permute_expand_fusion_projects_unexpected_backend_failure() -> None:
     ) -> TensorLike:
         raise IndexError("fused broadcast failed")
 
-    route_ops = replace(backend_ops, broadcast_to=fail_broadcast)  # type: ignore[arg-type]
+    route_ops = replace(backend_ops, broadcast_to=fail_broadcast)
     permute_step, expand_step = _build_permute_expand_steps(route_ops)
     fusion = discover_step_fusion((permute_step, expand_step))
     assert fusion is not None
@@ -751,7 +751,7 @@ def test_reshape_fusion_preserves_structured_failure() -> None:
     ) -> TensorLike:
         raise original
 
-    route_ops = replace(backend_ops, reshape=fail_reshape)  # type: ignore[arg-type]
+    route_ops = replace(backend_ops, reshape=fail_reshape)
     first_step, second_step = _build_reshape_fusion_steps(route_ops)
     fusion = discover_step_fusion((first_step, second_step))
     assert fusion is not None

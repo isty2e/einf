@@ -6,6 +6,7 @@ import cProfile
 import platform
 import sys
 from _lsprof import profiler_entry
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import CodeType
@@ -14,10 +15,10 @@ from typing import Literal
 from benchmarks.profile.overhead_breakdown import (
     BackendName,
     OverheadCase,
-    _dynamic_cases,
-    _fixed_cases,
-    _fixed_sizes,
-    _touch_output,
+    build_dynamic_overhead_cases,
+    build_fixed_overhead_cases,
+    profile_sizes,
+    touch_profile_output,
 )
 from benchmarks.shared.artifacts import publish_receipt
 from benchmarks.shared.metadata import version_or_missing
@@ -67,16 +68,16 @@ def _cases_for(
     seed: int,
     backend: BackendName,
 ) -> tuple[OverheadCase, ...]:
-    sizes = _fixed_sizes(scale)
+    sizes = profile_sizes(scale)
     if mode == "fixed":
-        return _fixed_cases(
+        return build_fixed_overhead_cases(
             sizes=sizes,
             seed=seed,
             scale=scale,
             backend=backend,
         )
     if mode == "dynamic":
-        return _dynamic_cases(
+        return build_dynamic_overhead_cases(
             sizes=sizes,
             seed=seed,
             scale=scale,
@@ -106,11 +107,11 @@ def _profile_invoke(
     loops: int,
 ) -> cProfile.Profile:
     for _ in range(warmup):
-        _touch_output(invoke())
+        touch_profile_output(invoke())
     profile = cProfile.Profile()
     profile.enable()
     for _ in range(loops):
-        _touch_output(invoke())
+        touch_profile_output(invoke())
     profile.disable()
     return profile
 
@@ -213,7 +214,7 @@ def _build_report(
     )
 
 
-def _to_json(report: WarmCallTreeReport, /) -> dict[str, object]:
+def _to_json(report: WarmCallTreeReport, /) -> Mapping[str, object]:
     return asdict(report)
 
 

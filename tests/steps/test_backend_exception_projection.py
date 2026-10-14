@@ -435,7 +435,7 @@ def test_reducer_rejects_shape_only_output() -> None:
     class ShapeOnly:
         shape = (2, 3)
 
-    ctx = ReducerRuntimeContext(xp=np)  # type: ignore[arg-type]
+    ctx = ReducerRuntimeContext(xp=np)
 
     with pytest.raises(ExecutionError, match="must be tensor-like") as error:
         ctx.coerce_output(ShapeOnly())  # type: ignore[arg-type]
@@ -474,7 +474,7 @@ def test_direct_method_reducer_rejects_wrong_output_shape(
     program = NativePreferredReduceRuntimeProgram(
         reducer=ReducerName("sum"),
         axes=(1,),
-        runtime_context=ReducerRuntimeContext(  # type: ignore[arg-type]
+        runtime_context=ReducerRuntimeContext(
             xp=np,
             backend_ops=backend_ops,
         ),
@@ -511,7 +511,7 @@ def test_namespace_reducer_rejects_wrong_output_shape() -> None:
     program = NamespaceReduceRuntimeProgram(
         reducer=ReducerName("sum"),
         axes=(1,),
-        runtime_context=ReducerRuntimeContext(xp=np),  # type: ignore[arg-type]
+        runtime_context=ReducerRuntimeContext(xp=np),
         reducer_fn=wrong_shape_reducer,  # type: ignore[arg-type]
     )
 
@@ -551,7 +551,7 @@ def test_direct_method_reducer_routes_output_through_coercion(
     program = NativePreferredReduceRuntimeProgram(
         reducer=ReducerName("sum"),
         axes=(1,),
-        runtime_context=ReducerRuntimeContext(  # type: ignore[arg-type]
+        runtime_context=ReducerRuntimeContext(
             xp=np,
             backend_ops=backend_ops,
         ),
@@ -856,7 +856,7 @@ def test_reducer_output_ownership_rejects_foreign_namespace() -> None:
 
             return ForeignNamespace()
 
-    ctx = ReducerRuntimeContext(xp=np)  # type: ignore[arg-type]
+    ctx = ReducerRuntimeContext(xp=np)
 
     with pytest.raises(
         ExecutionError,
@@ -885,7 +885,7 @@ def test_reducer_preserves_structured_errors_from_all_boundaries(
             raise execution_error
 
     backend_context = ReducerRuntimeContext(
-        xp=np,  # type: ignore[arg-type]
+        xp=np,
         backend_ops=BadBackendOps(),  # type: ignore[arg-type]
     )
     monkeypatch.setattr(
@@ -906,7 +906,7 @@ def test_reducer_preserves_structured_errors_from_all_boundaries(
         code="inconsistent_dims",
         message="namespace reducer invariant failed",
     )
-    namespace_context = ReducerRuntimeContext(xp=np)  # type: ignore[arg-type]
+    namespace_context = ReducerRuntimeContext(xp=np)
     with pytest.raises(ValidationError) as namespace_failure:
         namespace_context.apply_string_reducer(
             reducer_name=reducer_name,
@@ -1827,7 +1827,7 @@ def test_named_reducer_unexpected_fault_is_execution_error(
             raise raw_error
 
     context = ReducerRuntimeContext(
-        xp=np,  # type: ignore[arg-type]
+        xp=np,
         backend_ops=BadBackendOps(),  # type: ignore[arg-type]
     )
     monkeypatch.setattr(
@@ -1909,7 +1909,7 @@ def test_reducer_shape_access_failure_is_structured() -> None:
         def shape(self) -> tuple[int, ...]:
             raise LookupError("shape lookup failed")
 
-    context = ReducerRuntimeContext(xp=np)  # type: ignore[arg-type]
+    context = ReducerRuntimeContext(xp=np)
 
     with pytest.raises(ExecutionError, match="must be tensor-like") as error:
         context.coerce_output(MalformedTensor())  # type: ignore[arg-type]
@@ -1937,7 +1937,7 @@ def test_reducer_namespace_error_identity_is_preserved() -> None:
             _ = api_version
             raise original
 
-    context = ReducerRuntimeContext(xp=np)  # type: ignore[arg-type]
+    context = ReducerRuntimeContext(xp=np)
 
     with pytest.raises(ValidationError) as error:
         context.coerce_output(BadTensor())

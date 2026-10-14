@@ -1,12 +1,13 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 import pytest
 
 pytest.importorskip("numpy")
 
 import numpy as np
+from numpy.typing import DTypeLike
 
 import einf.plans.abstract as abstract_plan_module
 import einf.plans.runners as runner_module
@@ -105,7 +106,7 @@ class _DirectEinsumTensor:
         del api_version
         return self.namespace
 
-    def __array__(self, dtype: object = None) -> np.ndarray:
+    def __array__(self, dtype: DTypeLike | None = None) -> np.ndarray:
         if dtype is None:
             return self.value
         return self.value.astype(dtype)
@@ -332,7 +333,7 @@ def test_contract_matrix_multiply_numpy_prefers_native_matmul_path(
     native_matmul = np.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+    def record_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         matmul_calls.append(None)
         return native_matmul(left, right)
 
@@ -361,7 +362,7 @@ def test_vector_matrix_contract_prefers_native_matmul_path(
     native_matmul = np.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+    def record_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         matmul_calls.append(None)
         return native_matmul(left, right)
 
@@ -388,7 +389,7 @@ def test_batched_lhs_contract_prefers_native_matmul_path(
     native_matmul = np.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+    def record_matmul(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         matmul_calls.append(None)
         return native_matmul(left, right)
 
@@ -433,10 +434,10 @@ def test_non_matmul_binary_contract_uses_one_specialized_einsum_expression(
     def build_expression(
         equation: str,
         *shapes: tuple[int, ...],
-        **kwargs: object,
+        optimize: Literal["auto"],
     ) -> Callable[..., TensorLike]:
         expression_builds.append(equation)
-        return original_contract_expression(equation, *shapes, **kwargs)
+        return original_contract_expression(equation, *shapes, optimize=optimize)
 
     def run_native_matmul(_left: TensorLike, _right: TensorLike) -> TensorLike:
         native_matmul_calls.append(None)
@@ -540,7 +541,7 @@ def test_contract_matrix_multiply_torch_uses_native_matmul_path(
     native_matmul = torch.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(left: TensorLike, right: TensorLike) -> TensorLike:
+    def record_matmul(left: "torch.Tensor", right: "torch.Tensor") -> "torch.Tensor":
         matmul_calls.append(None)
         return native_matmul(left, right)
 

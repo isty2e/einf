@@ -49,8 +49,8 @@ def _normal_creation_mode(parent: Path) -> int:
     open_descriptor: int | None = descriptor
 
     try:
-        creation_mode = stat.S_IMODE(os.fstat(open_descriptor).st_mode) & 0o777
-        os.close(open_descriptor)
+        creation_mode = stat.S_IMODE(os.fstat(descriptor).st_mode) & 0o777
+        os.close(descriptor)
         open_descriptor = None
         probe_path.unlink()
     except BaseException:
@@ -88,7 +88,7 @@ def publish_receipt(path: Path, payload: Mapping[str, object]) -> None:
     open_descriptor: int | None = descriptor
 
     try:
-        stream = os.fdopen(open_descriptor, "w", encoding="utf-8", newline="\n")
+        stream = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
         open_descriptor = None
         with stream:
             json.dump(payload, stream, indent=2)
