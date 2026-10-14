@@ -1,6 +1,5 @@
 from collections.abc import Iterator
 
-import numpy as np
 import pytest
 
 import einf.steps.permute as permute_step_module
@@ -47,6 +46,9 @@ def _explode_compile_shape_node(**_kwargs: object) -> None:
 def test_rearrange_symbolic_unary_plan_cache_reuses_compilation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d = axes("b", "n", "d")
     op = rearrange(ax[b, n, d], ax[b, (n * d)])
 
@@ -68,6 +70,9 @@ def test_rearrange_symbolic_unary_plan_cache_reuses_compilation(
 def test_rearrange_non_unary_keeps_non_unary_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, m, d = axes("b", "n", "m", "d")
     op = rearrange((ax[b, n, d], ax[b, m, d]), ax[b, (n + m), d]).with_sizes(n=2, m=3)
 
@@ -88,6 +93,9 @@ def _explode_context_normalization(**_kwargs: object) -> None:
 def test_rearrange_symbolic_unary_fast_path_skips_context_normalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d = axes("b", "n", "d")
     op = rearrange(ax[b, n, d], ax[b, d, n])
 

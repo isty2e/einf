@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import numpy as np
 import pytest
-from array_api_compat import numpy as array_api_numpy
 
 import einf.operations.tensor_op as tensor_op_module
 from einf import (
@@ -22,6 +21,9 @@ from einf import (
 from einf.operations.tensor_op import TensorOp as RuntimeTensorOp
 from einf.reduction.schema import ReducerPhase
 
+if TYPE_CHECKING:
+    import numpy as np
+
 
 @dataclass(frozen=True, slots=True)
 class InvalidShapeTensor:
@@ -33,6 +35,9 @@ class InputShapeListTensor:
     shape: list[int]
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -42,6 +47,9 @@ class InputShapeBoolTensor:
     shape: tuple[int | bool, ...]
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -51,6 +59,9 @@ class InputWithoutShapeTensor:
     marker: str = "no-shape"
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -58,6 +69,9 @@ class InputWithoutShapeTensor:
 @dataclass(frozen=True, slots=True)
 class InputShapeRaisesTensor:
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -118,6 +132,9 @@ class NumpyRandomFamilyTensor:
 
 
 def test_tensorop_underflow_arity_raises_validation_error() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, c = axes("b", "c")
     x = np.zeros((2,), dtype=np.float32)
     op = contract((ax[b], ax[c]), ax[b])
@@ -228,6 +245,9 @@ def test_tensorop_reduce_by_reuses_cached_configured_instance() -> None:
 
 
 def test_tensorop_reduce_by_reuses_unchanged_partial_configuration() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, h = axes("cached_partial_b", "cached_partial_h")
     base = reduce(ax[b, h], ax[b])
     reducer = partial(np.sum, axis=(1,))
@@ -239,12 +259,15 @@ def test_tensorop_reduce_by_reuses_unchanged_partial_configuration() -> None:
 
 
 def test_tensorop_reduce_by_separates_changed_partial_configuration() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def scaled_sum(
-        values: np.ndarray,
+        values: "np.ndarray",
         *,
         axis: tuple[int, ...],
         scale: int,
-    ) -> np.ndarray:
+    ) -> "np.ndarray":
         return np.sum(values, axis=axis) * scale
 
     b, h = axes("changed_partial_b", "changed_partial_h")
@@ -263,6 +286,9 @@ def test_tensorop_reduce_by_separates_changed_partial_configuration() -> None:
 
 
 def test_tensorop_reducer_plan_does_not_expose_mutable_partial_authority() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, h = axes("immutable_plan_b", "immutable_plan_h")
     reducer = partial(np.sum, axis=(1,))
     op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
@@ -282,6 +308,9 @@ def test_tensorop_sizes_property_returns_detached_copy() -> None:
 
 
 def test_tensorop_reduce_uses_sum_by_default_without_reduce_by() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, c = axes("b", "c")
     op = reduce(ax[b, c], ax[b])
 
@@ -378,6 +407,9 @@ def test_tensorop_reduce_rejects_duplicate_phase_coverage() -> None:
 def test_tensorop_reduce_default_reducer_rejects_ambiguous_partial_multiplicity() -> (
     None
 ):
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (b,) = axes("b")
     x = np.arange(9, dtype=np.float32).reshape(3, 3)
 
@@ -400,6 +432,9 @@ def test_tensorop_reduce_explicit_single_reducer_allows_duplicate_keep_multiplic
 
 
 def test_tensorop_overflow_arity_raises_validation_error() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (b,) = axes("b")
     x = np.zeros((3,), dtype=np.float32)
     op = view(ax[b], ax[b])
@@ -413,6 +448,9 @@ def test_tensorop_overflow_arity_raises_validation_error() -> None:
 
 
 def test_tensorop_inflate_overflow_arity_raises_multi_input_not_allowed() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, r = axes("b", "r")
     x = np.zeros((3,), dtype=np.float32)
     op = repeat(ax[b], ax[b, r]).with_sizes(r=2)
@@ -440,6 +478,9 @@ def test_rearrange_constructor_rejects_bare_empty_tuple_side_spec() -> None:
 
 
 def test_tensorop_call_rejects_mixed_tensor_families_before_execution() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (b,) = axes("b")
     x_numpy = np.zeros((3,), dtype=np.float32)
     x_custom = CustomFamilyTensor(shape=(3,))

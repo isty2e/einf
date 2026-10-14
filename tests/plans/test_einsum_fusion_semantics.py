@@ -1,6 +1,6 @@
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 
 import einf.steps.einsum.step as einsum_step_module
@@ -15,6 +15,10 @@ from einf.steps.axis_slice import (
 from einf.steps.einsum import EinsumRuntimeProgram, EinsumRuntimeStep
 from einf.steps.einsum.step import EinsumEquationExecutor
 from einf.tensor_types import TensorLike
+
+if TYPE_CHECKING:
+    import numpy as np
+
 
 _EINSUM_EQUATION = "bnd,dj->bnj"
 _FALLBACK_TIERS = ("cached", "matmul", "module", "namespace", "opt")
@@ -72,6 +76,9 @@ def test_runtime_program_rejects_malformed_native_matmul_admission(
 def test_runtime_step_does_not_route_malformed_equation_to_matmul(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     malformed_equation = "i.,.j->ij"
     left = np.arange(2 * 3).reshape(2, 3)
     right = np.arange(3 * 4).reshape(3, 4)
@@ -79,7 +86,7 @@ def test_runtime_step_does_not_route_malformed_equation_to_matmul(
     native_matmul = np.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    def record_matmul(lhs: "np.ndarray", rhs: "np.ndarray") -> "np.ndarray":
         matmul_calls.append(None)
         return native_matmul(lhs, rhs)
 
@@ -107,6 +114,9 @@ def test_runtime_step_does_not_route_malformed_equation_to_matmul(
 def test_runtime_step_does_not_route_split_arrow_equation_to_matmul(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     split_arrow_equation = "ij,jk- >ik"
     left = np.arange(2 * 3).reshape(2, 3)
     right = np.arange(3 * 4).reshape(3, 4)
@@ -114,7 +124,7 @@ def test_runtime_step_does_not_route_split_arrow_equation_to_matmul(
     native_matmul = np.matmul
     matmul_calls: list[None] = []
 
-    def record_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    def record_matmul(lhs: "np.ndarray", rhs: "np.ndarray") -> "np.ndarray":
         matmul_calls.append(None)
         return native_matmul(lhs, rhs)
 
@@ -203,13 +213,16 @@ def test_einsum_axis_slice_fusion_preserves_fallback_order(
     successful_tier: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
     right = np.arange(5 * 4).reshape(5, 4)
     expected = np.einsum(_EINSUM_EQUATION, left, right)
     profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
     events: list[str] = []
 
-    def tier_result(tier: str) -> np.ndarray:
+    def tier_result(tier: str) -> "np.ndarray":
         events.append(tier)
         if tier != successful_tier:
             raise RuntimeError(f"{tier} unavailable")
@@ -298,6 +311,9 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
     chain_mode: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
     right = np.arange(5 * 4).reshape(5, 4)
     profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
@@ -384,6 +400,9 @@ def test_einsum_axis_slice_fusion_preserves_error_mapping(
 def test_einsum_axis_slice_fusion_preserves_einsum_output_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
     right = np.arange(5 * 4).reshape(5, 4)
     profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")
@@ -432,6 +451,9 @@ def test_einsum_axis_slice_fusion_preserves_einsum_output_validation(
 
 
 def test_single_einsum_step_is_not_registered_as_pass_through_fusion() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     left = np.arange(2 * 3 * 5).reshape(2, 3, 5)
     right = np.arange(5 * 4).reshape(5, 4)
     profile = BACKEND_RESOLVER.resolve(left, right, op_name="contract")

@@ -1,5 +1,8 @@
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import benchmarks.compare.expression_parity as expression_parity_module
 from benchmarks.compare.expression_parity import (

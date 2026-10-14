@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 
 from einf import ExecutionError, ax, axes, packs
@@ -313,6 +312,9 @@ def test_shape_free_runner_cache_resolves_backend_once_per_call(
 
 
 def test_backend_profile_derives_identity_from_namespace() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     profile = BackendProfile(
         namespace=np,
     )
@@ -325,6 +327,9 @@ def test_backend_profile_derives_identity_from_namespace() -> None:
 
 
 def test_backend_profile_excludes_route_capabilities() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     profile = BackendProfile(namespace=np)
 
     assert not hasattr(profile, "supports_einsum")

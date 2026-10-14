@@ -9,6 +9,56 @@ on:
       - "lsp/**"
 
 jobs:
+  base:
+    name: base-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install base test environment
+        run: |
+          python -m venv .venv-base
+          .venv-base/bin/python -m pip install -e . pytest
+      - name: Test without optional dependencies
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: |
+          export PATH="$PWD/.venv-base/bin:/usr/bin:/bin"
+          python - <<'PY'
+          import shutil
+          from importlib.util import find_spec
+
+          from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES
+
+          for module in (
+              "numpy", "torch", "array_api_strict", "libcst",
+              "pygls", "lsprotocol", "einops", "einx",
+          ):
+              assert find_spec(module) is None, module
+
+          for checker in SUPPORTED_CHECKER_NAMES:
+              assert shutil.which(checker) is None, checker
+          PY
+          python -m pytest --junitxml=base-contracts.xml \
+            tests/axis/test_dim_solver.py::test_solver_resolves_unique_scalar_solution_with_explicit_size \
+            tests/backend/test_backend_dispatch.py::test_backend_dispatch_rejects_distinct_custom_namespaces_with_same_id \
+            tests/operations/test_tensorop_backend_identity.py::test_reduce_compile_cache_distinguishes_namespaces_with_same_declared_id \
+            tests/plans/test_einsum_symbolic_program_variants.py::test_chain_einsum_program_rejects_incomplete_state \
+            tests/plans/test_plan_cache_concurrency.py::test_runner_cache_publishes_last_hit_atomically \
+            tests/benchmarks/test_benchmark_artifacts.py::test_publish_receipt_replaces_existing_artifact
+          python - <<'PY'
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse("base-contracts.xml").getroot().findall("testsuite")
+          assert suites and sum(int(suite.attrib["tests"]) for suite in suites) > 0
+          assert all(int(suite.attrib["skipped"]) == 0 for suite in suites)
+          PY
+          python -m pytest
+
   core:
     name: core (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -26,7 +76,9 @@ jobs:
       - name: Check VCS checkout completeness
         run: python tests/package/verify_vcs_history.py
       - name: Install
-        run: python -m pip install -e ".[dev,analysis,docs]"
+        run: |
+          python -m pip install -e ".[dev,analysis,docs]"
+          python -c "import array_api_strict; import libcst; import numpy"
       - name: Lint
         run: ruff check src tests benchmarks
       - name: Typecheck project

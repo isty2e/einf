@@ -6,9 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, cast
 
-import numpy as np
 import pytest
 
+pytest.importorskip("numpy")
+
+import numpy as np
+
+import benchmarks.profile.overhead_breakdown as overhead_breakdown_module
 from benchmarks.guardrail.experiment import (
     CgroupCpuHierarchyFingerprint,
     CgroupV1CpuLevel,
@@ -36,9 +40,6 @@ from benchmarks.profile.overhead_breakdown import (
     CaseResult,
     OverheadCase,
     ScenarioResult,
-    _profile_case,
-    _resolve_target,
-    _to_json,
 )
 
 
@@ -111,7 +112,7 @@ def _environment() -> OverheadEnvironmentDict:
 def test_overhead_stage_targets_resolve() -> None:
     for targets in STAGE_TARGETS.values():
         for target in targets:
-            _resolve_target(target)
+            overhead_breakdown_module._resolve_target(target)
 
 
 def test_expected_einf_source_root_is_checked_before_profiling(
@@ -1098,7 +1099,7 @@ def test_overhead_json_emits_residual_field(tmp_path: Path) -> None:
         ),
     )
 
-    payload = _to_json(
+    payload = overhead_breakdown_module._to_json(
         result,
         backend="numpy",
         seed=20260215,
@@ -1254,7 +1255,7 @@ def test_profile_case_builds_fresh_invoke_for_each_timing_pass(
         loops=10,
     )
 
-    result = _profile_case(case)
+    result = overhead_breakdown_module._profile_case(case)
 
     assert result.unpatched_call_ms == 1.0
     assert result.instrumented_call_ms == 1.1

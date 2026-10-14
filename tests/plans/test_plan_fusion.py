@@ -1,6 +1,6 @@
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 
 import einf.plans.fusion.rules.structural as structural_module
@@ -28,6 +28,9 @@ from einf.steps.reshape import (
 from einf.steps.reshape.compile import compile_reshape_target_shape_evaluator
 from einf.steps.reshape.constants import ZERO_COPY_REQUIRED_RESHAPE_MODE
 from einf.tensor_types import TensorLike
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 def _build_permute_expand_steps(
@@ -170,6 +173,9 @@ def _build_reshape_fusion_steps(
 
 
 def test_discover_fuses_permute_then_permute() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -206,6 +212,9 @@ def test_discover_fuses_permute_then_permute() -> None:
 
 
 def test_discover_fuses_permute_then_expand() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     permute_step, expand_step = _build_permute_expand_steps(backend_ops)
@@ -226,6 +235,9 @@ def test_discover_fuses_permute_then_expand() -> None:
 def test_native_permute_expand_fusion_skips_intermediate_shape_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     permute_step, expand_step = _build_permute_expand_steps(backend_ops)
@@ -249,6 +261,9 @@ def test_native_permute_expand_fusion_skips_intermediate_shape_validation(
 def test_permute_expand_fusion_projects_trust_resolution_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     permute_step, expand_step = _build_permute_expand_steps(backend_ops)
@@ -274,6 +289,9 @@ def test_permute_expand_fusion_projects_trust_resolution_failure(
 
 
 def test_discover_fuses_reshape_then_reshape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     first_step, second_step = _build_reshape_fusion_steps(backend_ops)
@@ -294,6 +312,8 @@ def test_discover_fuses_reshape_then_reshape() -> None:
 
 
 def test_permute_fusion_rejects_distinct_backend_bindings() -> None:
+    pytest.importorskip("numpy")
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     first_step = PermuteRuntimeStep(
@@ -317,6 +337,8 @@ def test_permute_fusion_rejects_distinct_backend_bindings() -> None:
 
 
 def test_permute_expand_fusion_rejects_distinct_backend_bindings() -> None:
+    pytest.importorskip("numpy")
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     first_step, second_step = _build_permute_expand_steps(backend_ops)
@@ -329,6 +351,8 @@ def test_permute_expand_fusion_rejects_distinct_backend_bindings() -> None:
 
 
 def test_reshape_fusion_rejects_distinct_backend_bindings() -> None:
+    pytest.importorskip("numpy")
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     first_step, second_step = _build_reshape_fusion_steps(backend_ops)
@@ -346,20 +370,29 @@ def test_fusion_rejects_distinct_namespace_bindings() -> None:
 
         @staticmethod
         def permute_dims(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             return np.transpose(tensor, axes)
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             return np.expand_dims(tensor, axis=axis)
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             return np.broadcast_to(tensor, shape)
 
     first_step, second_step = _build_portable_permute_expand_steps(
@@ -374,6 +407,9 @@ def test_fusion_rejects_distinct_namespace_bindings() -> None:
 
 
 def test_permute_expand_fusion_falls_back_on_primitive_route_miss() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -404,6 +440,9 @@ def test_permute_expand_fusion_falls_back_on_primitive_route_miss() -> None:
 
 
 def test_permute_expand_fusion_falls_back_after_wrong_route_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -434,6 +473,9 @@ def test_permute_expand_fusion_falls_back_after_wrong_route_output_shape() -> No
 
 
 def test_permute_expand_fusion_preserves_structured_failure() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     original = ValidationError(
@@ -459,6 +501,9 @@ def test_permute_expand_fusion_preserves_structured_failure() -> None:
 
 
 def test_permute_expand_fusion_projects_unexpected_backend_failure() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -486,6 +531,9 @@ def test_permute_expand_fusion_projects_unexpected_backend_failure() -> None:
 
 
 def test_custom_permute_expand_fusion_rejects_wrong_permute_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     route_ops = replace(
@@ -504,6 +552,9 @@ def test_custom_permute_expand_fusion_rejects_wrong_permute_shape() -> None:
 
 
 def test_custom_permute_expand_fusion_preserves_permute_error_owner() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -531,25 +582,28 @@ def test_custom_permute_expand_fusion_preserves_permute_error_owner() -> None:
 
 
 def test_portable_permute_expand_fusion_rejects_wrong_intermediate_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class WrongPermuteNamespace:
         __name__ = "custom.wrong_permute"
 
         @staticmethod
         def permute_dims(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             _axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return tensor[:1, :2]
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
             return np.expand_dims(tensor, axis=axis)
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.broadcast_to(tensor, shape)
 
     permute_step, expand_step = _build_portable_permute_expand_steps(
@@ -566,26 +620,29 @@ def test_portable_permute_expand_fusion_rejects_wrong_intermediate_shape() -> No
 
 
 def test_portable_permute_expand_fusion_rejects_wrong_inserted_axis_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class WrongExpandDimsNamespace:
         __name__ = "custom.wrong_expand_dims"
 
         @staticmethod
         def permute_dims(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.transpose(tensor, axes)
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
             _ = axis
             return tensor[:1, :, None]
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.broadcast_to(tensor, shape)
 
     permute_step, expand_step = _build_portable_permute_expand_steps(
@@ -602,25 +659,28 @@ def test_portable_permute_expand_fusion_rejects_wrong_inserted_axis_shape() -> N
 
 
 def test_portable_permute_expand_fusion_preserves_permute_error_owner() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class FailingPermuteNamespace:
         __name__ = "custom.failing_permute"
 
         @staticmethod
         def permute_dims(
-            _tensor: np.ndarray,
+            _tensor: "np.ndarray",
             _axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             raise IndexError("permute boom")
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
             return np.expand_dims(tensor, axis=axis)
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.broadcast_to(tensor, shape)
 
     permute_step, expand_step = _build_portable_permute_expand_steps(
@@ -642,6 +702,9 @@ def test_portable_permute_expand_fusion_preserves_permute_error_owner() -> None:
 
 
 def test_reshape_fusion_falls_back_after_wrong_route_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -672,6 +735,9 @@ def test_reshape_fusion_falls_back_after_wrong_route_output_shape() -> None:
 
 
 def test_reshape_fusion_preserves_structured_failure() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     original = ValidationError(
@@ -697,6 +763,8 @@ def test_reshape_fusion_preserves_structured_failure() -> None:
 
 
 def test_discover_does_not_fuse_reshape_chain_when_zero_copy_required() -> None:
+    pytest.importorskip("numpy")
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 
@@ -748,6 +816,8 @@ def test_discover_does_not_fuse_reshape_chain_when_zero_copy_required() -> None:
 
 
 def test_discover_finds_multiple_non_overlapping_fusions() -> None:
+    pytest.importorskip("numpy")
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
 

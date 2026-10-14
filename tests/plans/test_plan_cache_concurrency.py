@@ -3,9 +3,7 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import TypeVar, cast
 
-import numpy as np
-
-from einf.backend import BACKEND_RESOLVER
+from einf.backend import BackendExecutionIdentity
 from einf.plans.cache import (
     RouteOutputIndexCache,
     RunnerCache,
@@ -21,8 +19,12 @@ ResultT = TypeVar("ResultT")
 _INTERLEAVING_TIMEOUT_SECONDS = 5.0
 
 
-class _AlternateArray(np.ndarray):
+class _AlternateTensor:
     pass
+
+
+class _CacheNamespace:
+    __name__ = "test.cache"
 
 
 class _LastHitReadBarrier:
@@ -185,12 +187,9 @@ def test_runtime_step_cache_publishes_last_hit_atomically() -> None:
 
 def test_runner_cache_publishes_last_hit_atomically() -> None:
     cache = _InterleavingRunnerCache()
-    backend_identity = BACKEND_RESOLVER.resolve(
-        np.zeros((1,)),
-        op_name="rearrange",
-    ).execution_identity
-    key_a: RunnerCacheKey = ((np.ndarray,), backend_identity, None)
-    key_b: RunnerCacheKey = ((_AlternateArray,), backend_identity, None)
+    backend_identity = BackendExecutionIdentity(namespace=_CacheNamespace)
+    key_a: RunnerCacheKey = ((object,), backend_identity, None)
+    key_b: RunnerCacheKey = ((_AlternateTensor,), backend_identity, None)
     cache.set(key_a, "runner-a")
 
     result = _replace_last_hit_after_state_read(

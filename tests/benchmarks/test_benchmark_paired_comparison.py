@@ -3,14 +3,12 @@ import sys
 
 import pytest
 
-from benchmarks.compare.einf_einops_einx import (
-    _receipt_payload as _fixed_receipt_payload,
-)
+pytest.importorskip("numpy")
+
+import benchmarks.compare.einf_einops_einx as einf_einops_einx_module
+import benchmarks.compare.einf_einops_einx_dynamic as einf_einops_einx_dynamic_module
 from benchmarks.compare.einf_einops_einx import (
     main as fixed_main,
-)
-from benchmarks.compare.einf_einops_einx_dynamic import (
-    _receipt_payload,
 )
 from benchmarks.harness import (
     AvailableRun,
@@ -338,7 +336,7 @@ def test_dynamic_receipt_preserves_observation_and_analysis_identity() -> None:
         round_order_seed=7,
     )
 
-    payload = _receipt_payload(
+    payload = einf_einops_einx_dynamic_module._receipt_payload(
         config=config,
         sizes=sizes,
         case_results=[result],
@@ -504,7 +502,7 @@ def test_fixed_receipt_uses_the_same_paired_evidence_shape() -> None:
         iterations=3,
     )
 
-    payload = _fixed_receipt_payload(
+    payload = einf_einops_einx_module._receipt_payload(
         config=config,
         sizes=sizes,
         case_results=[result],

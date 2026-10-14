@@ -3,8 +3,11 @@ from collections.abc import Callable
 from pathlib import Path
 from weakref import ReferenceType, ref
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import benchmarks.compare.expression_parity as expression_parity_module
 import benchmarks.harness.profiler as profiler_module

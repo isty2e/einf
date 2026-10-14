@@ -1,20 +1,21 @@
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("numpy")
+
+import benchmarks.audit.expression_layout as expression_layout_module
 from benchmarks.audit.expression_layout import (
     LayoutAuditReport,
     LayoutSample,
     LayoutSnapshot,
     LayoutStrategyReport,
-    _find_gap_case,
-    _render_markdown,
-    _summarize_samples,
-    _to_json,
 )
 from benchmarks.harness import dynamic_sizes_for_scale
 
 
 def test_find_gap_case_accepts_known_case() -> None:
-    case = _find_gap_case(
+    case = expression_layout_module._find_gap_case(
         case_name="einop_contract_split_dynamic",
         sizes=dynamic_sizes_for_scale("large"),
     )
@@ -48,7 +49,9 @@ def test_summarize_samples_orders_fastest_and_slowest() -> None:
             ),
         ),
     )
-    summary = _summarize_samples(samples=[sample_slow, sample_fast], top_k=1)
+    summary = expression_layout_module._summarize_samples(
+        samples=[sample_slow, sample_fast], top_k=1
+    )
     assert summary.fastest_samples[0].batch_index == 1
     assert summary.slowest_samples[0].batch_index == 2
 
@@ -62,7 +65,7 @@ def test_layout_audit_renderers_emit_snapshot_data(tmp_path: Path) -> None:
             LayoutStrategyReport(
                 name="einf",
                 call_repr="einop(...)",
-                summary=_summarize_samples(
+                summary=expression_layout_module._summarize_samples(
                     samples=[
                         LayoutSample(
                             batch_index=0,
@@ -85,10 +88,10 @@ def test_layout_audit_renderers_emit_snapshot_data(tmp_path: Path) -> None:
         notes=["tail explanation only"],
     )
 
-    payload = _to_json(report)
+    payload = expression_layout_module._to_json(report)
     assert payload["title"] == "# Gap Expression Layout Audit"
 
-    markdown = _render_markdown(report)
+    markdown = expression_layout_module._render_markdown(report)
     path = tmp_path / "layout-audit.md"
     path.write_text(markdown, encoding="utf-8")
 

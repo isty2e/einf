@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
-from array_api_compat import numpy as array_api_numpy
 
 from einf import ErrorCode, ValidationError, ax, axes, contract, packs, rearrange
 from einf.plans import abstract as abstract_plan_module
@@ -14,6 +12,9 @@ class ArrayApiShapeTensor:
     shape: tuple[int, ...]
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -23,6 +24,9 @@ class ArrayApiShapeTensor:
 
 
 def test_tensorop_call_revalidates_literal_dims_after_runner_cache_hit() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     op = rearrange(ax[2, 3], ax[3, 2])
     valid = np.arange(6, dtype=np.float32).reshape(2, 3)
     invalid = valid.reshape(3, 2)
@@ -35,6 +39,9 @@ def test_tensorop_call_revalidates_literal_dims_after_runner_cache_hit() -> None
 
 
 def test_tensorop_call_rejects_shared_dim_conflict_before_backend() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, k, m = axes("b", "k", "m")
     op = contract((ax[b, k], ax[k, m]), ax[b, m])
     left = np.ones((2, 3), dtype=np.float32)
@@ -47,6 +54,9 @@ def test_tensorop_call_rejects_shared_dim_conflict_before_backend() -> None:
 
 
 def test_tensorop_call_revalidates_with_sizes_after_runner_cache_hit() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, k, m = axes("b", "k", "m")
     op = contract((ax[b, k], ax[k, m]), ax[b, m]).with_sizes(k=3)
     valid_left = np.ones((2, 3), dtype=np.float32)
@@ -65,6 +75,9 @@ def test_tensorop_call_revalidates_with_sizes_after_runner_cache_hit() -> None:
 
 
 def test_tensorop_call_rejects_rank_mismatch_after_runner_cache_hit() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, c = axes("b", "c")
     op = rearrange(ax[b, c], ax[c, b])
     valid = np.ones((2, 3), dtype=np.float32)
@@ -78,6 +91,9 @@ def test_tensorop_call_rejects_rank_mismatch_after_runner_cache_hit() -> None:
 
 
 def test_tensorop_call_rejects_repeated_axis_conflict() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (n,) = axes("n")
     op = rearrange(ax[n, n], ax[n, n])
     invalid = np.ones((2, 3), dtype=np.float32)
@@ -89,6 +105,9 @@ def test_tensorop_call_rejects_repeated_axis_conflict() -> None:
 
 
 def test_tensorop_call_rejects_tuple_output_split_size_conflict() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     n, m = axes("n", "m")
     op = rearrange(ax[(n + m)], (ax[n], ax[m])).with_sizes(n=2, m=3)
     invalid = np.ones((6,), dtype=np.float32)
@@ -100,6 +119,9 @@ def test_tensorop_call_rejects_tuple_output_split_size_conflict() -> None:
 
 
 def test_tensorop_call_rejects_multi_input_route_shared_dim_conflict() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (n,) = axes("n")
     op = rearrange((ax[n], ax[n]), (ax[n], ax[n]))
     left = np.ones((3,), dtype=np.float32)
@@ -112,6 +134,9 @@ def test_tensorop_call_rejects_multi_input_route_shared_dim_conflict() -> None:
 
 
 def test_tensorop_call_accepts_zero_length_literal_axis() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     op = rearrange(ax[0, 3], ax[3, 0])
     tensor = np.empty((0, 3), dtype=np.float32)
 
@@ -121,6 +146,9 @@ def test_tensorop_call_accepts_zero_length_literal_axis() -> None:
 
 
 def test_tensorop_call_accepts_scalar_shape_contract() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     op = rearrange(ax[()], ax[()])
     tensor = np.asarray(3.0, dtype=np.float32)
 
@@ -159,6 +187,9 @@ def test_tensorop_call_rejects_negative_custom_shape_entry() -> None:
 
 
 def test_tensorop_call_revalidates_expression_dim_after_runner_cache_hit() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (n,) = axes("n")
     op = rearrange(ax[(2 * n)], ax[n, 2]).with_sizes(n=3)
     valid = np.ones((6,), dtype=np.float32)
@@ -172,6 +203,9 @@ def test_tensorop_call_revalidates_expression_dim_after_runner_cache_hit() -> No
 
 
 def test_tensorop_call_accepts_zero_width_contraction() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, k, m = axes("b", "k", "m")
     op = contract((ax[b, k], ax[k, m]), ax[b, m])
     left = np.empty((2, 0), dtype=np.float32)
@@ -183,6 +217,9 @@ def test_tensorop_call_accepts_zero_width_contraction() -> None:
 
 
 def test_tensorop_call_reuses_shape_free_runner_across_valid_shapes() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, c = axes("b", "c")
     op = rearrange(ax[b, c], ax[c, b])
     first = np.arange(4, dtype=np.float32).reshape(1, 4)
@@ -195,6 +232,9 @@ def test_tensorop_call_reuses_shape_free_runner_across_valid_shapes() -> None:
 def test_tensorop_call_reuses_last_successful_shape_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, c = axes("validation_cache_b", "validation_cache_c")
     op = rearrange(ax[b, c], ax[c, b])
     tensor = np.ones((2, 3), dtype=np.float32)
@@ -240,6 +280,9 @@ def test_tensorop_call_validates_custom_type_runner_cache_hit() -> None:
 
 
 def test_tensorop_call_revalidates_tuple_runner_cache_hit() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     op = rearrange(ax[5], (ax[2], ax[3]))
     valid = np.arange(5, dtype=np.float32)
     invalid = np.arange(6, dtype=np.float32)
@@ -254,6 +297,9 @@ def test_tensorop_call_revalidates_tuple_runner_cache_hit() -> None:
 
 
 def test_tensorop_call_rejects_three_input_shared_dim_conflict() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     a, b, c, d = axes("a", "b", "c", "d")
     op = contract(
         (ax[a, b], ax[b, c], ax[c, d]),
@@ -270,6 +316,9 @@ def test_tensorop_call_rejects_three_input_shared_dim_conflict() -> None:
 
 
 def test_tensorop_call_revalidates_zero_with_sizes_binding() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     (n,) = axes("n")
     op = rearrange(ax[n], ax[n]).with_sizes(n=0)
     valid = np.empty((0,), dtype=np.float32)
@@ -283,6 +332,9 @@ def test_tensorop_call_revalidates_zero_with_sizes_binding() -> None:
 
 
 def test_tensorop_call_preserves_expression_ambiguity_diagnostic() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     h, w = axes("h", "w")
     op = rearrange(ax[(h * w)], ax[h, w])
     tensor = np.ones((12,), dtype=np.float32)
@@ -294,6 +346,9 @@ def test_tensorop_call_preserves_expression_ambiguity_diagnostic() -> None:
 
 
 def test_tensorop_call_supports_axis_pack_rank_changes() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b = axes("b")[0]
     tail = packs("tail")[0]
     op = rearrange(ax[b, tail], ax[tail, b])

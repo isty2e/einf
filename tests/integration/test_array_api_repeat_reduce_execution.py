@@ -5,8 +5,11 @@ from functools import partial, partialmethod, wraps
 from types import MappingProxyType, MethodType
 from typing import NamedTuple
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 from numpy.typing import NDArray
 
 from einf import (

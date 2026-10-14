@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("numpy")
+
 import numpy as np
 from numpy.typing import NDArray
 

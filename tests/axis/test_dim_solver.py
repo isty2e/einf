@@ -2,7 +2,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pytest
-from array_api_compat import numpy as array_api_numpy
 
 from einf import ErrorCode, Signature, ValidationError, ax, axes, packs, view
 from einf.solver import solve_dimensions, validate_dimensions
@@ -13,6 +12,9 @@ class DummyTensor:
     shape: tuple[int, ...]
 
     def __array_namespace__(self, api_version: str | None = None) -> object:
+        pytest.importorskip("numpy")
+        from array_api_compat import numpy as array_api_numpy
+
         _ = api_version
         return array_api_numpy
 
@@ -599,6 +601,9 @@ def test_tensorop_call_runs_solver_before_execution() -> None:
 
 
 def test_tensorop_call_reaches_execution_placeholder_after_unique_solve() -> None:
+    pytest.importorskip("numpy")
+    from array_api_compat import numpy as array_api_numpy
+
     b, h, w, c = axes("b", "h", "w", "c")
     op = view(ax[b, (h * w), c], ax[b, h, w, c]).with_sizes(h=3)
     x = array_api_numpy.asarray(

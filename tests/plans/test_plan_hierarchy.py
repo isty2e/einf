@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-import numpy as np
 import pytest
 
 import einf.steps.reduce.step as reduce_step_module
@@ -264,6 +263,9 @@ def test_abstract_plan_delegates_to_lowering_program() -> None:
 
 
 def test_symbolic_plan_execute_specializes_all_steps() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     lhs, rhs = _unary_side()
     plan = SymbolicPlan(
         source=_source("rearrange", lhs, rhs),
@@ -288,6 +290,9 @@ def test_symbolic_plan_execute_specializes_all_steps() -> None:
 
 
 def test_symbolic_plan_execute_runs_steps_in_order() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     lhs, rhs = _unary_side()
     plan = SymbolicPlan(
         source=_source("rearrange", lhs, rhs),
@@ -471,6 +476,9 @@ def test_default_lowering_program_emits_expected_symbolic_steps() -> None:
 
 
 def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d, j = axes("b", "n", "d", "j")
     axis_permute_step = AxisPermuteSymbolicStep(
         lhs=AxisSide.from_spec(ax[b, n, d], side_name="lhs"),
@@ -583,6 +591,9 @@ def test_symbolic_specialization_builds_fastpath_runtime_steps() -> None:
 def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, h, w, d = axes("b", "h", "w", "d")
     sum_step = ReduceSymbolicStep(
         lhs=AxisSide.from_spec(ax[b, h, w, d], side_name="lhs"),
@@ -655,6 +666,9 @@ def test_reduce_symbolic_specialization_builds_runtime_program_taxonomy(
 
 
 def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     _CountingSymbolicStep.calls.clear()
     step = _CountingSymbolicStep(
         name="counting",
@@ -852,6 +866,9 @@ def test_select_symbolic_plan_uses_selection_cache() -> None:
 
 
 def test_abstract_plan_execute_runs_symbolic_then_runtime() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
     symbolic = SymbolicPlan(
@@ -881,6 +898,9 @@ def test_abstract_plan_execute_runs_symbolic_then_runtime() -> None:
 
 
 def test_abstract_plan_execute_rearrange_runs_real_runtime_step() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d = axes("b", "n", "d")
     lhs = AxisSide.from_spec(ax[b, n, d], side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, d, n], side_name="rhs")
@@ -903,6 +923,9 @@ def test_abstract_plan_execute_rearrange_runs_real_runtime_step() -> None:
 
 
 def test_abstract_plan_execute_einop_contract_runs_real_runtime_step() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d, j = axes("b", "n", "d", "j")
     lhs = AxisSide.from_spec((ax[b, n, d], ax[d, j]), side_name="lhs")
     rhs = AxisSide.from_spec(ax[b, n, j], side_name="rhs")
@@ -924,6 +947,9 @@ def test_abstract_plan_execute_einop_contract_runs_real_runtime_step() -> None:
 
 
 def test_abstract_plan_builds_route_runner_kernel() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, n, d, j = axes("b", "n", "d", "j")
     lhs = AxisSide.from_spec(
         (ax[b, n, d], ax[d, j]),
@@ -991,6 +1017,9 @@ def test_runtime_selection_rejects_missing_context_inputs() -> None:
 
 
 def test_abstract_plan_builds_step_chain_runner_kernel() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
     symbolic = SymbolicPlan(

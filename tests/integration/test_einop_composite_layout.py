@@ -1,5 +1,8 @@
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 from einf import ValidationError, ax, axes, einop, rearrange, repeat
 
