@@ -25,7 +25,7 @@ import subprocess
 import sys
 import sysconfig
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.metadata import Distribution, PackageNotFoundError, distribution
@@ -320,7 +320,7 @@ class _ExclusiveStageClock:
         self._stack.clear()
 
     @contextmanager
-    def measure(self, stage: str) -> Iterator[None]:
+    def measure(self, stage: str) -> Generator[None, None, None]:
         frame: list[Any] = [stage, time.perf_counter_ns(), 0]
         self._stack.append(frame)
         try:
@@ -482,7 +482,9 @@ def _stage_wrapper(
 
 
 @contextmanager
-def _patch_stage_targets(stage_clock: _ExclusiveStageClock) -> Iterator[None]:
+def _patch_stage_targets(
+    stage_clock: _ExclusiveStageClock,
+) -> Generator[None, None, None]:
     """Patch stage targets to collect exclusive stage timing."""
     with ExitStack() as stack:
         for stage, targets in STAGE_TARGETS.items():

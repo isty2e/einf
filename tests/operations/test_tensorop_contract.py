@@ -487,7 +487,7 @@ def test_tensorop_call_rejects_mixed_tensor_families_before_execution() -> None:
     op = contract((ax[b], ax[b]), ax[b])
 
     with pytest.raises(ValidationError) as error:
-        _ = op(x_numpy, x_custom)  # type: ignore[arg-type,arg-type]
+        _ = op(x_numpy, x_custom)
 
     assert error.value.code == ErrorCode.BACKEND_DISPATCH_MIXED_FAMILY.value
 
@@ -520,7 +520,7 @@ def test_tensorop_contract_rejects_missing_einsum_extension() -> None:
 
 def test_tensorop_view_rejects_unsupported_input() -> None:
     (b,) = axes("b")
-    x = InvalidShapeTensor(shape=(3,))  # type: ignore[arg-type]
+    x = InvalidShapeTensor(shape=(3,))
     op = view(ax[b], ax[b])
 
     with pytest.raises(ValidationError) as error:
@@ -568,7 +568,7 @@ def test_tensorop_call_rejects_non_tuple_input_shape_with_validation_error() -> 
 
 def test_tensorop_call_rejects_bool_input_shape_entries_with_validation_error() -> None:
     (b,) = axes("b")
-    x = InputShapeBoolTensor(shape=(True,))  # type: ignore[arg-type]
+    x = InputShapeBoolTensor(shape=(True,))
     op = view(ax[b], ax[b])
 
     with pytest.raises(ValidationError) as error:

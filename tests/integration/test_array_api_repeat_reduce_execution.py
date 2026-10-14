@@ -849,7 +849,7 @@ def test_reduce_opaque_or_variadic_signatures_are_rejected_before_invocation() -
         calls.append("invalid")
         return np.sum(values, axis=reducer_axes)
 
-    invalid_signature.__signature__ = "invalid"  # type: ignore[attr-defined]
+    vars(invalid_signature)["__signature__"] = "invalid"
 
     def variadic(*args: object, **kwargs: object) -> NDArray[np.int64]:
         calls.append("variadic")
@@ -962,7 +962,7 @@ def test_reduce_variadic_parameters_are_not_axes_authority(
 
     else:
 
-        def reducer(  # type: ignore[no-redef]
+        def reducer(
             values: NDArray[np.int64],
             **axis: object,
         ) -> TensorLike:
@@ -2372,7 +2372,7 @@ def test_reduce_concrete_invalid_signature_is_not_reported_as_ambiguous(
 
     else:
 
-        def reducer(  # type: ignore[no-redef]
+        def reducer(
             *,
             axis: tuple[int, ...],
         ) -> TensorLike:

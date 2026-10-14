@@ -124,7 +124,7 @@ class CallableReducerBinding:
         """Compare bindings without invoking user-defined value equality."""
         if not isinstance(other, CallableReducerBinding):
             return False
-        return bool(
+        return (
             self.target is other.target
             and _values_are_identical(
                 self.positional_args,
@@ -157,7 +157,7 @@ def _capture_partial_chain(
     while isinstance(current, functools.partial):
         if type(current) is not functools.partial:
             raise _partial_subclass_error()
-        has_partial_signature_metadata = bool(
+        has_partial_signature_metadata = (
             has_partial_signature_metadata or _has_visible_signature_metadata(current)
         )
         layers.append(
@@ -166,7 +166,7 @@ def _capture_partial_chain(
                 tuple((current.keywords or {}).items()),
             )
         )
-        current = cast(ReducerCallable, current.func)
+        current = current.func
 
     positional_args: tuple[object, ...] = ()
     keywords: dict[str, object] = {}
@@ -309,9 +309,8 @@ def _values_are_identical(
     second: tuple[object, ...],
     /,
 ) -> bool:
-    return bool(
-        len(first) == len(second)
-        and all(left is right for left, right in zip(first, second))
+    return len(first) == len(second) and all(
+        left is right for left, right in zip(first, second)
     )
 
 
@@ -320,14 +319,11 @@ def _keyword_items_are_identical(
     second: tuple[tuple[str, object], ...],
     /,
 ) -> bool:
-    return bool(
-        len(first) == len(second)
-        and all(
-            left_name == right_name and left_value is right_value
-            for (left_name, left_value), (right_name, right_value) in zip(
-                first,
-                second,
-            )
+    return len(first) == len(second) and all(
+        left_name == right_name and left_value is right_value
+        for (left_name, left_value), (right_name, right_value) in zip(
+            first,
+            second,
         )
     )
 

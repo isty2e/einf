@@ -57,7 +57,7 @@ class _EffectiveCallableContract:
             configured = reducer.bind_configuration()
         except TypeError as error:
             raise _unsupported_signature_error() from error
-        axes_are_configured = bool(
+        axes_are_configured = (
             target_axes_parameter is not None
             and target_axes_parameter.name in configured.arguments
         )
@@ -134,17 +134,14 @@ class _EffectiveCallableContract:
             is None
         ):
             return False
-        return bool(
-            mode == "tensor_only"
-            or (
-                self.axes_parameter is not None
-                and _bound_parameter_for(
-                    signature=self.signature,
-                    bound=bound,
-                    argument=_AXES_ARGUMENT,
-                )
-                is self.axes_parameter
+        return mode == "tensor_only" or (
+            self.axes_parameter is not None
+            and _bound_parameter_for(
+                signature=self.signature,
+                bound=bound,
+                argument=_AXES_ARGUMENT,
             )
+            is self.axes_parameter
         )
 
 
@@ -306,7 +303,7 @@ def _is_tensor_like(value: object, /) -> bool:
 
 
 def _axes_value_matches(value: object, axes: tuple[int, ...], /) -> bool:
-    return bool(
+    return (
         type(value) is tuple
         and all(type(axis) is int for axis in value)
         and value == axes
