@@ -126,6 +126,11 @@ array library, parser extra, or external tool skip when it is unavailable.
 This checks dependency-absent source behavior, not the contents of an
 installed wheel or sdist.
 
+CI installs each built wheel and sdist into a fresh virtual environment.
+These checks verify installed import locations and run `einf-validate` with
+AST, with LibCST missing, and after installing the `analysis` extra. They
+also exercise `einf-lsp` before and after installing the `lsp` extra.
+
 ## Verify
 
 After installing `einf` and NumPy, the following should print shapes without

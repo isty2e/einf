@@ -5,9 +5,15 @@ import venv
 from pathlib import Path
 
 _BASE_INSTALL_CASE = """
+import sys
+from pathlib import Path
+
 import numpy as np
 
+import einf
 from einf import ax, axes, rearrange
+
+assert Path(einf.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
 
 b, n, d = axes("b", "n", "d")
 transpose = rearrange(ax[b, n, d], ax[b, d, n])
@@ -42,6 +48,7 @@ def _verify_wheel_base_install(wheel: Path) -> None:
         _run(
             [
                 str(python),
+                "-I",
                 "-m",
                 "pip",
                 "install",
@@ -50,7 +57,7 @@ def _verify_wheel_base_install(wheel: Path) -> None:
             ],
             cwd=root,
         )
-        _run([str(python), "-c", _BASE_INSTALL_CASE], cwd=root)
+        _run([str(python), "-I", "-c", _BASE_INSTALL_CASE], cwd=root)
 
 
 def main() -> None:
