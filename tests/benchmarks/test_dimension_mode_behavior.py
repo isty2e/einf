@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+pytest.importorskip("numpy")
+
 from benchmarks.harness import DimensionMode
 
 

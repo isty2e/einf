@@ -1,13 +1,13 @@
 import hashlib
 from fractions import Fraction
 
-import numpy as np
 import pytest
 
-from benchmarks.compare.einf_einops_einx_dynamic import (
-    _build_case_specs,
-    _compare_workloads_to_medium,
-)
+pytest.importorskip("numpy")
+
+import numpy as np
+
+import benchmarks.compare.einf_einops_einx_dynamic as einf_einops_einx_dynamic_module
 from benchmarks.harness import (
     BackendSpec,
     BenchSizes,
@@ -21,8 +21,12 @@ from benchmarks.harness.runner import CASE_SEED_STRIDE
 
 
 def test_dynamic_case_metadata_matches_configured_workloads() -> None:
-    specs = _build_case_specs(sizes=dynamic_sizes_for_scale("large"))
-    comparisons = _compare_workloads_to_medium(specs, scale="large")
+    specs = einf_einops_einx_dynamic_module._build_case_specs(
+        sizes=dynamic_sizes_for_scale("large")
+    )
+    comparisons = einf_einops_einx_dynamic_module._compare_workloads_to_medium(
+        specs, scale="large"
+    )
 
     expected = {
         "rearrange_transpose_dynamic": {
@@ -170,7 +174,7 @@ def test_dynamic_case_metadata_matches_configured_workloads() -> None:
 def test_dynamic_workload_output_shapes_match_case_references() -> None:
     sizes = BenchSizes(b=2, n=3, d=4, h=2, w=3, r=2, j=5)
 
-    for spec in _build_case_specs(sizes=sizes):
+    for spec in einf_einops_einx_dynamic_module._build_case_specs(sizes=sizes):
         inputs = tuple(
             np.zeros(shape, dtype=np.float32)
             for shape in spec.workload_metadata.base_input_shapes
@@ -231,7 +235,9 @@ def test_dynamic_workload_preserves_seeded_batch_stream() -> None:
         ),
     }
     backend = BackendSpec(name="numpy")
-    specs = _build_case_specs(sizes=dynamic_sizes_for_scale("medium"))
+    specs = einf_einops_einx_dynamic_module._build_case_specs(
+        sizes=dynamic_sizes_for_scale("medium")
+    )
 
     for case_index, spec in enumerate(specs):
         generator = TensorGenerator.from_seed(

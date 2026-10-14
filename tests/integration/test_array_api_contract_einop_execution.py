@@ -2,8 +2,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import einf.plans.abstract as abstract_plan_module
 import einf.plans.runners as runner_module

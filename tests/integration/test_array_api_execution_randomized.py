@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("numpy")
+
 import numpy as np
 
 from einf import ax, axes, packs, rearrange, reduce, repeat

@@ -2,8 +2,11 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import benchmarks.audit.expression_layout as layout_module
 import benchmarks.compare.expression_parity as expression_module

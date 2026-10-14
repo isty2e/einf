@@ -1,20 +1,17 @@
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from benchmarks.profile.warm_calltree import (
-    WarmCallTreeReport,
-    WarmCallTreeRow,
-    _find_case,
-    _profile_invoke,
-    _to_json,
-    _to_markdown,
-)
+pytest.importorskip("numpy")
+
+import numpy as np
+
+import benchmarks.profile.warm_calltree as warm_calltree_module
+from benchmarks.profile.warm_calltree import WarmCallTreeReport, WarmCallTreeRow
 
 
 def test_find_case_resolves_known_case() -> None:
-    case = _find_case(
+    case = warm_calltree_module._find_case(
         mode="fixed",
         scale="medium",
         seed=20260215,
@@ -47,7 +44,7 @@ def test_profile_invoke_warms_before_enabling_profiler(
         FakeProfile,
     )
 
-    _ = _profile_invoke(
+    _ = warm_calltree_module._profile_invoke(
         invoke=invoke,
         warmup=2,
         loops=3,
@@ -86,10 +83,10 @@ def test_warm_calltree_renderers_include_case_metadata(tmp_path: Path) -> None:
         ),
     )
 
-    payload = _to_json(report)
+    payload = warm_calltree_module._to_json(report)
     assert payload["case_name"] == "contract"
 
-    markdown = _to_markdown(report)
+    markdown = warm_calltree_module._to_markdown(report)
     path = tmp_path / "warm-calltree.md"
     path.write_text(markdown, encoding="utf-8")
 

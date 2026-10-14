@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import cast
 
-import numpy as np
 import pytest
 
 import einf.output_normalization as output_normalization_module
@@ -167,6 +166,9 @@ def test_call_contract_projects_shape_iteration_failure() -> None:
 def test_runtime_output_contract_caches_validated_trusted_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     contract = RuntimeOutputContract(op_name="rearrange", expected_output_arity=1)
     original_validate = output_normalization_module._validate_output_tensors
     validation_calls = 0
@@ -189,6 +191,9 @@ def test_runtime_output_contract_caches_validated_trusted_type(
 
 
 def test_trusted_tensor_type_rejects_hostile_metaclass_identity() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class NativeTypeSpoof(type):
         def __hash__(cls) -> int:
             return hash(np.ndarray)
@@ -218,6 +223,9 @@ def test_trusted_tensor_type_rejects_malformed_type_metadata() -> None:
 
 
 def test_runtime_output_contract_does_not_invoke_metaclass_equality() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class ExplosiveEquality(type):
         def __hash__(cls) -> int:
             raise AssertionError("type hashing must not establish native trust")

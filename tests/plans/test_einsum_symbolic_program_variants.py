@@ -1,6 +1,5 @@
 from inspect import signature
 
-import numpy as np
 import pytest
 
 from einf import ax, axes
@@ -273,6 +272,9 @@ def test_symbolic_step_projects_direct_and_chain_variants_to_runtime() -> None:
 
 
 def test_nonzero_carrier_chain_preserves_execution_projection_and_score() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     first = np.arange(1, 13, dtype=np.float64).reshape(2, 6)
     carrier = np.arange(2, 8, dtype=np.float64).reshape(6, 1)
     second = np.arange(3, 5, dtype=np.float64).reshape(1, 2)

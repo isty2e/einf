@@ -118,6 +118,14 @@ cd einf
 pip install -e ".[dev,analysis,lsp,docs]"
 ```
 
+CI also runs the source test suite with only the base dependencies and
+pytest. To run that check locally, create a fresh virtual environment and
+run `pip install -e . pytest`, then `python -m pytest`, without installing
+extras. Canonical and fake-backed tests still run; tests that need a real
+array library, parser extra, or external tool skip when it is unavailable.
+This checks dependency-absent source behavior, not the contents of an
+installed wheel or sdist.
+
 ## Verify
 
 After installing `einf` and NumPy, the following should print shapes without

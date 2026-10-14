@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from einf import ax, axes, einop
@@ -16,6 +15,9 @@ from einf.signature import Signature
 
 
 def test_einop_uses_single_einsum_carrier_path_by_default() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     b, h, w, d, j, k = axes("b", "h", "w", "d", "j", "k")
     op = einop(
         (ax[b, (h + w), d], ax[d, j], ax[j, k]),
@@ -69,6 +71,9 @@ def test_einop_carrier_builder_consumes_preselected_tail(
 
 
 def test_einop_chain_execution_preserves_planner_order() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     a, b, c, d = axes("chain_a", "chain_b", "chain_c", "chain_d")
     op = einop(
         (ax[a, b], ax[a, c], ax[a, d]),

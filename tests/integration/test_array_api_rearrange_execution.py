@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import einf.plans.routing as plan_routing_module
 from einf import ErrorCode, ExecutionError, ValidationError, ax, axes, packs, rearrange

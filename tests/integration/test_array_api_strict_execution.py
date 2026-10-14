@@ -1,5 +1,8 @@
-import array_api_strict as xp
 import pytest
+
+pytest.importorskip("array_api_strict")
+
+import array_api_strict as xp
 
 from einf import (
     ErrorCode,

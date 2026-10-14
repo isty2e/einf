@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 from einf import ErrorCode, ValidationError, ax, axes, view
 

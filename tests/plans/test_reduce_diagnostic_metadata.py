@@ -1,9 +1,7 @@
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 from einf.axis import Axis, ScalarAxisTerms
 from einf.backend import ArrayNamespace
@@ -13,8 +11,15 @@ from einf.reduction.schema import ReducerName
 from einf.steps.reduce.build import ReduceAxesResolver
 from einf.steps.reduce.runtime import REDUCER_COMPILER, ReducerRuntimeContext
 
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
 
 def _runtime_context() -> ReducerRuntimeContext:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     return ReducerRuntimeContext(xp=cast(ArrayNamespace, np))
 
 
@@ -33,14 +38,19 @@ def test_reduce_axis_resolution_diagnostic_reports_reduce_operation() -> None:
 
 
 def test_reduce_output_type_diagnostic_reports_reduce_operation() -> None:
+    context = ReducerRuntimeContext(xp=cast(ArrayNamespace, SimpleNamespace()))
+
     with pytest.raises(ExecutionError) as error:
-        _runtime_context().raise_output_type_error()
+        context.raise_output_type_error()
 
     assert error.value.code == ErrorCode.OP_OUTPUT_PROTOCOL_VIOLATION.value
     assert error.value.data == {"operation": "reduce"}
 
 
 def test_string_reducer_failure_reports_operation_and_reducer() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     error = _runtime_context().string_reducer_error(
         reducer_name=ReducerName.MAX,
         tensor=np.zeros((2, 0)),
@@ -82,11 +92,14 @@ def test_unavailable_string_reducer_reports_operation_and_reducer() -> None:
 
 
 def test_compiled_reducer_signature_diagnostic_reports_reduce_operation() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def unsupported_reducer(
-        tensor: NDArray[np.float64],
+        tensor: "NDArray[np.float64]",
         axis: tuple[int, ...],
         extra: bool,
-    ) -> NDArray[np.float64]:
+    ) -> "NDArray[np.float64]":
         _ = axis
         _ = extra
         return tensor

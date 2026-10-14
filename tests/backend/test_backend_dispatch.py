@@ -1,12 +1,15 @@
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 from array_api_compat import array_namespace
 
 from einf.backend import BACKEND_POLICY, BACKEND_RESOLVER, runtime
 from einf.backend.namespace import output_namespace_matches
 from einf.diagnostics import ErrorCode, ValidationError
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,9 @@ class FakeArrayB:
 
 
 def test_output_namespace_alias_requires_canonical_module_identity() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     compat_namespace = array_namespace(np.zeros((1,)))
 
     assert output_namespace_matches(np, compat_namespace)
@@ -332,12 +338,15 @@ class NumpyRandomCompatNamespaceArray:
 
 
 @pytest.fixture
-def numpy_tensor() -> np.ndarray:
+def numpy_tensor() -> "np.ndarray":
     """Return one simple NumPy tensor fixture."""
+    pytest.importorskip("numpy")
+    import numpy as np
+
     return np.zeros((2, 3), dtype=np.float32)
 
 
-def test_backend_dispatch_resolves_numpy_profile(numpy_tensor: np.ndarray) -> None:
+def test_backend_dispatch_resolves_numpy_profile(numpy_tensor: "np.ndarray") -> None:
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="rearrange")
     assert profile.namespace_id == "array_api_compat.numpy"
     assert profile.backend_family == "numpy"
@@ -345,7 +354,7 @@ def test_backend_dispatch_resolves_numpy_profile(numpy_tensor: np.ndarray) -> No
 
 
 def test_backend_dispatch_accepts_multiple_same_family_inputs(
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, numpy_tensor, op_name="rearrange")
     assert profile.namespace_id == "array_api_compat.numpy"
@@ -371,7 +380,7 @@ def test_backend_dispatch_rejects_empty_input_list() -> None:
 
 
 def test_backend_dispatch_rejects_mixed_tensor_families(
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     with pytest.raises(ValidationError) as error:
         _ = BACKEND_RESOLVER.resolve(
@@ -387,7 +396,7 @@ def test_backend_dispatch_rejects_mixed_tensor_families(
 
 
 def test_backend_dispatch_rejects_three_way_mixed_tensor_families(
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     with pytest.raises(ValidationError) as error:
         _ = BACKEND_RESOLVER.resolve(
@@ -447,7 +456,7 @@ def test_backend_dispatch_operation_name_is_normalized_with_whitespace() -> None
 
 
 def test_backend_dispatch_operation_name_is_normalized_with_whitespace_for_valid_backend(
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     profile = BACKEND_RESOLVER.resolve(numpy_tensor, op_name="  ConTract  ")
     assert profile.backend_family == "numpy"
@@ -564,7 +573,7 @@ def test_backend_dispatch_einsum_probe_os_error_maps_to_missing_extension(
 
 def test_backend_dispatch_does_not_probe_einsum_during_profile_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     def broken_probe(_backend_name: str) -> bool:
         raise RuntimeError("backend probe exploded")
@@ -724,7 +733,7 @@ def test_backend_dispatch_known_mlx_compat_backend_uses_mlx_core_probe(
 
 def test_backend_dispatch_coerces_probe_result_to_bool(
     monkeypatch: pytest.MonkeyPatch,
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     def weird_probe(_backend_name: str) -> str:
         return "definitely"
@@ -747,7 +756,7 @@ def test_backend_dispatch_accepts_compat_subnamespaces_from_same_family() -> Non
 
 
 def test_backend_dispatch_accepts_mixed_root_and_compat_namespaces_for_same_family(
-    numpy_tensor: np.ndarray,
+    numpy_tensor: "np.ndarray",
 ) -> None:
     profile = BACKEND_RESOLVER.resolve(
         numpy_tensor,
@@ -767,9 +776,6 @@ def test_backend_dispatch_normalizes_namespace_module_lookup_failures() -> None:
 
 
 def test_backend_dispatch_rejects_distinct_custom_namespaces_with_same_id() -> None:
-    from einf.backend import BACKEND_RESOLVER
-    from einf.diagnostics import ErrorCode, ValidationError
-
     class CustomTensor:
         def __init__(self, namespace: object) -> None:
             self._namespace = namespace
@@ -779,7 +785,10 @@ def test_backend_dispatch_rejects_distinct_custom_namespaces_with_same_id() -> N
             _ = key
             return self
 
-        def __array__(self, dtype: object = None) -> np.ndarray:
+        def __array__(self, dtype: object = None) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             _ = dtype
             return np.zeros((2, 3))
 

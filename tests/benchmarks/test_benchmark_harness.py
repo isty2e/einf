@@ -3,8 +3,11 @@ from types import SimpleNamespace
 from typing import cast
 from weakref import ReferenceType, ref
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")
+
+import numpy as np
 
 import benchmarks.harness.backend as backend_module
 import benchmarks.harness.profiler as profiler_module

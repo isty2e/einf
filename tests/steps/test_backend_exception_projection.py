@@ -1,8 +1,8 @@
 from collections.abc import Callable
 from dataclasses import replace
-from typing import cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
-import numpy as np
 import pytest
 
 import einf.steps.einsum.step as einsum_step_module
@@ -15,6 +15,7 @@ from einf.backend.memory_alias import numpy_shares_storage, torch_shares_storage
 from einf.backend.runtime import BackendArrayOps, is_trusted_backend_array_ops
 from einf.diagnostics import ErrorCode, ExecutionError, ValidationError
 from einf.reduction.schema import ReducerName
+from einf.steps.axis_slice import validation as axis_slice_validation_module
 from einf.steps.axis_slice.step import AxisSliceRuntimeStep
 from einf.steps.base import RuntimeSpecializationContext
 from einf.steps.concat import ConcatRuntimeStep
@@ -32,13 +33,21 @@ from einf.steps.reduce.step import (
     NamespaceReduceRuntimeProgram,
     NativePreferredReduceRuntimeProgram,
 )
+from einf.steps.reshape import step as reshape_step_module
 from einf.steps.reshape.constants import ZERO_COPY_REQUIRED_RESHAPE_MODE
-from einf.steps.reshape.runtime import run_reshape_program
+from einf.steps.reshape.runtime import run_reshape_program, try_run_reshape_program
+from einf.steps.reshape.step import ReshapeRuntimeStep
 from einf.steps.runtime import bind_runtime_backend
 from einf.tensor_types import TensorLike, is_trusted_tensor_type
 
+if TYPE_CHECKING:
+    import numpy as np
+
 
 def test_reducer_runtime_binding_rejects_mismatched_namespace() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     profile = BACKEND_RESOLVER.resolve(np.zeros((2,)), op_name="reduce")
     context = ReducerRuntimeContext(
         xp=cast(reduce_runtime_module.ReducerArrayNamespace, np),
@@ -49,6 +58,9 @@ def test_reducer_runtime_binding_rejects_mismatched_namespace() -> None:
 
 
 def test_reducer_runtime_binding_rejects_mismatched_backend_family() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     profile = BackendProfile(namespace=np)
     context = ReducerRuntimeContext(
         xp=cast(reduce_runtime_module.ReducerArrayNamespace, np),
@@ -95,6 +107,9 @@ def _raising_backend_ops(permute) -> BackendArrayOps:
 
 
 def test_permute_fast_path_normalizes_backend_exception() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     step = PermuteRuntimeStep(
         name="permute",
         input_arity=1,
@@ -114,6 +129,9 @@ def test_permute_fast_path_normalizes_backend_exception() -> None:
 
 
 def test_permute_rejects_wrong_backend_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     step = PermuteRuntimeStep(
         name="permute",
         input_arity=1,
@@ -133,6 +151,9 @@ def test_permute_rejects_wrong_backend_output_shape() -> None:
 
 
 def test_expand_compiled_fast_path_normalizes_unexpected_exception() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def raise_index_error(_tensor: object) -> None:
         raise IndexError("raw index error")
 
@@ -151,6 +172,9 @@ def test_expand_compiled_fast_path_normalizes_unexpected_exception() -> None:
 
 
 def test_expand_rejects_wrong_backend_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     program = build_expand_symbolic_program(
         AxisTerms.from_spec((2, 3)),
         AxisTerms.from_spec((2, 3, 1)),
@@ -169,6 +193,9 @@ def test_expand_rejects_wrong_backend_output_shape() -> None:
 
 
 def test_expand_rejects_wrong_custom_adapter_permute_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     route_ops = replace(
@@ -194,6 +221,9 @@ def test_expand_rejects_wrong_custom_adapter_permute_shape() -> None:
 
 
 def test_backend_array_ops_trust_rejects_native_tensor_subclass() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class ArraySubclass(np.ndarray):
         pass
 
@@ -208,6 +238,9 @@ def test_backend_array_ops_trust_rejects_native_tensor_subclass() -> None:
 
 
 def test_direct_expand_projects_permute_failure_to_permute_owner() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     route_ops = replace(
@@ -234,6 +267,9 @@ def test_direct_expand_projects_permute_failure_to_permute_owner() -> None:
 
 
 def test_direct_expand_projects_expand_dims_failure() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     backend_ops = get_backend_array_ops("numpy")
     assert backend_ops is not None
     route_ops = replace(
@@ -260,23 +296,26 @@ def test_direct_expand_projects_expand_dims_failure() -> None:
 
 
 def test_portable_expand_rejects_wrong_permute_intermediate_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class WrongPermuteNamespace:
         @staticmethod
         def permute_dims(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             _axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return tensor[:1, :2]
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
             return np.expand_dims(tensor, axis=axis)
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.broadcast_to(tensor, shape)
 
     program = build_expand_symbolic_program(
@@ -298,24 +337,27 @@ def test_portable_expand_rejects_wrong_permute_intermediate_shape() -> None:
 
 
 def test_portable_expand_rejects_wrong_inserted_axis_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class WrongExpandDimsNamespace:
         @staticmethod
         def permute_dims(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             axes: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.transpose(tensor, axes)
 
         @staticmethod
-        def expand_dims(tensor: np.ndarray, *, axis: int) -> np.ndarray:
+        def expand_dims(tensor: "np.ndarray", *, axis: int) -> "np.ndarray":
             _ = axis
             return tensor[:1, :, None]
 
         @staticmethod
         def broadcast_to(
-            tensor: np.ndarray,
+            tensor: "np.ndarray",
             shape: tuple[int, ...],
-        ) -> np.ndarray:
+        ) -> "np.ndarray":
             return np.broadcast_to(tensor, shape)
 
     program = build_expand_symbolic_program(
@@ -337,6 +379,9 @@ def test_portable_expand_rejects_wrong_inserted_axis_shape() -> None:
 
 
 def test_concat_rejects_wrong_backend_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class ConcatProgram:
         concat_axis = 0
 
@@ -384,6 +429,9 @@ def test_axis_slice_rejects_wrong_backend_output_shape() -> None:
 
 
 def test_reducer_rejects_shape_only_output() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class ShapeOnly:
         shape = (2, 3)
 
@@ -398,6 +446,9 @@ def test_reducer_rejects_shape_only_output() -> None:
 def test_direct_method_reducer_rejects_wrong_output_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class WrongShapeTensor:
         shape = (2, 3)
 
@@ -439,6 +490,9 @@ def test_direct_method_reducer_rejects_wrong_output_shape(
 
 
 def test_namespace_reducer_rejects_wrong_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def wrong_shape_reducer(tensor: object, *, axis: object) -> object:
         _ = tensor, axis
         return tensor
@@ -470,6 +524,9 @@ def test_namespace_reducer_rejects_wrong_output_shape() -> None:
 def test_direct_method_reducer_routes_output_through_coercion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class NoGetitemOutput:
         shape = (2,)
 
@@ -512,10 +569,9 @@ def test_direct_method_reducer_routes_output_through_coercion(
 def test_reshape_step_projects_final_fallback_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
+    pytest.importorskip("numpy")
 
-    from einf.steps.reshape import step as reshape_step_module
-    from einf.steps.reshape.step import ReshapeRuntimeStep
+    import numpy as np
 
     class FakeCompiled:
         pass
@@ -563,8 +619,8 @@ def test_reshape_step_projects_final_fallback_failure(
 def test_axis_slice_projects_strict_view_validation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from einf.backend.dispatch import BACKEND_RESOLVER
-    from einf.steps.axis_slice.step import AxisSliceRuntimeStep
+    pytest.importorskip("numpy")
+    import numpy as np
 
     class SlicingTensor:
         def __init__(self, shape: tuple[int, ...] = (2, 3)) -> None:
@@ -576,8 +632,6 @@ def test_axis_slice_projects_strict_view_validation_failure(
 
     def raise_numel(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("raw view validation failure")
-
-    from einf.steps.axis_slice import validation as axis_slice_validation_module
 
     monkeypatch.setattr(
         axis_slice_validation_module,
@@ -615,10 +669,9 @@ def test_axis_slice_projects_strict_view_validation_failure(
 def test_compiled_runner_validation_error_is_not_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
+    pytest.importorskip("numpy")
 
-    from einf.steps.reshape import step as reshape_step_module
-    from einf.steps.reshape.step import ReshapeRuntimeStep
+    import numpy as np
 
     class FakeProgram:
         reject_not_a_view = False
@@ -661,8 +714,8 @@ def test_compiled_runner_validation_error_is_not_swallowed(
 def test_reshape_compiled_runner_projects_non_tuple_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from einf.steps.reshape import step as reshape_step_module
-    from einf.steps.reshape.step import ReshapeRuntimeStep
+    pytest.importorskip("numpy")
+    import numpy as np
 
     class FakeProgram:
         reject_not_a_view = False
@@ -693,7 +746,8 @@ def test_reshape_compiled_runner_projects_non_tuple_exceptions(
 
 
 def test_try_run_reshape_program_normalizes_backend_attribute_error() -> None:
-    from einf.steps.reshape.runtime import try_run_reshape_program
+    pytest.importorskip("numpy")
+    import numpy as np
 
     class FakeProgram:
         def __init__(self) -> None:
@@ -723,7 +777,6 @@ def test_try_run_reshape_program_normalizes_backend_attribute_error() -> None:
 
 
 def test_reducer_output_coercion_projects_backend_failure() -> None:
-    from einf.steps.reduce.runtime import ReducerRuntimeContext
 
     class BadXP:
         def asarray(self, value: object) -> object:
@@ -741,11 +794,9 @@ def test_reducer_output_coercion_projects_backend_failure() -> None:
 def test_compiled_runner_execution_error_is_preserved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
+    pytest.importorskip("numpy")
 
-    from einf.diagnostics import ExecutionError
-    from einf.steps.reshape import step as reshape_step_module
-    from einf.steps.reshape.step import ReshapeRuntimeStep
+    import numpy as np
 
     class FakeProgram:
         reject_not_a_view = False
@@ -787,7 +838,8 @@ def test_compiled_runner_execution_error_is_preserved(
 
 
 def test_reducer_output_ownership_rejects_foreign_namespace() -> None:
-    from einf.steps.reduce.runtime import ReducerRuntimeContext
+    pytest.importorskip("numpy")
+    import numpy as np
 
     class ForeignTensor:
         shape = (2,)
@@ -818,6 +870,9 @@ def test_reducer_output_ownership_rejects_foreign_namespace() -> None:
 def test_reducer_preserves_structured_errors_from_all_boundaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     reducer_name = ReducerName("sum")
     tensor = np.zeros((2, 3))
     execution_error = ExecutionError(
@@ -879,6 +934,9 @@ def test_reducer_preserves_structured_errors_from_all_boundaries(
 def test_final_einsum_route_preserves_structured_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     original = ValidationError(
         code="inconsistent_dims",
         message="einsum invariant failed",
@@ -907,6 +965,9 @@ def test_final_einsum_route_preserves_structured_error(
 def test_final_einsum_route_projects_unexpected_backend_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     monkeypatch.setattr(
         einsum_step_module.opt_einsum,
         "contract",
@@ -932,11 +993,14 @@ def test_final_einsum_route_projects_unexpected_backend_failure(
 
 
 def test_portable_einsum_rejects_wrong_semantic_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class PortableNamespace:
         __name__ = "array_api_compat.jax.numpy"
 
         @staticmethod
-        def einsum(*_args: object) -> np.ndarray:
+        def einsum(*_args: object) -> "np.ndarray":
             return np.zeros((99,))
 
     executor = einsum_step_module._build_einsum_executor(
@@ -971,7 +1035,10 @@ def test_numpy_family_einsum_validates_namespace_fallback_output() -> None:
         __name__ = "numpy.custom"
 
         @staticmethod
-        def einsum(*_args: object) -> np.ndarray:
+        def einsum(*_args: object) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             return np.zeros((99,))
 
     executor = einsum_step_module._build_einsum_executor(
@@ -1006,7 +1073,10 @@ def test_numpy_family_einsum_rejects_foreign_namespace_output() -> None:
         __name__ = "numpy.custom"
 
         @staticmethod
-        def einsum(*_args: object) -> np.ndarray:
+        def einsum(*_args: object) -> "np.ndarray":
+            pytest.importorskip("numpy")
+            import numpy as np
+
             return np.zeros((2, 4))
 
     executor = einsum_step_module._build_einsum_executor(
@@ -1027,6 +1097,9 @@ def test_numpy_family_einsum_rejects_foreign_namespace_output() -> None:
 
 
 def test_raw_native_profile_accepts_its_array_api_compat_namespace() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class Operand:
         shape = (2, 4)
 
@@ -1079,6 +1152,9 @@ def test_raw_torch_profile_accepts_its_array_api_compat_namespace() -> None:
 def test_exact_native_einsum_skips_semantic_shape_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def fail_shape_derivation(**_kwargs: object) -> None:
         raise AssertionError("native einsum must not derive semantic output shape")
 
@@ -1104,6 +1180,9 @@ def test_exact_native_einsum_skips_semantic_shape_validation(
 
 
 def test_injected_native_einsum_callable_validates_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
@@ -1123,6 +1202,9 @@ def test_injected_native_einsum_callable_validates_output_shape() -> None:
 
 
 def test_injected_native_module_einsum_validates_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     executor = EinsumEquationExecutor(
         profile=BackendProfile(
             namespace=np,
@@ -1205,6 +1287,9 @@ def test_torch_dispatch_mode_disables_native_validation_bypass() -> None:
 def test_namespace_einsum_fallback_runs_once_and_validates_opt_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     namespace_calls: list[None] = []
 
     def unavailable_namespace(*_args: object) -> TensorLike:
@@ -1238,6 +1323,9 @@ def test_namespace_einsum_fallback_runs_once_and_validates_opt_output(
 def test_einsum_builder_deduplicates_identical_module_and_namespace_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     calls: list[str] = []
 
     def unavailable_einsum(*_args: object, **_kwargs: object) -> TensorLike:
@@ -1271,6 +1359,9 @@ def test_einsum_builder_deduplicates_identical_module_and_namespace_routes(
 def test_final_opt_einsum_route_validates_output_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     monkeypatch.setattr(
         einsum_step_module.opt_einsum,
         "contract",
@@ -1294,6 +1385,9 @@ def test_final_opt_einsum_route_validates_output_shape(
 
 
 def test_namespace_reshape_projects_unexpected_error() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class BadNamespace:
         __name__ = "custom.reshape"
 
@@ -1312,6 +1406,9 @@ def test_namespace_reshape_projects_unexpected_error() -> None:
 
 
 def test_reshape_rejects_wrong_backend_output_shape() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     with pytest.raises(ExecutionError, match="requested output shape") as error:
         run_reshape_program(
             tensor=np.zeros((2, 3)),
@@ -1358,6 +1455,9 @@ def test_scalar_reducer_ownership_rejects_foreign_coerced_output() -> None:
 def test_strict_numpy_reshape_projects_primitive_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class BadModule:
         def reshape(self, *_args: object, **_kwargs: object) -> object:
             raise IndexError("strict module failure")
@@ -1395,6 +1495,9 @@ def test_strict_numpy_reshape_projects_primitive_failure(
 def test_strict_numpy_reshape_preserves_no_route_as_not_a_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class MissingReshapeRoute:
         __name__ = "numpy"
 
@@ -1422,6 +1525,9 @@ def test_strict_numpy_reshape_preserves_no_route_as_not_a_view(
 def test_strict_numpy_reshape_does_not_use_order_changing_namespace_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class MissingStrictRoute:
         def reshape(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("strict route unavailable")
@@ -1432,7 +1538,7 @@ def test_strict_numpy_reshape_does_not_use_order_changing_namespace_fallback(
         def __init__(self) -> None:
             self.calls = 0
 
-        def reshape(self, tensor: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+        def reshape(self, tensor: "np.ndarray", shape: tuple[int, ...]) -> "np.ndarray":
             self.calls += 1
             return np.reshape(tensor, shape, order="C")
 
@@ -1459,6 +1565,9 @@ def test_strict_numpy_reshape_does_not_use_order_changing_namespace_fallback(
 def test_backend_specialization_projects_initialization_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     profile = BackendProfile(
         namespace=np,
     )
@@ -1533,6 +1642,9 @@ def test_einsum_specialization_projects_capability_inspection_failure() -> None:
 def test_numpy_alias_capability_failure_is_structured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class IncompleteNumpyModule:
         pass
 
@@ -1550,6 +1662,9 @@ def test_numpy_alias_capability_failure_is_structured(
 def test_numpy_alias_initialization_failure_is_structured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     monkeypatch.setattr(
         "einf.backend.memory_alias.load_backend_module",
         lambda _family: (_ for _ in ()).throw(RuntimeError("numpy init failed")),
@@ -1564,6 +1679,9 @@ def test_numpy_alias_initialization_failure_is_structured(
 def test_numpy_alias_runtime_failure_is_structured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class BrokenNumpyModule:
         ndarray = np.ndarray
 
@@ -1585,6 +1703,9 @@ def test_numpy_alias_runtime_failure_is_structured(
 def test_numpy_alias_proof_rejects_subclass_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class LyingArray(np.ndarray):
         def __array_function__(
             self,
@@ -1620,6 +1741,9 @@ def test_numpy_alias_proof_rejects_subclass_override(
 def test_numpy_alias_proof_rejects_hostile_metaclass_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class NativeTypeSpoof(type):
         def __hash__(cls) -> int:
             return hash(np.ndarray)
@@ -1695,6 +1819,9 @@ def test_named_reducer_unexpected_fault_is_execution_error(
     monkeypatch: pytest.MonkeyPatch,
     raw_error: Exception,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class BadBackendOps:
         def reduce(self, **_kwargs: object) -> object:
             raise raw_error
@@ -1723,6 +1850,9 @@ def test_named_reducer_unexpected_fault_is_execution_error(
 def test_strict_numpy_reshape_does_not_fallback_on_initialization_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     def fail_load(_family: str) -> object:
         raise RuntimeError("numpy initialization failed")
 
@@ -1771,6 +1901,9 @@ def test_reducer_same_id_foreign_namespace_is_rejected() -> None:
 
 
 def test_reducer_shape_access_failure_is_structured() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     class MalformedTensor:
         @property
         def shape(self) -> tuple[int, ...]:
@@ -1785,6 +1918,9 @@ def test_reducer_shape_access_failure_is_structured() -> None:
 
 
 def test_reducer_namespace_error_identity_is_preserved() -> None:
+    pytest.importorskip("numpy")
+    import numpy as np
+
     original = ValidationError(
         code="inconsistent_dims",
         message="namespace hook failed",
@@ -1809,7 +1945,6 @@ def test_reducer_namespace_error_identity_is_preserved() -> None:
 
 
 def test_backend_dispatch_preserves_ingress_tensor_error() -> None:
-    from einf.backend import BACKEND_RESOLVER
 
     original = ExecutionError(
         code="op_output_protocol_violation",
