@@ -98,6 +98,41 @@ jobs:
       - name: Typecheck shipped wheel
         run: python tests/package/verify_wheel_typing.py dist
 
+  checkers:
+    name: checker-executables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install checker integration environment
+        run: python -m pip install -e ".[dev]" pyright zuban
+      - name: Verify checker executables
+        run: |
+          python - <<'PY'
+          import shutil
+          import subprocess
+
+          from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES
+
+          for checker in SUPPORTED_CHECKER_NAMES:
+              executable = shutil.which(checker)
+              assert executable is not None, checker
+              subprocess.run([executable, "--version"], check=True, timeout=30)
+          PY
+      - name: Test real checker adapters and validator
+        run: |
+          python -m pytest tests/integration/test_checker_executables.py \
+            --junitxml=checker-contracts.xml
+          python - <<'PY'
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse("checker-contracts.xml").getroot().findall("testsuite")
+          assert suites and sum(int(suite.attrib["tests"]) for suite in suites) > 0
+          assert all(int(suite.attrib["skipped"]) == 0 for suite in suites)
+          PY
+
   lsp:
     name: lsp-extra
     runs-on: ubuntu-latest
