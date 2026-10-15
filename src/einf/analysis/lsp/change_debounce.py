@@ -14,7 +14,6 @@ class PendingDocumentChange:
 
 
 AnalyzePendingChange = Callable[[PendingDocumentChange], Awaitable[None]]
-_ReportPendingChangeFailure = Callable[[PendingDocumentChange, Exception], None]
 
 
 class LspChangeDebouncer:
@@ -24,7 +23,7 @@ class LspChangeDebouncer:
         self,
         *,
         delay_seconds: float,
-        report_failure: _ReportPendingChangeFailure,
+        report_failure: Callable[[PendingDocumentChange, Exception], None],
     ) -> None:
         if delay_seconds < 0:
             raise ValueError("delay_seconds must be non-negative")
