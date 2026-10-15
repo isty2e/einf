@@ -10,6 +10,7 @@ from einf.analysis.checkers import (
 )
 from einf.analysis.parser import SUPPORTED_PARSER_NAMES, build_parser_backend
 from einf.analysis.validator.json_projection import project_validation_report
+from einf.analysis.validator.limits import ValidationLimits
 from einf.analysis.validator.run import run_validation
 
 
@@ -31,6 +32,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_PARSER_NAMES,
         default="ast",
         help="Parser backend used for static analysis.",
+    )
+    parser.add_argument(
+        "--max-discovery-entries",
+        type=_positive_int,
+        default=None,
+        help="Maximum explicit target attempts plus directory entries; unrestricted by default.",
+    )
+    parser.add_argument(
+        "--max-file-bytes",
+        type=_positive_int,
+        default=None,
+        help="Maximum raw source bytes per file; unrestricted by default.",
+    )
+    parser.add_argument(
+        "--max-total-bytes",
+        type=_positive_int,
+        default=None,
+        help="Maximum cumulative validator source bytes; unrestricted by default.",
     )
     parser.add_argument(
         "--checker",
@@ -88,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     report = run_validation(
         targets=tuple(arguments.paths),
         parser_backend=parser_backend,
+        limits=ValidationLimits(
+            max_discovery_entries=arguments.max_discovery_entries,
+            max_file_bytes=arguments.max_file_bytes,
+            max_total_bytes=arguments.max_total_bytes,
+        ),
         checker_adapters=checker_adapters,
         checker_execution_policy=CheckerExecutionPolicy(
             timeout_seconds=arguments.checker_timeout_seconds,

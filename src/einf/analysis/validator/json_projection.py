@@ -18,72 +18,103 @@ from einf.analysis.report import (
     AnalysisFailureKind,
     AnalysisFileReport,
 )
+from einf.analysis.validator.limits import (
+    ValidationLimitFailure,
+    ValidationLimitResource,
+)
 from einf.analysis.validator.model import (
     ValidationDiscoveryFailure,
     ValidationReport,
 )
 
 
-class _TextPositionJson(TypedDict):
+class TextPositionJson(TypedDict):
+    """One-based line and zero-based character column in JSON output."""
+
     line: int
     column: int
 
 
-class _TextSpanJson(TypedDict):
-    start: _TextPositionJson
-    end: _TextPositionJson
+class TextSpanJson(TypedDict):
+    """Start and end positions of a source span in JSON output."""
+
+    start: TextPositionJson
+    end: TextPositionJson
 
 
-class _AnalysisDiagnosticJson(TypedDict):
+class AnalysisDiagnosticJson(TypedDict):
+    """Semantic diagnostic fields in validator JSON output."""
+
     code: str
     message: str
     severity: DiagnosticSeverity
-    span: _TextSpanJson | None
+    span: TextSpanJson | None
 
 
-class _CheckerDiagnosticJson(TypedDict):
+class CheckerDiagnosticJson(TypedDict):
+    """External checker diagnostic fields in validator JSON output."""
+
     tool: str
     path: str
     code: str | None
     message: str
     severity: DiagnosticSeverity
-    span: _TextSpanJson | None
+    span: TextSpanJson | None
 
 
-class _CheckerFailureJson(TypedDict):
+class CheckerFailureJson(TypedDict):
+    """External checker failure fields in validator JSON output."""
+
     tool: str
     kind: CheckerFailureKind
     message: str
 
 
-class _ValidationDiscoveryFailureJson(TypedDict):
+class ValidationDiscoveryFailureJson(TypedDict):
+    """Directory traversal failure fields in validator JSON output."""
+
     path: str
     kind: Literal["directory_traversal_error"]
     message: str
 
 
-class _AxisTokenJson(TypedDict):
+class ValidationLimitFailureJson(TypedDict):
+    """Resource quota failure fields in validator JSON output."""
+
+    resource: ValidationLimitResource
+    limit: int
+    observed: int
+    path: str
+
+
+class AxisTokenJson(TypedDict):
+    """Axis identity, role and source location in validator JSON output."""
+
     name: str
     kind: AxisStructuralKind
     side: AxisOccurrenceSide
     relation: AxisCrossSideRelation
     role: AxisOperationRole | None
-    span: _TextSpanJson
+    span: TextSpanJson
     group: int
 
 
-class _AnalysisFailureJson(TypedDict):
+class AnalysisFailureJson(TypedDict):
+    """Per-file analysis failure fields in validator JSON output."""
+
     kind: AnalysisFailureKind
     message: str
-    span: _TextSpanJson | None
+    span: TextSpanJson | None
 
 
-class _AnalysisFileReportJson(TypedDict):
+class AnalysisFileReportJson(TypedDict):
+    """Diagnostics, axis tokens and failures for one source file."""
+
     path: str
-    diagnostics: list[_AnalysisDiagnosticJson]
-    checker_diagnostics: list[_CheckerDiagnosticJson]
-    axis_tokens: list[_AxisTokenJson]
-    failures: list[_AnalysisFailureJson]
+    diagnostics: list[AnalysisDiagnosticJson]
+    checker_diagnostics: list[CheckerDiagnosticJson]
+    axis_tokens: list[AxisTokenJson]
+    failures: list[AnalysisFailureJson]
 
 
 class ValidationReportJson(TypedDict):
@@ -91,23 +122,24 @@ class ValidationReportJson(TypedDict):
 
     schema_version: str
     parser_backend: str
-    checker_failures: list[_CheckerFailureJson]
-    discovery_failures: list[_ValidationDiscoveryFailureJson]
-    files: list[_AnalysisFileReportJson]
+    checker_failures: list[CheckerFailureJson]
+    discovery_failures: list[ValidationDiscoveryFailureJson]
+    limit_failures: list[ValidationLimitFailureJson]
+    files: list[AnalysisFileReportJson]
 
 
-def _project_text_position(position: TextPosition) -> _TextPositionJson:
+def _project_text_position(position: TextPosition) -> TextPositionJson:
     return {"line": position.line, "column": position.column}
 
 
-def _project_text_span(span: TextSpan) -> _TextSpanJson:
+def _project_text_span(span: TextSpan) -> TextSpanJson:
     return {
         "start": _project_text_position(span.start),
         "end": _project_text_position(span.end),
     }
 
 
-def _project_optional_text_span(span: TextSpan | None) -> _TextSpanJson | None:
+def _project_optional_text_span(span: TextSpan | None) -> TextSpanJson | None:
     if span is None:
         return None
     return _project_text_span(span)
@@ -115,7 +147,7 @@ def _project_optional_text_span(span: TextSpan | None) -> _TextSpanJson | None:
 
 def _project_analysis_diagnostic(
     diagnostic: AnalysisDiagnostic,
-) -> _AnalysisDiagnosticJson:
+) -> AnalysisDiagnosticJson:
     return {
         "code": diagnostic.code,
         "message": diagnostic.message,
@@ -126,7 +158,7 @@ def _project_analysis_diagnostic(
 
 def _project_checker_diagnostic(
     diagnostic: CheckerDiagnostic,
-) -> _CheckerDiagnosticJson:
+) -> CheckerDiagnosticJson:
     return {
         "tool": diagnostic.tool,
         "path": str(diagnostic.path),
@@ -137,7 +169,7 @@ def _project_checker_diagnostic(
     }
 
 
-def _project_checker_failure(failure: CheckerFailure) -> _CheckerFailureJson:
+def _project_checker_failure(failure: CheckerFailure) -> CheckerFailureJson:
     return {
         "tool": failure.tool,
         "kind": failure.kind,
@@ -147,7 +179,7 @@ def _project_checker_failure(failure: CheckerFailure) -> _CheckerFailureJson:
 
 def _project_discovery_failure(
     failure: ValidationDiscoveryFailure,
-) -> _ValidationDiscoveryFailureJson:
+) -> ValidationDiscoveryFailureJson:
     return {
         "path": failure.path,
         "kind": failure.kind,
@@ -155,7 +187,18 @@ def _project_discovery_failure(
     }
 
 
-def _project_axis_token(token: AxisToken) -> _AxisTokenJson:
+def _project_limit_failure(
+    failure: ValidationLimitFailure,
+) -> ValidationLimitFailureJson:
+    return {
+        "resource": failure.resource,
+        "limit": failure.limit,
+        "observed": failure.observed,
+        "path": failure.path,
+    }
+
+
+def _project_axis_token(token: AxisToken) -> AxisTokenJson:
     return {
         "name": token.name,
         "kind": token.kind,
@@ -169,7 +212,7 @@ def _project_axis_token(token: AxisToken) -> _AxisTokenJson:
 
 def _project_analysis_failure(
     failure: AnalysisFailure,
-) -> _AnalysisFailureJson:
+) -> AnalysisFailureJson:
     return {
         "kind": failure.kind,
         "message": failure.message,
@@ -179,7 +222,7 @@ def _project_analysis_failure(
 
 def _project_file_report(
     file_report: AnalysisFileReport,
-) -> _AnalysisFileReportJson:
+) -> AnalysisFileReportJson:
     return {
         "path": file_report.path,
         "diagnostics": [
@@ -209,6 +252,9 @@ def project_validation_report(report: ValidationReport) -> ValidationReportJson:
         ],
         "discovery_failures": [
             _project_discovery_failure(failure) for failure in report.discovery_failures
+        ],
+        "limit_failures": [
+            _project_limit_failure(failure) for failure in report.limit_failures
         ],
         "files": [_project_file_report(file_report) for file_report in report.files],
     }

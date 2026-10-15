@@ -18,10 +18,11 @@ def _validator_result(
     failure_kinds: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     report = {
-        "schema_version": "0.3",
+        "schema_version": "0.4",
         "parser_backend": parser,
         "checker_failures": [],
         "discovery_failures": [],
+        "limit_failures": [],
         "files": [
             {
                 "path": str(target.resolve()),
@@ -272,7 +273,18 @@ def test_artifact_validator_accepts_explicit_parser_unavailability(
 
 @pytest.mark.parametrize(
     "mutation",
-    ["exit", "stderr", "parser", "path", "coverage", "diagnostics", "failure", "json"],
+    [
+        "exit",
+        "stderr",
+        "schema",
+        "limits",
+        "parser",
+        "path",
+        "coverage",
+        "diagnostics",
+        "failure",
+        "json",
+    ],
 )
 def test_artifact_validator_rejects_false_green_results(
     tmp_path: Path, mutation: str
@@ -286,6 +298,17 @@ def test_artifact_validator_rejects_false_green_results(
             result.returncode = 0
         case "stderr":
             result.stderr = "Traceback: broken installed package"
+        case "schema":
+            report["schema_version"] = "0.3"
+        case "limits":
+            report["limit_failures"] = [
+                {
+                    "resource": "file_bytes",
+                    "limit": 1,
+                    "observed": 2,
+                    "path": str(target),
+                }
+            ]
         case "parser":
             report["parser_backend"] = "libcst"
         case "path":

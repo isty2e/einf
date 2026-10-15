@@ -123,10 +123,11 @@ def _check_validator_result(
         _raise_unexpected_result(stage=stage, result=result)
 
     if (
-        report["schema_version"] != "0.3"
+        report["schema_version"] != "0.4"
         or report["parser_backend"] != parser
         or report["checker_failures"] != []
         or report["discovery_failures"] != []
+        or report["limit_failures"] != []
         or len(report["files"]) != 1
     ):
         _raise_unexpected_result(stage=stage, result=result)

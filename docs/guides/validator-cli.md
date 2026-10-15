@@ -32,6 +32,9 @@ are walked recursively for `*.py`.
 | Flag | Values | Default | Purpose |
 | --- | --- | --- | --- |
 | `--parser` | `ast`, `libcst` | `ast` | Parser backend. `libcst` needs the `analysis` extra. |
+| `--max-discovery-entries` | positive integer | unrestricted | Maximum explicit target attempts plus directory entries encountered. |
+| `--max-file-bytes` | positive integer | unrestricted | Maximum raw source bytes per file. |
+| `--max-total-bytes` | positive integer | unrestricted | Maximum cumulative raw source bytes captured by the validator. |
 | `--checker` | `pyright`, `basedpyright`, `zuban`, `ty`, `pyrefly` | none | External type checker to invoke alongside semantic analysis. Repeatable; repeated names are collapsed. |
 | `--checker-timeout-seconds` | finite positive number | `30` | Maximum runtime for each checker process. |
 | `--checker-cleanup-timeout-seconds` | finite positive number | `1` | Maximum time spent cleaning up a checker after timeout or cancellation. |
@@ -40,13 +43,69 @@ are walked recursively for `*.py`.
 | `--checker-max-diagnostics` | positive integer | `10000` | Maximum diagnostics per checker result and in the merged validator output. |
 | `--checker-max-field-length` | positive integer | `4096` | Maximum characters in one externally reported diagnostic field (message, path, code). |
 
+## Resource limits
+
+Limits are opt-in. Leaving a flag unset does not impose a limit on that
+resource. For example, this invocation allows up to 100,000 discovery
+entries, 8 MiB per source file, and 64 MiB of source reads:
+
+```bash
+einf-validate src/ --max-discovery-entries 100000 \
+  --max-file-bytes 8388608 --max-total-bytes 67108864
+```
+
+Discovery counts each explicit target attempt and every encountered directory
+entry, including directories and non-Python files. This bounds traversal work,
+not just the number of Python files found. Repeated target attempts consume
+discovery work, but normalized duplicate source paths are read and analyzed once.
+Directory symlinks are still followed, including links outside the requested
+root; cycles are detected. These limits are not a workspace sandbox.
+
+Byte limits count raw input bytes, before UTF-8 decoding or newline conversion.
+Bytes read before a decoding or I/O failure still consume the total allowance.
+File size is checked before reading, and bounded reads also detect growth after
+that check. A read may consume one extra byte to detect an overflow before
+stopping. When either byte limit is enabled, source inputs must be regular files.
+
+Exceeding a limit stops the invocation and prevents external checkers from
+running. The JSON report includes `limit_failures[]`, and the exit code is `1`.
+Completed file reports may remain, but they are not evidence that the whole
+request was analyzed. Discovery-limit failures identify the requested root;
+byte-limit failures identify the source file.
+The `observed` count can come from a file-size precheck, without reading the
+file, or from actual bytes read.
+
+The limits cover validator discovery and source capture, not process memory,
+filesystem syscall duration, parser execution time, or work inside an external
+checker, including its imported files. Use the separate `--checker-*` options
+for checker process and output limits. Source byte admission still runs when
+the semantic parser is unavailable.
+
+Programmatic callers can pass the same policy:
+
+```python
+from pathlib import Path
+
+from einf.analysis.parser import AstParserBackend
+from einf.analysis.validator import ValidationLimits, run_validation
+
+report = run_validation(
+    targets=(Path("src"),),
+    parser_backend=AstParserBackend(),
+    limits=ValidationLimits(max_discovery_entries=100000, max_total_bytes=67108864),
+)
+```
+
+`limits=None` and `ValidationLimits()` both leave every resource unrestricted.
+
 ## Exit codes
 
 1. `0` — no diagnostics, no discovery/parse/read failures, no checker
    invocation failures.
 2. `1` — any file contains semantic or checker diagnostics, parse failures,
    or read failures; any target directory cannot be traversed completely; or
-   any configured checker failed to execute.
+   any configured checker failed to execute; or an opt-in resource limit was
+   exceeded.
 
 ## Output contract
 
@@ -57,6 +116,8 @@ are walked recursively for `*.py`.
 - `checker_failures[]` — external checker invocation failures
   (unavailable executable, spawn failure, timeout, malformed output, etc.),
 - `discovery_failures[]` — directories that could not be traversed completely,
+- `limit_failures[]` — quotas that stopped validation, each with `resource`,
+  `limit`, `observed`, and `path` fields,
 - `files[]` — per-file report.
 
 Each file entry:
@@ -69,9 +130,10 @@ Each file entry:
 - `failures[]` — validator ingress failures (unreadable files,
   parse errors).
 
-The current output schema version is `0.3`. Axis token `kind` distinguishes
-scalar axes from axis packs; `relation` records whether the same structural
-symbol appears on both sides of the operation.
+The current output schema version is `0.4`. Consumers of `0.3` must accept the
+new `limit_failures` field, which is empty when no quota was exceeded. Axis
+token `kind` distinguishes scalar axes from axis packs; `relation` records
+whether the same structural symbol appears on both sides of the operation.
 
 Diagnostic spans use one-based lines and zero-based Python character columns,
 not byte offsets or UTF-16 units. Pyright and BasedPyright ranges are converted
