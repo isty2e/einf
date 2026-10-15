@@ -110,7 +110,7 @@ class SymbolicPlan:
         context: RuntimeSpecializationContext,
         /,
     ) -> tuple[RuntimeStep[StepProgram], ...]:
-        """Specialize symbolic steps once per runtime cache key."""
+        """Reuse retained steps or specialize and cache a complete step chain."""
         cached_steps = self._runtime.runtime_steps.get(context)
         if cached_steps is not None:
             return cached_steps
@@ -146,7 +146,23 @@ class SymbolicPlan:
         context: RuntimeSpecializationContext,
         /,
     ) -> tuple[RuntimeStep[StepProgram], ...]:
-        """Specialize symbolic steps once for one runtime context."""
+        """Resolve runtime steps through this plan's bounded cache.
+
+        Parameters
+        ----------
+        context : RuntimeSpecializationContext
+            Input shapes and backend identity used for specialization.
+
+        Returns
+        -------
+        tuple[RuntimeStep[StepProgram], ...]
+            Complete specialized step chain for the context.
+
+        Notes
+        -----
+        Retained entries are reused. Evicted keys may be specialized again,
+        and concurrent cold misses may independently build the same key.
+        """
         return self._specialize_runtime_steps(context)
 
     def _run_runtime_steps(

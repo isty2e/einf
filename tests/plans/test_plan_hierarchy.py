@@ -701,6 +701,118 @@ def test_symbolic_plan_execute_caches_step_specialization_per_runtime_key() -> N
     assert _CountingSymbolicStep.calls["cache-hit"] == 2
 
 
+def test_symbolic_plan_specialization_reuses_retained_entries_and_rebuilds_evicted() -> (
+    None
+):
+    counter_key = "bounded-specialization"
+    _CountingSymbolicStep.calls[counter_key] = 0
+    lhs, rhs = _unary_side()
+    plan = SymbolicPlan(
+        source=_source("rearrange", lhs, rhs),
+        kind="counting",
+        steps=(
+            _CountingSymbolicStep(
+                name="counting",
+                input_arity=1,
+                output_arity=1,
+                counter_key=counter_key,
+            ),
+        ),
+    )
+    cache = plan._runtime.runtime_steps
+    cache.max_entries = 2
+    first, second, third = (
+        RuntimeSpecializationContext(
+            input_shapes=((1, dimension, 3),),
+            backend_profile=None,
+        )
+        for dimension in (2, 4, 6)
+    )
+
+    first_steps = plan.specialize(first)
+    second_steps = plan.specialize(second)
+    assert plan.specialize(first) is first_steps
+    assert _CountingSymbolicStep.calls[counter_key] == 2
+
+    plan.specialize(third)
+    assert len(cache._entries) == 2
+    assert cache.get(second) is None
+    assert plan.specialize(first) is first_steps
+    assert _CountingSymbolicStep.calls[counter_key] == 3
+
+    rebuilt_steps = plan.specialize(second)
+    assert rebuilt_steps is not second_steps
+    assert plan.specialize(second) is rebuilt_steps
+    assert _CountingSymbolicStep.calls[counter_key] == 4
+    assert len(cache._entries) == 2
+
+
+@pytest.mark.parametrize("failure", ["exception", "input_arity", "output_arity"])
+def test_symbolic_plan_specialization_retries_after_later_step_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    first_key = f"retry-first-{failure}"
+    second_key = f"retry-second-{failure}"
+    _CountingSymbolicStep.calls[first_key] = 0
+    _CountingSymbolicStep.calls[second_key] = 0
+    original_specialize = _CountingSymbolicStep.specialize
+
+    def fail_later_step_once(
+        step: _CountingSymbolicStep,
+        context: RuntimeSpecializationContext,
+        /,
+    ) -> RuntimeStep:
+        runtime_step = original_specialize(step, context)
+        if step.counter_key != second_key or step.calls[second_key] != 1:
+            return runtime_step
+
+        if failure == "exception":
+            raise ValueError("controlled specialization failure")
+
+        return _IdentityRuntimeStep(
+            name=step.name,
+            input_arity=2 if failure == "input_arity" else 1,
+            output_arity=2 if failure == "output_arity" else 1,
+        )
+
+    monkeypatch.setattr(_CountingSymbolicStep, "specialize", fail_later_step_once)
+    lhs, rhs = _unary_side()
+    plan = SymbolicPlan(
+        source=_source("rearrange", lhs, rhs),
+        kind="counting",
+        steps=tuple(
+            _CountingSymbolicStep(
+                name=key,
+                input_arity=1,
+                output_arity=1,
+                counter_key=key,
+            )
+            for key in (first_key, second_key)
+        ),
+    )
+    context = RuntimeSpecializationContext(
+        input_shapes=((1, 2, 3),),
+        backend_profile=None,
+    )
+
+    with pytest.raises(
+        ValueError, match="controlled specialization failure|arity drift"
+    ):
+        plan.specialize(context)
+
+    assert plan._runtime.runtime_steps.get(context) is None
+    assert _CountingSymbolicStep.calls[first_key] == 1
+    assert _CountingSymbolicStep.calls[second_key] == 1
+
+    steps = plan.specialize(context)
+    assert len(steps) == 2
+    assert all(step.input_arity == step.output_arity == 1 for step in steps)
+    assert plan.specialize(context) is steps
+    assert _CountingSymbolicStep.calls[first_key] == 2
+    assert _CountingSymbolicStep.calls[second_key] == 2
+
+
 def test_select_symbolic_plan_prefers_lower_score() -> None:
     lhs, rhs = _unary_side()
     source = _source("rearrange", lhs, rhs)
