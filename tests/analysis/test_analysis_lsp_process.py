@@ -1,6 +1,8 @@
 import asyncio
 import importlib.util
+import subprocess
 import sys
+import venv
 from collections.abc import Callable
 from pathlib import Path
 
@@ -122,14 +124,23 @@ def test_worker_does_not_import_implicit_workspace_modules(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "startup_output",
+    [
+        "",
+        "print('startup Python output', flush=True)\n",
+        "import os; os.write(1, b'startup descriptor output\\n')\n",
+    ],
+)
 def test_worker_preserves_explicit_pythonpath_configuration(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, capfd, startup_output: str
 ):
     configured_path = tmp_path / "configured-modules"
     configured_path.mkdir()
     marker = tmp_path / "configured-path-loaded"
     (configured_path / "sitecustomize.py").write_text(
-        f"open({str(marker)!r}, 'w').write('configured')\n", encoding="utf-8"
+        f"import sys\nopen({str(marker)!r}, 'w').write(sys.prefix)\n" + startup_output,
+        encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(configured_path))
 
@@ -140,9 +151,100 @@ def test_worker_preserves_explicit_pythonpath_configuration(
                 process.analyze(_request(), parser="ast"), 10
             )
             assert state.semantic_report.diagnostics
-            assert marker.read_text(encoding="utf-8") == "configured"
+            assert marker.read_text(encoding="utf-8") == sys.prefix
         finally:
             await process.close()
+
+    asyncio.run(scenario())
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    if startup_output:
+        assert "startup " in captured.err
+
+
+def test_worker_separates_pth_startup_output(monkeypatch, tmp_path: Path, capfd):
+    environment = tmp_path / "environment"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    executable = environment / (
+        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+    )
+    site_packages = Path(
+        subprocess.run(
+            [
+                str(executable),
+                "-P",
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    )
+    marker = tmp_path / "pth-loaded"
+    import_paths = [path for path in sys.path if Path(path).is_absolute()]
+    (site_packages / "analysis_startup.pth").write_text(
+        "\n".join(import_paths)
+        + "\nimport os; print('pth Python output', flush=True); "
+        "os.write(1, b'pth descriptor output\\n'); "
+        f"open({str(marker)!r}, 'w').write('loaded')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    async def scenario() -> None:
+        transports = _record_spawns(monkeypatch)
+        process = LspAnalysisProcess()
+        try:
+            for version in (1, 2):
+                state = await asyncio.wait_for(
+                    process.analyze(_request(version), parser="ast"), 10
+                )
+                assert state.semantic_report.diagnostics
+            assert marker.read_text(encoding="utf-8") == "loaded"
+            assert len(transports) == 1
+        finally:
+            await process.close()
+        _assert_reaped(transports[0])
+
+    asyncio.run(scenario())
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "pth Python output" in captured.err
+    assert "pth descriptor output" in captured.err
+
+
+def test_worker_cancellation_reaps_blocked_startup_hook(monkeypatch, tmp_path: Path):
+    ready = tmp_path / "startup-ready"
+    (tmp_path / "sitecustomize.py").write_text(
+        f"import time\nopen({str(ready)!r}, 'w').close()\ntime.sleep(600)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    async def scenario() -> None:
+        transports = _record_spawns(monkeypatch)
+        process = LspAnalysisProcess()
+        execution = asyncio.create_task(process.analyze(_request(), parser="ast"))
+        try:
+            await _wait_for_file(ready)
+            execution.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(execution, 10)
+            _assert_reaped(transports[0])
+
+            monkeypatch.delenv("PYTHONPATH")
+            state = await asyncio.wait_for(
+                process.analyze(_request(2), parser="ast"), 10
+            )
+            assert state.semantic_report.diagnostics
+            assert len(transports) == 2
+        finally:
+            execution.cancel()
+            await asyncio.gather(execution, return_exceptions=True)
+            await process.close()
+        _assert_reaped(transports[1])
 
     asyncio.run(scenario())
 
@@ -357,7 +459,7 @@ def fail_analysis(self, **kwargs):
 
 LspService.analyze_document = fail_analysis
 sys.argv = ["analysis-worker", "ast"]
-main()
+main(sys.stdout.buffer)
 """
 
     async def scenario() -> None:
@@ -403,7 +505,7 @@ def noisy_analysis(self, **kwargs):
 LspService.analyze_document = noisy_analysis
 LspService.__init__ = noisy_init
 sys.argv = ["analysis-worker", "ast"]
-main()
+main(sys.stdout.buffer)
 """
 
     async def scenario() -> None:

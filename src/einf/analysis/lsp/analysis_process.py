@@ -11,12 +11,27 @@ from einf.analysis.parser.factory import SUPPORTED_PARSER_NAMES
 from .service import LspDocumentState, LspService
 
 if TYPE_CHECKING:
+    from typing import BinaryIO
+
     from .analysis_queue import DocumentAnalysisRequest
 
 _FRAME_MAGIC = b"EINF"
 _HEADER_SIZE = 12
 _CLEANUP_TIMEOUT_SECONDS = 1.0
 _LOGGER = logging.getLogger(__name__)
+
+# Separate responses before site hooks or worker imports can write to stdout.
+_WORKER_BOOTSTRAP = """
+import os
+
+with os.fdopen(os.dup(1), "wb") as responses:
+    os.dup2(2, 1)
+    import site
+    site.main()
+
+    from einf.analysis.lsp.analysis_process import main
+    main(responses)
+"""
 
 
 class AnalysisProcessCleanupError(RuntimeError):
@@ -151,8 +166,9 @@ class LspAnalysisProcess:
                         lambda: protocol,
                         sys.executable,
                         "-P",
-                        "-m",
-                        "einf.analysis.lsp.analysis_process",
+                        "-S",
+                        "-c",
+                        _WORKER_BOOTSTRAP,
                         parser,
                         stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
@@ -249,10 +265,20 @@ class LspAnalysisProcess:
         await protocol.closed
 
 
-def main() -> None:
-    """Serve private framed requests from the parent LSP process."""
+def main(responses: BinaryIO) -> None:
+    """Serve private framed requests from the parent LSP process.
+
+    Parameters
+    ----------
+    responses : BinaryIO
+        Private binary response stream isolated from ordinary stdout writes.
+
+    Raises
+    ------
+    RuntimeError
+        A request has an invalid header or incomplete payload.
+    """
     stdin = sys.stdin.buffer
-    stdout = sys.stdout.buffer
     sys.stdout = sys.stderr
     service = LspService(parser=sys.argv[1])
     while header := stdin.read(_HEADER_SIZE):
@@ -271,10 +297,6 @@ def main() -> None:
             _LOGGER.exception("Semantic analysis failed")
             result = f"semantic analysis failed: {type(error).__name__}: {error}"
         response = pickle.dumps(result)
-        stdout.write(_FRAME_MAGIC + len(response).to_bytes(8, "big") + response)
-        stdout.flush()
+        responses.write(_FRAME_MAGIC + len(response).to_bytes(8, "big") + response)
+        responses.flush()
         del uri, source, version, payload, result, response
-
-
-if __name__ == "__main__":
-    main()

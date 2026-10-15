@@ -438,6 +438,12 @@ stays occupied until process cleanup finishes. Worker code cannot commit session
 state or publish LSP messages. Concurrent `close()` callers wait for the same
 cleanup operation.
 
+Workers start with `-P` to avoid implicit imports from the editor's working
+directory. A bootstrap duplicates the response descriptor and redirects stdout
+to stderr before running `site.main()` and importing the worker. Explicit
+`PYTHONPATH`, site-packages, and startup hooks remain enabled; their output does
+not share the response channel.
+
 ## Layering sketch
 
 ```
