@@ -63,6 +63,7 @@ class LspAnalysisQueue:
         self._condition = asyncio.Condition()
         self._worker_tasks: tuple[asyncio.Task[None], ...] = ()
         self._closed = False
+        self._cleanup_error: AnalysisProcessCleanupError | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     async def analyze(
@@ -106,6 +107,11 @@ class LspAnalysisQueue:
         try:
             async with self._condition:
                 if self._closed:
+                    if self._cleanup_error is not None:
+                        raise RuntimeError(
+                            "analysis queue is closed after worker cleanup failed; "
+                            "restart the einf language server"
+                        ) from self._cleanup_error
                     raise RuntimeError("analysis queue is closed")
                 self._ensure_workers()
 
@@ -226,6 +232,8 @@ class LspAnalysisQueue:
 
     async def _fail_cleanup(self, error: AnalysisProcessCleanupError) -> None:
         async with self._condition:
+            if self._cleanup_error is None:
+                self._cleanup_error = error
             self._closed = True
             for submission in self._latest_submissions.values():
                 if not submission.done():

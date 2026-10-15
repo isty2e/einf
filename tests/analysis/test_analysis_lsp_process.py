@@ -94,6 +94,59 @@ def test_process_matches_service_and_reuses_child(monkeypatch, parser: str) -> N
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("module_name", ["pickle", "logging", "typing", "einf"])
+def test_worker_does_not_import_implicit_workspace_modules(
+    monkeypatch, tmp_path: Path, module_name: str
+) -> None:
+    marker = tmp_path / "workspace-module-executed"
+    (tmp_path / f"{module_name}.py").write_text(
+        f"open({str(marker)!r}, 'w').write('executed')\n"
+        "raise RuntimeError('workspace module must not run')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
+
+    async def scenario() -> None:
+        process = LspAnalysisProcess()
+        try:
+            state = await asyncio.wait_for(
+                process.analyze(_request(), parser="ast"), 10
+            )
+            assert state.semantic_report.diagnostics
+            assert not marker.exists()
+        finally:
+            await process.close()
+
+    asyncio.run(scenario())
+
+
+def test_worker_preserves_explicit_pythonpath_configuration(
+    monkeypatch, tmp_path: Path
+):
+    configured_path = tmp_path / "configured-modules"
+    configured_path.mkdir()
+    marker = tmp_path / "configured-path-loaded"
+    (configured_path / "sitecustomize.py").write_text(
+        f"open({str(marker)!r}, 'w').write('configured')\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(configured_path))
+
+    async def scenario() -> None:
+        process = LspAnalysisProcess()
+        try:
+            state = await asyncio.wait_for(
+                process.analyze(_request(), parser="ast"), 10
+            )
+            assert state.semantic_report.diagnostics
+            assert marker.read_text(encoding="utf-8") == "configured"
+        finally:
+            await process.close()
+
+    asyncio.run(scenario())
+
+
 def test_queue_reuses_healthy_process_without_default_executor(monkeypatch) -> None:
     async def scenario() -> None:
         transports = _record_spawns(monkeypatch)
@@ -328,6 +381,47 @@ main()
         _assert_reaped(transports[1])
 
     asyncio.run(scenario())
+
+
+def test_worker_routes_incidental_prints_to_stderr(monkeypatch, capfd) -> None:
+    script = """
+import sys
+from einf.analysis.lsp.service import LspService
+from einf.analysis.lsp.analysis_process import main
+
+original = LspService.analyze_document
+original_init = LspService.__init__
+
+def noisy_init(self, *args, **kwargs):
+    print("incidental parser initialization", flush=True)
+    original_init(self, *args, **kwargs)
+
+def noisy_analysis(self, **kwargs):
+    print("incidental semantic message", flush=True)
+    return original(self, **kwargs)
+
+LspService.analyze_document = noisy_analysis
+LspService.__init__ = noisy_init
+sys.argv = ["analysis-worker", "ast"]
+main()
+"""
+
+    async def scenario() -> None:
+        _record_spawns(monkeypatch, first_command=(sys.executable, "-c", script))
+        process = LspAnalysisProcess()
+        try:
+            state = await asyncio.wait_for(
+                process.analyze(_request(), parser="ast"), 10
+            )
+            assert state.semantic_report.diagnostics
+        finally:
+            await process.close()
+
+    asyncio.run(scenario())
+    captured = capfd.readouterr()
+    assert "incidental parser initialization" in captured.err
+    assert "incidental semantic message" in captured.err
+    assert captured.out == ""
 
 
 @pytest.mark.skipif(

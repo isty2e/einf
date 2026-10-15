@@ -150,6 +150,7 @@ class LspAnalysisProcess:
                     asyncio.get_running_loop().subprocess_exec(
                         lambda: protocol,
                         sys.executable,
+                        "-P",
                         "-m",
                         "einf.analysis.lsp.analysis_process",
                         parser,
@@ -250,9 +251,10 @@ class LspAnalysisProcess:
 
 def main() -> None:
     """Serve private framed requests from the parent LSP process."""
-    service = LspService(parser=sys.argv[1])
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
+    sys.stdout = sys.stderr
+    service = LspService(parser=sys.argv[1])
     while header := stdin.read(_HEADER_SIZE):
         if len(header) != _HEADER_SIZE or header[:4] != _FRAME_MAGIC:
             raise RuntimeError("invalid semantic worker request header")

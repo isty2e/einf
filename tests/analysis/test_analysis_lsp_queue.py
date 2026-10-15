@@ -834,8 +834,12 @@ def test_unconfirmed_cleanup_fails_queued_and_backpressured_work(monkeypatch) ->
                     AnalysisProcessCleanupError, match="controlled cleanup failure"
                 ):
                     await asyncio.wait_for(task, 2)
-            with pytest.raises(RuntimeError, match="queue is closed"):
+            with pytest.raises(
+                RuntimeError, match="restart the einf language server"
+            ) as rejected:
                 await submit(3)
+            assert isinstance(rejected.value.__cause__, AnalysisProcessCleanupError)
+            assert str(rejected.value.__cause__) == "controlled cleanup failure"
             assert executions == [1]
         finally:
             with pytest.raises(

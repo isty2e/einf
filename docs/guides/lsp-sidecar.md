@@ -78,6 +78,10 @@ before reusing its worker slot. Closing a document also stops its analysis.
 Completed requests reuse the worker process; each edit does not start a new
 interpreter. Only the parent sidecar stores results and publishes diagnostics.
 
+Workers use Python's `-P` option so the editor's working directory is not
+implicitly added to their module search path. Explicit interpreter configuration,
+including `PYTHONPATH`, is preserved; this is not a sandbox for configured imports.
+
 Shutdown waits for worker termination and pipe cleanup. Cleanup has a one-second
 deadline per worker, separate from analysis itself: valid analysis has no default
 time limit. If cleanup cannot be confirmed, the sidecar reports an error and stops
