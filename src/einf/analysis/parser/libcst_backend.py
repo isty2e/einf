@@ -138,7 +138,8 @@ class LibCstParserBackend:
         except dependencies.syntax_error_type as error:
             raise _normalize_syntax_error(error) from error
 
-        wrapper = dependencies.metadata_wrapper_type(module_node)
+        # Fresh parser-produced nodes already have unique identities.
+        wrapper = dependencies.metadata_wrapper_type(module_node, unsafe_skip_copy=True)
         positions = wrapper.resolve(dependencies.position_provider_type)
 
         nodes: list[ParsedNode] = []

@@ -217,6 +217,99 @@ def test_libcst_backend_call_spans_use_wrapper_owned_tree_when_installed() -> No
     assert all(node.span is not None for node in call_nodes)
 
 
+def test_libcst_backend_does_not_clone_freshly_parsed_trees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libcst = pytest.importorskip("libcst")
+    parse_module = libcst.parse_module
+    parsed_trees = []
+
+    def record_parse(source: str):
+        tree = parse_module(source)
+        parsed_trees.append(tree)
+        return tree
+
+    def reject_clone(self):
+        pytest.fail("the parser-owned fresh tree must not be cloned")
+
+    monkeypatch.setattr(libcst, "parse_module", record_parse)
+    monkeypatch.setattr(libcst.Module, "deep_clone", reject_clone)
+    backend = LibCstParserBackend()
+    path = Path("sample.py")
+
+    previous = backend.parse(source=_INVALID_DSL_SOURCE, path=path)
+    repeated = backend.parse(source=_INVALID_DSL_SOURCE, path=path)
+    updated_source = _INVALID_DSL_SOURCE + "value = 2\n"
+    updated = backend.reparse(previous, edits=(), new_source=updated_source)
+
+    assert len(parsed_trees) == 3
+    assert all(
+        tree is not earlier
+        for index, tree in enumerate(parsed_trees)
+        for earlier in parsed_trees[:index]
+    )
+    assert repeated == previous
+    assert updated.path == previous.path == path
+    assert updated.source == updated_source
+    assert previous.source == _INVALID_DSL_SOURCE
+    assert updated.nodes is not previous.nodes
+    for module in (previous, repeated, updated):
+        calls = [node for node in module.nodes if node.kind == "Call"]
+        assert calls
+        assert all(node.span is not None for node in calls)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("# comment\n\nvalue = (1, 2)\n", id="trivia"),
+        pytest.param(_INVALID_DSL_SOURCE, id="invalid-dsl"),
+        pytest.param(_PACK_SOURCE, id="axis-pack"),
+        pytest.param(
+            "from einf import ax, axes, reduce\r\n"
+            "\ubc30\uce58, n, z = axes('\ubc30\uce58', 'n', 'z')\r\n"
+            "marker = '\U0001f642'; reduce(ax[\ubc30\uce58, n], ax[\ubc30\uce58, z])\r\n",
+            id="unicode-crlf",
+        ),
+        pytest.param(
+            "from einf import ax, axes, rearrange\n"
+            "b, n = axes('b', 'n')\n"
+            "def operation():\n"
+            "\treturn rearrange(\n\t\tax[b, n],\n\t\tax[n, b],\n\t)\n",
+            id="nested-multiline-tabs",
+        ),
+        pytest.param(
+            "from einf import ax, axes, reduce\n"
+            "b, n = axes('b', 'n')\n"
+            "reduce(ax[b, n], ax[b]).with_sizes(n=3).reduce_by('sum')\n",
+            id="configured-reduction",
+        ),
+        pytest.param(
+            "from einf import ax, rearrange\nrearrange(lhs=ax[b], lhs=ax[b])\n",
+            id="duplicate-keyword",
+        ),
+    ],
+)
+def test_libcst_backend_matches_copying_wrapper(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    metadata = pytest.importorskip("libcst.metadata")
+    wrapper_init = metadata.MetadataWrapper.__init__
+    backend = LibCstParserBackend()
+    path = Path("sample.py")
+    direct = analyze_module(source=source, path=path, parser_backend=backend)
+
+    def copying_init(self, module, *args, **kwargs) -> None:
+        kwargs["unsafe_skip_copy"] = False
+        wrapper_init(self, module, *args, **kwargs)
+
+    monkeypatch.setattr(metadata.MetadataWrapper, "__init__", copying_init)
+    copied = analyze_module(source=source, path=path, parser_backend=backend)
+
+    assert direct == copied
+
+
 def test_libcst_backend_matches_ast_diagnostics_and_tokens_when_installed() -> None:
     if importlib.util.find_spec("libcst") is None:
         pytest.skip("libcst is not installed in this environment")
