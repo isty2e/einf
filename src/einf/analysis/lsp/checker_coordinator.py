@@ -20,9 +20,6 @@ class DocumentCheckerRequest:
     version: int | None
 
 
-_CommitCheckerResult = Callable[[DocumentCheckerRequest, CheckerResult], bool]
-
-
 @dataclass(frozen=True, slots=True)
 class _CheckerJob:
     generation: int
@@ -57,7 +54,7 @@ class LspCheckerCoordinator:
         self,
         request: DocumentCheckerRequest,
         *,
-        commit: _CommitCheckerResult,
+        commit: Callable[[DocumentCheckerRequest, CheckerResult], bool],
     ) -> CheckerResult | None:
         """Run configured checkers and commit only the latest URI generation."""
         async with self._lock:
@@ -152,7 +149,7 @@ class LspCheckerCoordinator:
         request: DocumentCheckerRequest,
         generation: int,
         completion: asyncio.Future[CheckerResult | None],
-        commit: _CommitCheckerResult,
+        commit: Callable[[DocumentCheckerRequest, CheckerResult], bool],
     ) -> None:
         checker_request = CheckerRequest(
             targets=(request.path,),
@@ -189,7 +186,7 @@ class LspCheckerCoordinator:
         generation: int,
         completion: asyncio.Future[CheckerResult | None],
         result: CheckerResult,
-        commit: _CommitCheckerResult,
+        commit: Callable[[DocumentCheckerRequest, CheckerResult], bool],
     ) -> None:
         async with self._lock:
             is_current = self._is_current(

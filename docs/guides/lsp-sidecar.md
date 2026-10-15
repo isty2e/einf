@@ -46,6 +46,58 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 }
 ```
 
+### Optional analysis limits
+
+No analysis resource limits are enabled by default. You can set just the limit
+you need; for example, this caps each analyzed source snapshot at 8 MiB:
+
+```json
+{
+  "analysisMaxDocumentBytes": 8388608
+}
+```
+
+| Option | Resource |
+| --- | --- |
+| `analysisMaxDocuments` | Distinct document URIs with retained analysis snapshots, including work still being cancelled. |
+| `analysisMaxDocumentBytes` | UTF-8 bytes in a single source snapshot. |
+| `analysisMaxSourceBytes` | Sum of UTF-8 bytes across retained source snapshots. |
+
+Each option is independent. Omit it or use `null` for no limit; otherwise supply
+a positive integer. Invalid explicit values reject initialization rather than
+silently disabling a limit. These options do not change `checkerMaxConcurrency`
+or its default of 1.
+
+Snapshots count while waiting for debounce or queue space, during analysis, and
+while stored as the current result. Sharing one snapshot across these stages
+counts it once. Overlapping versions count separately until obsolete work has
+finished retiring, so a replacement may be refused until that work releases space.
+
+When admission would exceed a limit, the sidecar discards that document's obsolete
+analysis and publishes an `analysis_unavailable` warning for the refused version.
+It does not run semantic analysis or saved-file checkers for that snapshot, and
+hover, inlay hints and semantic tokens do not return the obsolete result. Document
+synchronization continues. Reduce the source size, close other documents or
+adjust the limits; restart the sidecar after changing initialize options. The
+next edit, save or semantic request can retry. Other documents are not evicted
+to make room.
+
+With limits enabled, results for documents that the client has not opened are
+returned to requesting features without being cached or published as session
+diagnostics. In-flight work keeps its reservation until retirement. Once it
+finishes, the next request reads the file again; completed unmanaged results do
+not consume capacity needed by opened documents.
+
+These are logical source-snapshot limits, **not a process-memory cap**. They do
+not bound pygls's document text, incoming messages, parser allocations, worker
+copies or OS memory. An on-demand request for an unopened file reads it before
+checking admission. UTF-8 byte limits also require valid UTF-8 source text.
+
+Workspace folders are not access permissions: standalone files outside them and
+untitled documents remain supported. The sidecar expects a trusted editor
+client; these limits do not turn its stdio, TCP or WebSocket transport into a
+sandbox or an authenticated remote service.
+
 ### Minimal scope
 
 1. document sync,

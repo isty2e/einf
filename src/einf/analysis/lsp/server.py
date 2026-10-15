@@ -1,7 +1,10 @@
 import asyncio
+from urllib.parse import unquote
 
 from lsprotocol import types as lsp
+from pygls.exceptions import JsonRpcInvalidParams
 from pygls.lsp.server import LanguageServer
+from pygls.workspace import TextDocument
 
 from einf.analysis.checkers import (
     CheckerExecutor,
@@ -12,6 +15,11 @@ from einf.analysis.checkers import (
 from einf.analysis.model import DiagnosticSeverity, TextSpan
 from einf.analysis.report import AnalysisFileReport
 
+from .analysis_limits import (
+    LspAnalysisLimitExceeded,
+    LspSourceBudget,
+    LspSourceReservation,
+)
 from .analysis_queue import DocumentAnalysisRequest, LspAnalysisQueue
 from .change_debounce import LspChangeDebouncer, PendingDocumentChange
 from .checker_coordinator import DocumentCheckerRequest, LspCheckerCoordinator
@@ -38,6 +46,8 @@ class EinfLanguageServer(LanguageServer):
         )
         self.einf_config = LspConfig()
         self.einf_service = LspService(self.einf_config.parser)
+        self.einf_source_budget = LspSourceBudget(self.einf_config.analysis_limits)
+        self.einf_document_sources: dict[str, LspSourceReservation] = {}
         self.einf_change_debouncer = LspChangeDebouncer(
             delay_seconds=_DEFAULT_CHANGE_DEBOUNCE_SECONDS,
             report_failure=self._report_debounced_analysis_failure,
@@ -71,6 +81,7 @@ class EinfLanguageServer(LanguageServer):
         """Configure semantic and checker subsystems before document traffic."""
         self.einf_config = config
         self.einf_service = LspService(config.parser)
+        self.einf_source_budget = LspSourceBudget(config.analysis_limits)
         self.einf_checker_coordinator = _build_checker_coordinator(config)
 
     def position_codec(self, state: LspDocumentState) -> LspPositionCodec:
@@ -93,8 +104,12 @@ def build_server() -> EinfLanguageServer:
 
     @server.feature(lsp.INITIALIZE)
     def initialize(ls: EinfLanguageServer, params: lsp.InitializeParams) -> None:
-        init_options = _coerce_initialize_options(params.initialization_options)
-        ls.configure(LspConfig.from_initialize_options(init_options))
+        try:
+            init_options = _coerce_initialize_options(params.initialization_options)
+            config = LspConfig.from_initialize_options(init_options)
+        except ValueError as error:
+            raise JsonRpcInvalidParams(str(error)) from error
+        ls.configure(config)
         position_encoding = ls.workspace.position_encoding
         ls.einf_position_encoding = (
             position_encoding
@@ -108,7 +123,8 @@ def build_server() -> EinfLanguageServer:
         params: lsp.DidOpenTextDocumentParams,
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
-        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
+        if not ls.einf_config.analysis_limits.enabled:
+            await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
         await _analyze_document_request(
             ls,
             request=DocumentAnalysisRequest(
@@ -123,11 +139,36 @@ def build_server() -> EinfLanguageServer:
         ls: EinfLanguageServer, params: lsp.DidChangeTextDocumentParams
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
-        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
+        reservation = None
+        if ls.einf_config.analysis_limits.enabled:
+            request = DocumentAnalysisRequest(
+                uri=text_document.uri,
+                source=text_document.source,
+                version=text_document.version,
+            )
+            try:
+                reservation = await _admit_document_source(
+                    ls,
+                    request=request,
+                    managed_document=_managed_document(ls, request.uri),
+                )
+            except (LspAnalysisLimitExceeded, UnicodeEncodeError) as error:
+                _report_analysis_refusal(ls, request=request, error=error)
+                return
+            if reservation is None:
+                return
+        else:
+            await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
+            request = DocumentAnalysisRequest(
+                uri=text_document.uri,
+                source=text_document.source,
+                version=text_document.version,
+            )
         change = PendingDocumentChange(
-            uri=text_document.uri,
-            source=text_document.source,
-            version=text_document.version,
+            uri=request.uri,
+            source=request.source,
+            version=request.version,
+            source_reservation=reservation,
         )
 
         async def analyze(pending_change: PendingDocumentChange) -> None:
@@ -138,9 +179,14 @@ def build_server() -> EinfLanguageServer:
                     source=pending_change.source,
                     version=pending_change.version,
                 ),
+                source_reservation=pending_change.source_reservation,
             )
 
-        ls.einf_change_debouncer.schedule(change, analyze=analyze)
+        try:
+            ls.einf_change_debouncer.schedule(change, analyze=analyze)
+        finally:
+            if reservation is not None:
+                reservation.release()
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_SAVE)
     async def did_save(
@@ -148,8 +194,9 @@ def build_server() -> EinfLanguageServer:
         params: lsp.DidSaveTextDocumentParams,
     ) -> None:
         text_document = ls.workspace.get_text_document(params.text_document.uri)
-        ls.einf_change_debouncer.cancel(text_document.uri)
-        await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
+        if not ls.einf_config.analysis_limits.enabled:
+            ls.einf_change_debouncer.cancel(text_document.uri)
+            await ls.einf_checker_coordinator.cancel(uri=text_document.uri)
         state = await _analyze_document_request(
             ls,
             request=DocumentAnalysisRequest(
@@ -165,12 +212,22 @@ def build_server() -> EinfLanguageServer:
     async def did_close(
         ls: EinfLanguageServer, params: lsp.DidCloseTextDocumentParams
     ) -> None:
+        managed_document = (
+            _managed_document(ls, params.text_document.uri)
+            if ls.einf_config.analysis_limits.enabled
+            else None
+        )
         ls.einf_change_debouncer.cancel(params.text_document.uri)
         await asyncio.gather(
             ls.einf_analysis_queue.cancel(uri=params.text_document.uri),
             ls.einf_checker_coordinator.cancel(uri=params.text_document.uri),
         )
-        ls.einf_service.close_document(uri=params.text_document.uri)
+        if (
+            ls.einf_config.analysis_limits.enabled
+            and _managed_document(ls, params.text_document.uri) is not managed_document
+        ):
+            return
+        _discard_document_state(ls, uri=params.text_document.uri)
         ls.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(
                 uri=params.text_document.uri,
@@ -181,11 +238,15 @@ def build_server() -> EinfLanguageServer:
     @server.feature(lsp.SHUTDOWN)
     async def shutdown(ls: EinfLanguageServer, *args: object) -> None:
         _ = args
-        await ls.einf_change_debouncer.close()
-        await asyncio.gather(
-            ls.einf_analysis_queue.close(),
-            ls.einf_checker_coordinator.close(),
-        )
+        try:
+            await ls.einf_change_debouncer.close()
+            await asyncio.gather(
+                ls.einf_analysis_queue.close(),
+                ls.einf_checker_coordinator.close(),
+            )
+        finally:
+            for uri in tuple(ls.einf_document_sources):
+                _discard_document_state(ls, uri=uri)
 
     @server.feature(lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_LEGEND)
     async def semantic_tokens_full(
@@ -280,6 +341,18 @@ def _coerce_initialize_options(
     field_length_value = initialize_options.get("checkerMaxFieldLength")
     if type(field_length_value) is int:
         options["checkerMaxFieldLength"] = field_length_value
+
+    for name in (
+        "analysisMaxDocuments",
+        "analysisMaxDocumentBytes",
+        "analysisMaxSourceBytes",
+    ):
+        if name not in initialize_options:
+            continue
+        maximum = initialize_options[name]
+        if maximum is not None and (type(maximum) is not int or maximum < 1):
+            raise ValueError(f"{name} must be a positive integer or null")
+        options[name] = maximum
     return options
 
 
@@ -312,22 +385,29 @@ async def _get_or_open_document_state(
 ) -> LspDocumentState | None:
     pending_change = ls.einf_change_debouncer.take_pending(uri=uri)
     if pending_change is not None:
-        return await _analyze_document_request(
-            ls,
-            request=DocumentAnalysisRequest(
-                uri=pending_change.uri,
-                source=pending_change.source,
-                version=pending_change.version,
-            ),
-        )
+        try:
+            return await _analyze_document_request(
+                ls,
+                request=DocumentAnalysisRequest(
+                    uri=pending_change.uri,
+                    source=pending_change.source,
+                    version=pending_change.version,
+                ),
+                source_reservation=pending_change.source_reservation,
+            )
+        finally:
+            if pending_change.source_reservation is not None:
+                pending_change.source_reservation.release()
 
     latest_state = await ls.einf_analysis_queue.wait_for_latest(uri=uri)
-    if latest_state is not None:
+    if latest_state is not None and _state_is_current(ls, latest_state):
         return latest_state
+    del latest_state
 
     state = ls.einf_service.get_document_state(uri=uri)
-    if state is not None:
+    if state is not None and _state_is_current(ls, state):
         return state
+    del state
     text_document = ls.workspace.get_text_document(uri)
     return await _analyze_document_request(
         ls,
@@ -343,17 +423,150 @@ async def _analyze_document_request(
     ls: EinfLanguageServer,
     *,
     request: DocumentAnalysisRequest,
+    source_reservation: LspSourceReservation | None = None,
 ) -> LspDocumentState | None:
     service = ls.einf_service
+    managed_document = (
+        _managed_document(ls, request.uri)
+        if ls.einf_config.analysis_limits.enabled
+        else None
+    )
+    if not _source_is_current(ls, request, managed_document):
+        return None
+
+    reservation = source_reservation
+    if reservation is not None:
+        reservation.retain()
+    elif ls.einf_config.analysis_limits.enabled:
+        try:
+            reservation = await _admit_document_source(
+                ls, request=request, managed_document=managed_document
+            )
+        except (LspAnalysisLimitExceeded, UnicodeEncodeError) as error:
+            _report_analysis_refusal(ls, request=request, error=error)
+            return None
+        if reservation is None:
+            return None
 
     def commit(state: LspDocumentState) -> None:
+        if not _source_is_current(ls, request, managed_document):
+            return
+        if ls.einf_config.analysis_limits.enabled and managed_document is None:
+            return
+        if reservation is not None:
+            _discard_document_state(ls, uri=state.uri)
+            ls.einf_document_sources[state.uri] = reservation.retain()
         service.commit_document_state(state)
         _publish_document_state(ls, state)
 
-    return await ls.einf_analysis_queue.analyze(
-        request,
-        parser=service.parser,
-        commit=commit,
+    try:
+        if reservation is None:
+            state = await ls.einf_analysis_queue.analyze(
+                request, parser=service.parser, commit=commit
+            )
+        else:
+            state = await ls.einf_analysis_queue.analyze(
+                request,
+                parser=service.parser,
+                commit=commit,
+                source_reservation=reservation,
+            )
+        return state if _source_is_current(ls, request, managed_document) else None
+    finally:
+        if reservation is not None:
+            reservation.release()
+
+
+def _managed_document(ls: EinfLanguageServer, uri: str) -> TextDocument | None:
+    return ls.workspace.text_documents.get(unquote(uri))
+
+
+def _state_is_current(ls: EinfLanguageServer, state: LspDocumentState) -> bool:
+    if not ls.einf_config.analysis_limits.enabled:
+        return True
+    return _source_is_current(
+        ls,
+        DocumentAnalysisRequest(
+            uri=state.uri, source=state.source, version=state.version
+        ),
+        _managed_document(ls, state.uri),
+    )
+
+
+def _source_is_current(
+    ls: EinfLanguageServer,
+    request: DocumentAnalysisRequest,
+    managed_document: TextDocument | None,
+) -> bool:
+    if not ls.einf_config.analysis_limits.enabled:
+        return True
+    current = _managed_document(ls, request.uri)
+    if current is not managed_document:
+        return False
+    return current is None or (
+        current.version == request.version and current.source == request.source
+    )
+
+
+async def _admit_document_source(
+    ls: EinfLanguageServer,
+    *,
+    request: DocumentAnalysisRequest,
+    managed_document: TextDocument | None,
+) -> LspSourceReservation | None:
+    if not _source_is_current(ls, request, managed_document):
+        return None
+    await ls.einf_change_debouncer.cancel_and_wait(uri=request.uri)
+    if not _source_is_current(ls, request, managed_document):
+        return None
+    await ls.einf_checker_coordinator.cancel(uri=request.uri)
+    if not _source_is_current(ls, request, managed_document):
+        return None
+    await ls.einf_analysis_queue.cancel(uri=request.uri)
+    if not _source_is_current(ls, request, managed_document):
+        return None
+    _discard_document_state(ls, uri=request.uri)
+    return ls.einf_source_budget.reserve(uri=request.uri, source=request.source)
+
+
+def _discard_document_state(ls: EinfLanguageServer, *, uri: str) -> None:
+    ls.einf_service.close_document(uri=uri)
+    previous = ls.einf_document_sources.pop(uri, None)
+    if previous is not None:
+        previous.release()
+
+
+def _report_analysis_refusal(
+    ls: EinfLanguageServer,
+    *,
+    request: DocumentAnalysisRequest,
+    error: LspAnalysisLimitExceeded | UnicodeEncodeError,
+) -> None:
+    ls.text_document_publish_diagnostics(
+        lsp.PublishDiagnosticsParams(
+            uri=request.uri,
+            version=request.version,
+            diagnostics=[
+                lsp.Diagnostic(
+                    range=lsp.Range(
+                        start=lsp.Position(line=0, character=0),
+                        end=lsp.Position(line=0, character=0),
+                    ),
+                    severity=lsp.DiagnosticSeverity.Warning,
+                    code="analysis_unavailable",
+                    source="einf",
+                    message=(
+                        f"einf analysis unavailable: {error}. "
+                        + (
+                            "Use valid UTF-8 source text."
+                            if isinstance(error, UnicodeEncodeError)
+                            else "Reduce the document size, close other documents or "
+                            "adjust the analysis limits."
+                        )
+                    ),
+                )
+            ],
+        )
     )
 
 
@@ -362,7 +575,7 @@ async def _check_document_state(
     *,
     state: LspDocumentState,
 ) -> CheckerResult | None:
-    if state.path is None:
+    if state.path is None or not _state_is_current(ls, state):
         return None
 
     service = ls.einf_service
@@ -373,6 +586,7 @@ async def _check_document_state(
             current is None
             or current.path != request.path
             or current.version != request.version
+            or not _state_is_current(ls, current)
         ):
             return False
         updated = current.with_checker_result(result)
