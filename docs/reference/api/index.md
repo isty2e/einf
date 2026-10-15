@@ -6,7 +6,15 @@ are imported directly from the top-level `einf` namespace.
 ```python
 from einf import ax, axes, packs, symbols
 from einf import rearrange, reduce, contract, einop, repeat, view
-from einf import TensorOp, ReducibleTensorOp, Signature, Axis, AxisPack, AxisExpr, AxisInt
+from einf import (
+    TensorOp,
+    ReducibleTensorOp,
+    Signature,
+    Axis,
+    AxisPack,
+    AxisExpr,
+    AxisInt,
+)
 from einf import TensorLike, Reducer, ReducerCallable, ReducerName
 from einf import ValidationError, ExecutionError, ErrorCode
 ```

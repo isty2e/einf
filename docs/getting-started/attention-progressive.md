@@ -43,7 +43,7 @@ produces `(b, t, dh)`. One `einop` captures the contract over `d`:
 ```python
 project = einop((ax[b, t, d], ax[d, dh]), ax[b, t, dh])
 
-x  = np.random.randn(2, 5, 16).astype(np.float32)
+x = np.random.randn(2, 5, 16).astype(np.float32)
 Wq = np.random.randn(16, 8).astype(np.float32)
 Wk = np.random.randn(16, 8).astype(np.float32)
 Wv = np.random.randn(16, 8).astype(np.float32)
@@ -128,9 +128,9 @@ Q4 = split_heads(x_big)
 K4 = split_heads(x_big)
 V4 = split_heads(x_big)
 
-raw  = score_mh(Q4, K4)
+raw = score_mh(Q4, K4)
 attn = softmax_over_last(raw / np.sqrt(8.0))
-out  = apply_mh(attn, V4)
+out = apply_mh(attn, V4)
 # out.shape == (2, 4, 5, 8)
 ```
 

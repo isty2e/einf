@@ -337,6 +337,7 @@ def build_terminal_tail(
         raise TypeError("terminal planner returned a composite plan")
     return plan
 
+
 carrier_plan = try_build_carrier_then_unary_plan(
     analysis_signature=signature,
 )

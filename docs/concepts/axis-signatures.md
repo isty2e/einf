@@ -39,7 +39,7 @@ either side has multiple tensors:
 
 ```python
 # one input, two outputs
-(ax[b, n, d])         # lhs: one input
+(ax[b, n, d])  # lhs: one input
 (ax[b, n], ax[b, d])  # rhs: two outputs
 ```
 
@@ -92,6 +92,7 @@ b, h, w, c = axes("b", "h", "w", "c")
 split = view(ax[b, (h * w), c], ax[b, h, w, c]).with_sizes(h=2)
 
 import numpy as np
+
 x = np.arange(2 * 6 * 3, dtype=np.float32).reshape(2, 6, 3)
 split(x).shape  # (2, 2, 3, 3), where w = 3 is inferred
 ```
@@ -128,8 +129,9 @@ from einf import ax, axes, packs, rearrange
 move_b_to_last = rearrange(ax[b, tail], ax[tail, b])
 
 import numpy as np
+
 move_b_to_last(np.zeros((2, 3, 4, 5), dtype=np.float32)).shape  # (3, 4, 5, 2)
-move_b_to_last(np.zeros((2,), dtype=np.float32)).shape          # (2,)
+move_b_to_last(np.zeros((2,), dtype=np.float32)).shape  # (2,)
 ```
 
 The same op works on rank-1 and rank-4 inputs because `tail` is

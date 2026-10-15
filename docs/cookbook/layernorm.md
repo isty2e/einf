@@ -19,11 +19,11 @@ b, t, d = axes("b", "t", "d")
 ```python
 def layernorm(x, gamma, beta, eps=1e-5):
     mean_op = reduce(ax[b, t, d], ax[b, t]).reduce_by("mean")
-    var_op  = reduce(ax[b, t, d], ax[b, t]).reduce_by(np.var)
-    scale   = einop((ax[b, t, d], ax[d]), ax[b, t, d])
+    var_op = reduce(ax[b, t, d], ax[b, t]).reduce_by(np.var)
+    scale = einop((ax[b, t, d], ax[d]), ax[b, t, d])
 
     mean = mean_op(x)[..., None]
-    var  = var_op(x)[..., None]
+    var = var_op(x)[..., None]
     normed = (x - mean) / np.sqrt(var + eps)
 
     return scale(normed, gamma) + beta
@@ -32,9 +32,9 @@ def layernorm(x, gamma, beta, eps=1e-5):
 ### Quick test
 
 ```python
-x     = np.random.randn(2, 5, 16).astype(np.float32)
+x = np.random.randn(2, 5, 16).astype(np.float32)
 gamma = np.random.randn(16).astype(np.float32)
-beta  = np.random.randn(16).astype(np.float32)
+beta = np.random.randn(16).astype(np.float32)
 
 out = layernorm(x, gamma, beta)
 out.shape

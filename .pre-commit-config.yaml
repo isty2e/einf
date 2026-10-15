@@ -5,9 +5,9 @@ repos:
       - id: pyupgrade
         args: ["--py311-plus"]
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.0
+    rev: v0.17.0
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
         name: lint with ruff
       - id: ruff-format
