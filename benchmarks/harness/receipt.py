@@ -1,10 +1,8 @@
 from collections.abc import Mapping, Sequence
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from .backend import BackendSpec
 from .result import DynamicInputUnit, PairedEvidence, TimingSummary
-
-_ExecutionIdentity: TypeAlias = tuple[int, int, int]
 
 
 def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
@@ -58,72 +56,86 @@ def dynamic_input_units_payload(
 def validation_coverage_payload(
     *,
     coordinate_source: Literal["measurement_observations", "realized_input_units"],
-    coordinate_count: int,
+    expected_rounds: int,
+    expected_units_per_round: int,
     expected_executions_per_member_per_coordinate: int,
-    execution_identities_by_member: Mapping[str, Sequence[_ExecutionIdentity]],
+    expected_members: Sequence[str],
+    execution_identities_by_member: Mapping[str, Sequence[tuple[int, int, int]]],
 ) -> dict[str, object]:
-    """Serialize exhaustive timed-output validation coverage."""
-    if coordinate_count < 0:
-        raise ValueError("validation coordinate count must be non-negative")
-    if expected_executions_per_member_per_coordinate < 1:
-        raise ValueError("expected validation executions must be positive")
-    if coordinate_count > 0 and not execution_identities_by_member:
-        raise ValueError("validation coordinates require at least one member")
+    """Admit complete configured execution coverage before serialization.
 
-    expected_coordinates: frozenset[tuple[int, int]] | None = None
-    expected_repeat_indices: frozenset[int] | None = None
+    Parameters
+    ----------
+    coordinate_source : {"measurement_observations", "realized_input_units"}
+        Receipt field identifying the measured input coordinates.
+    expected_rounds : int
+        Positive configured number of measured rounds.
+    expected_units_per_round : int
+        Positive configured number of measured units, excluding warmup.
+    expected_executions_per_member_per_coordinate : int
+        Positive configured number of executions for each member and unit.
+    expected_members : Sequence[str]
+        Available libraries or strategies, in receipt display order.
+    execution_identities_by_member : Mapping[str, Sequence[tuple[int, int, int]]]
+        Every observed execution, grouped by member, as round/unit/repeat triples.
+
+    Returns
+    -------
+    dict[str, object]
+        Coverage metadata; all-unavailable cases retain empty coverage.
+
+    Raises
+    ------
+    ValueError
+        If dimensions, membership or execution identities do not match the
+        configured measurement grid. Duplicate executions are invalid.
+    """
+    for name, value in (
+        ("rounds", expected_rounds),
+        ("units per round", expected_units_per_round),
+        ("executions per coordinate", expected_executions_per_member_per_coordinate),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"expected validation {name} must be a positive integer")
+
+    member_set = frozenset(expected_members)
+    if len(member_set) != len(expected_members):
+        raise ValueError("expected validation members must be unique")
+    if frozenset(execution_identities_by_member) != member_set:
+        raise ValueError("validation members must match available members")
+
+    coordinate_count = expected_rounds * expected_units_per_round if member_set else 0
+    execution_count = coordinate_count * expected_executions_per_member_per_coordinate
     for member, identities in execution_identities_by_member.items():
         identity_set = frozenset(identities)
         if len(identity_set) != len(identities):
             raise ValueError(f"validation identities for {member!r} must be unique")
-        coordinates = frozenset(
-            (round_index, unit_index) for round_index, unit_index, _ in identity_set
-        )
-        if len(coordinates) != coordinate_count:
-            raise ValueError(
-                f"validation identities for {member!r} do not cover every coordinate"
-            )
-        repeats_by_coordinate: dict[tuple[int, int], set[int]] = {}
         for round_index, unit_index, repeat_index in identity_set:
-            repeats_by_coordinate.setdefault((round_index, unit_index), set()).add(
-                repeat_index
-            )
-        repeat_sets = frozenset(
-            frozenset(repeat_indices)
-            for repeat_indices in repeats_by_coordinate.values()
-        )
-        if len(repeat_sets) != 1:
+            if any(
+                not isinstance(index, int) or isinstance(index, bool)
+                for index in (round_index, unit_index, repeat_index)
+            ) or not (
+                0 <= round_index < expected_rounds
+                and 0 <= unit_index < expected_units_per_round
+                and 0 <= repeat_index < expected_executions_per_member_per_coordinate
+            ):
+                raise ValueError(
+                    f"validation identities for {member!r} are outside benchmark configuration"
+                )
+        # Unique bounded triples with full Cartesian cardinality cover the grid.
+        if len(identity_set) != execution_count:
             raise ValueError(
-                f"validation identities for {member!r} have uneven repeat coverage"
+                f"validation identities for {member!r} do not cover every configured execution"
             )
-        repeat_indices = next(iter(repeat_sets), frozenset())
-        if repeat_indices != frozenset(range(len(repeat_indices))):
-            raise ValueError(
-                f"validation identities for {member!r} have non-contiguous repeats"
-            )
-        if expected_coordinates is None:
-            expected_coordinates = coordinates
-            expected_repeat_indices = repeat_indices
-        elif (
-            coordinates != expected_coordinates
-            or repeat_indices != expected_repeat_indices
-        ):
-            raise ValueError("validation coverage must match across members")
 
-    executions_per_member_per_coordinate = len(expected_repeat_indices or ())
-    if execution_identities_by_member and (
-        executions_per_member_per_coordinate
-        != expected_executions_per_member_per_coordinate
-    ):
-        raise ValueError(
-            "validation execution coverage does not match benchmark configuration"
-        )
     return {
         "scope": "all_measured_executions",
         "coordinate_source": coordinate_source,
         "coordinate_count": coordinate_count,
-        "members": list(execution_identities_by_member),
-        "executions_per_member_per_coordinate": (executions_per_member_per_coordinate),
+        "members": list(expected_members),
+        "executions_per_member_per_coordinate": (
+            expected_executions_per_member_per_coordinate if member_set else 0
+        ),
         "phase": "immediately_after_each_timed_execution",
         "output_source": "timed_call_return_value",
         "output_check": "numerical_reference_match",

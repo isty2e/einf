@@ -468,6 +468,14 @@ round, unit, stream, derived seed, and input shapes used for that paired unit.
 The case-level `validation` object identifies the measured coordinate source,
 participating libraries, executions per coordinate, and the fact that the timed
 call's own return value was checked immediately after its timer stopped.
+
+Before emitting that claim, serialization checks every available member's
+execution records against the configured rounds, measured units, and executions
+per unit. Missing, duplicate, out-of-range, or unexpected-member records are
+rejected. Unavailable libraries are excluded explicitly; an all-unavailable case
+keeps empty coverage. This checks the supplied records, not their authenticity:
+serialization does not rerun or independently verify the measurements.
+
 Ratios use integer `numerator` and `denominator` fields rather than rounded
 decimals.
 
