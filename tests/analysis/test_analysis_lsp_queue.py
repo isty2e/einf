@@ -1,9 +1,14 @@
 import asyncio
-import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Never
 
 import pytest
 
+from einf.analysis.lsp.analysis_process import (
+    AnalysisProcessCleanupError,
+    LspAnalysisProcess,
+)
 from einf.analysis.lsp.analysis_queue import (
     DocumentAnalysisRequest,
     LspAnalysisQueue,
@@ -28,26 +33,38 @@ def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
     )
 
 
-async def _wait_until_set(event: threading.Event) -> None:
-    for _ in range(1_000):
-        if event.is_set():
-            return
-        await asyncio.sleep(0.001)
-    raise AssertionError("worker did not reach the blocking analysis")
+async def _wait_until_set(event: asyncio.Event) -> None:
+    await asyncio.wait_for(event.wait(), timeout=2)
 
 
-def test_blocked_analysis_does_not_block_event_loop_or_other_document() -> None:
+def _install_analyzer(
+    monkeypatch: pytest.MonkeyPatch,
+    analyze: Callable[[DocumentAnalysisRequest], Awaitable[LspDocumentState]],
+) -> None:
+    async def execute(
+        self: LspAnalysisProcess, request: DocumentAnalysisRequest, *, parser: str
+    ) -> LspDocumentState:
+        return await analyze(request)
+
+    monkeypatch.setattr(LspAnalysisProcess, "analyze", execute)
+
+
+def test_blocked_analysis_does_not_block_event_loop_or_other_document(
+    monkeypatch,
+) -> None:
     async def scenario() -> None:
-        blocked_started = threading.Event()
-        release_blocked = threading.Event()
+        blocked_started = asyncio.Event()
+        release_blocked = asyncio.Event()
         committed_versions: list[int | None] = []
         queue = LspAnalysisQueue(worker_count=2, pending_limit=2)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri.endswith("blocked.py"):
                 blocked_started.set()
-                assert release_blocked.wait(timeout=2)
+                await asyncio.wait_for(release_blocked.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         blocked_request = DocumentAnalysisRequest(
             uri="file:///blocked.py",
@@ -63,7 +80,7 @@ def test_blocked_analysis_does_not_block_event_loop_or_other_document() -> None:
         blocked_task = asyncio.create_task(
             queue.analyze(
                 blocked_request,
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: committed_versions.append(state.version),
             )
         )
@@ -74,7 +91,7 @@ def test_blocked_analysis_does_not_block_event_loop_or_other_document() -> None:
             ready_state = await asyncio.wait_for(
                 queue.analyze(
                     ready_request,
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: committed_versions.append(state.version),
                 ),
                 timeout=0.5,
@@ -93,22 +110,31 @@ def test_blocked_analysis_does_not_block_event_loop_or_other_document() -> None:
     asyncio.run(scenario())
 
 
-def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
+def test_replacement_waits_for_cleanup_without_blocking_other_document(
+    monkeypatch,
+) -> None:
     async def scenario() -> None:
-        first_started = threading.Event()
-        replacement_started = threading.Event()
-        release_first = threading.Event()
+        first_started = asyncio.Event()
+        replacement_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_first = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=2, pending_limit=2)
         uri = "file:///same.py"
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri == uri:
                 if request.version == 1:
                     first_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        cleanup_started.set()
+                        await release_first.wait()
                 else:
                     replacement_started.set()
-                assert release_first.wait(timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         first_task = asyncio.create_task(
             queue.analyze(
@@ -117,7 +143,7 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                     source="first",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: None,
             )
         )
@@ -131,11 +157,11 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                         source="replacement",
                         version=2,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
-            await asyncio.sleep(0)
+            await _wait_until_set(cleanup_started)
 
             other_state = await asyncio.wait_for(
                 queue.analyze(
@@ -144,7 +170,7 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
                         source="other",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 ),
                 timeout=0.5,
@@ -163,18 +189,20 @@ def test_replacement_does_not_consume_second_worker_for_same_uri() -> None:
     asyncio.run(scenario())
 
 
-def test_stale_running_analysis_result_is_discarded() -> None:
+def test_stale_running_analysis_result_is_discarded(monkeypatch) -> None:
     async def scenario() -> None:
-        stale_started = threading.Event()
-        release_stale = threading.Event()
+        stale_started = asyncio.Event()
+        release_stale = asyncio.Event()
         committed_versions: list[int | None] = []
         queue = LspAnalysisQueue(worker_count=2, pending_limit=2)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.version == 1:
                 stale_started.set()
-                assert release_stale.wait(timeout=2)
+                await asyncio.wait_for(release_stale.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         stale_task = asyncio.create_task(
             queue.analyze(
@@ -183,7 +211,7 @@ def test_stale_running_analysis_result_is_discarded() -> None:
                     source="old",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: committed_versions.append(state.version),
             )
         )
@@ -198,7 +226,7 @@ def test_stale_running_analysis_result_is_discarded() -> None:
                         source="new",
                         version=2,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: committed_versions.append(state.version),
                 )
             )
@@ -221,17 +249,19 @@ def test_stale_running_analysis_result_is_discarded() -> None:
     asyncio.run(scenario())
 
 
-def test_latest_waiter_follows_replacement_generation() -> None:
+def test_latest_waiter_follows_replacement_generation(monkeypatch) -> None:
     async def scenario() -> None:
-        stale_started = threading.Event()
-        release_stale = threading.Event()
+        stale_started = asyncio.Event()
+        release_stale = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=2, pending_limit=2)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.version == 1:
                 stale_started.set()
-                assert release_stale.wait(timeout=2)
+                await asyncio.wait_for(release_stale.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         stale_task = asyncio.create_task(
             queue.analyze(
@@ -240,7 +270,7 @@ def test_latest_waiter_follows_replacement_generation() -> None:
                     source="old",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: None,
             )
         )
@@ -257,7 +287,7 @@ def test_latest_waiter_follows_replacement_generation() -> None:
                         source="new",
                         version=2,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -276,19 +306,21 @@ def test_latest_waiter_follows_replacement_generation() -> None:
     asyncio.run(scenario())
 
 
-def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
+def test_pending_request_is_replaceable_while_queue_is_bounded(monkeypatch) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         analyzed_sources: list[str] = []
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             analyzed_sources.append(request.source)
             if request.uri.endswith("active.py"):
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         active_task = asyncio.create_task(
             queue.analyze(
@@ -297,7 +329,7 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                     source="active",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: None,
             )
         )
@@ -310,7 +342,7 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         source="old-pending",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -322,7 +354,7 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         source="new-pending",
                         version=2,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -334,7 +366,7 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
                         source="waiting",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -357,17 +389,19 @@ def test_pending_request_is_replaceable_while_queue_is_bounded() -> None:
     asyncio.run(scenario())
 
 
-def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
+def test_backpressured_request_cancellation_clears_latest_waiter(monkeypatch) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri.endswith("active.py"):
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         active_task = asyncio.create_task(
             queue.analyze(
@@ -376,7 +410,7 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                     source="active",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: None,
             )
         )
@@ -390,7 +424,7 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                         source="pending",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -402,7 +436,7 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
                         source="cancelled",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -427,17 +461,19 @@ def test_backpressured_request_cancellation_clears_latest_waiter() -> None:
     asyncio.run(scenario())
 
 
-def test_backpressured_request_is_not_published_before_admission() -> None:
+def test_backpressured_request_is_not_published_before_admission(monkeypatch) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri.endswith("active.py"):
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         def submit(uri: str) -> asyncio.Task[LspDocumentState | None]:
             return asyncio.create_task(
@@ -447,7 +483,7 @@ def test_backpressured_request_is_not_published_before_admission() -> None:
                         source="source",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -481,17 +517,21 @@ def test_backpressured_request_is_not_published_before_admission() -> None:
     asyncio.run(scenario())
 
 
-def test_backpressured_request_is_replaced_before_capacity_is_available() -> None:
+def test_backpressured_request_is_replaced_before_capacity_is_available(
+    monkeypatch,
+) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri.endswith("active.py"):
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         def submit(
             uri: str, source: str, version: int
@@ -503,7 +543,7 @@ def test_backpressured_request_is_replaced_before_capacity_is_available() -> Non
                         source=source,
                         version=version,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -537,19 +577,23 @@ def test_backpressured_request_is_replaced_before_capacity_is_available() -> Non
     asyncio.run(scenario())
 
 
-def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
+def test_cancelled_running_analysis_never_commits_and_queue_recovers(
+    monkeypatch,
+) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         committed_versions: list[int | None] = []
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
         uri = "file:///sample.py"
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.version == 1:
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         active_task = asyncio.create_task(
             queue.analyze(
@@ -558,7 +602,7 @@ def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
                     source="cancelled",
                     version=1,
                 ),
-                analyze=analyze,
+                parser="ast",
                 commit=lambda state: committed_versions.append(state.version),
             )
         )
@@ -575,7 +619,7 @@ def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
                 source="recovered",
                 version=2,
             ),
-            analyze=analyze,
+            parser="ast",
             commit=lambda state: committed_versions.append(state.version),
         )
         await queue.close()
@@ -587,11 +631,11 @@ def test_cancelled_running_analysis_never_commits_and_queue_recovers() -> None:
     asyncio.run(scenario())
 
 
-def test_queue_worker_survives_analysis_and_commit_failures() -> None:
+def test_queue_worker_survives_analysis_and_commit_failures(monkeypatch) -> None:
     async def scenario() -> None:
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def fail_analysis(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def fail_analysis(request: DocumentAnalysisRequest) -> LspDocumentState:
             _ = request
             raise ValueError("analysis failed")
 
@@ -604,23 +648,28 @@ def test_queue_worker_survives_analysis_and_commit_failures() -> None:
             source="source",
             version=1,
         )
+        _install_analyzer(monkeypatch, fail_analysis)
         with pytest.raises(ValueError, match="analysis failed"):
             await queue.analyze(
                 request,
-                analyze=fail_analysis,
+                parser="ast",
                 commit=lambda state: None,
             )
 
+        async def succeed(request: DocumentAnalysisRequest) -> LspDocumentState:
+            return _state(request)
+
+        _install_analyzer(monkeypatch, succeed)
         with pytest.raises(RuntimeError, match="commit failed"):
             await queue.analyze(
                 request,
-                analyze=_state,
+                parser="ast",
                 commit=fail_commit,
             )
 
         recovered_state = await queue.analyze(
             request,
-            analyze=_state,
+            parser="ast",
             commit=lambda state: None,
         )
         await queue.close()
@@ -630,17 +679,19 @@ def test_queue_worker_survives_analysis_and_commit_failures() -> None:
     asyncio.run(scenario())
 
 
-def test_close_resolves_backpressured_request_and_latest_waiter() -> None:
+def test_close_resolves_backpressured_request_and_latest_waiter(monkeypatch) -> None:
     async def scenario() -> None:
-        active_started = threading.Event()
-        release_active = threading.Event()
+        active_started = asyncio.Event()
+        release_active = asyncio.Event()
         queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
 
-        def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
             if request.uri.endswith("active.py"):
                 active_started.set()
-                assert release_active.wait(timeout=2)
+                await asyncio.wait_for(release_active.wait(), timeout=2)
             return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
 
         def submit(uri: str) -> asyncio.Task[LspDocumentState | None]:
             return asyncio.create_task(
@@ -650,7 +701,7 @@ def test_close_resolves_backpressured_request_and_latest_waiter() -> None:
                         source="source",
                         version=1,
                     ),
-                    analyze=analyze,
+                    parser="ast",
                     commit=lambda state: None,
                 )
             )
@@ -678,5 +729,125 @@ def test_close_resolves_backpressured_request_and_latest_waiter() -> None:
         finally:
             release_active.set()
             await queue.close()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_close_waits_for_cleanup_after_first_caller_is_cancelled(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cleaning = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
+
+        async def analyze(request: DocumentAnalysisRequest) -> LspDocumentState:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release_cleanup.wait()
+            return _state(request)
+
+        _install_analyzer(monkeypatch, analyze)
+        request = DocumentAnalysisRequest(uri="untitled:close", source="", version=1)
+        active = asyncio.create_task(
+            queue.analyze(request, parser="ast", commit=lambda state: None)
+        )
+        first_close = None
+        second_close = None
+        try:
+            await _wait_until_set(started)
+            first_close = asyncio.create_task(queue.close())
+            await _wait_until_set(cleaning)
+            second_close = asyncio.create_task(queue.close())
+            await asyncio.sleep(0)
+            assert not second_close.done()
+
+            first_close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_close
+            assert not second_close.done()
+            release_cleanup.set()
+            await asyncio.wait_for(second_close, 2)
+            assert await active is None
+            await queue.close()
+            with pytest.raises(RuntimeError, match="queue is closed"):
+                await queue.analyze(request, parser="ast", commit=lambda state: None)
+        finally:
+            release_cleanup.set()
+            await queue.close()
+            await asyncio.gather(
+                active,
+                *([first_close] if first_close is not None else []),
+                *([second_close] if second_close is not None else []),
+                return_exceptions=True,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_unconfirmed_cleanup_fails_queued_and_backpressured_work(monkeypatch) -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        queue = LspAnalysisQueue(worker_count=1, pending_limit=1)
+        executions: list[int | None] = []
+
+        async def analyze(request: DocumentAnalysisRequest) -> Never:
+            executions.append(request.version)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise AnalysisProcessCleanupError(
+                    "controlled cleanup failure"
+                ) from None
+            raise AnalysisProcessCleanupError("unexpected analyzer return")
+
+        _install_analyzer(monkeypatch, analyze)
+
+        def submit(version: int, *, uri: str = "untitled:failed"):
+            return asyncio.create_task(
+                queue.analyze(
+                    DocumentAnalysisRequest(uri=uri, source="", version=version),
+                    parser="ast",
+                    commit=lambda state: pytest.fail("failed cleanup cannot commit"),
+                )
+            )
+
+        old = submit(1)
+        latest = None
+        pending = None
+        waiting = None
+        try:
+            await _wait_until_set(started)
+            pending = submit(1, uri="untitled:pending")
+            await asyncio.sleep(0)
+            waiting = submit(1, uri="untitled:backpressured")
+            await asyncio.sleep(0)
+            latest = submit(2)
+            assert await asyncio.wait_for(old, 2) is None
+            for task in (latest, pending, waiting):
+                with pytest.raises(
+                    AnalysisProcessCleanupError, match="controlled cleanup failure"
+                ):
+                    await asyncio.wait_for(task, 2)
+            with pytest.raises(RuntimeError, match="queue is closed"):
+                await submit(3)
+            assert executions == [1]
+        finally:
+            with pytest.raises(
+                AnalysisProcessCleanupError, match="controlled cleanup failure"
+            ):
+                await queue.close()
+            await asyncio.gather(
+                old,
+                *([latest] if latest is not None else []),
+                *([pending] if pending is not None else []),
+                *([waiting] if waiting is not None else []),
+                return_exceptions=True,
+            )
 
     asyncio.run(scenario())

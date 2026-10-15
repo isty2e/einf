@@ -1,8 +1,9 @@
 import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from .analysis_process import AnalysisProcessCleanupError, LspAnalysisProcess
 from .service import LspDocumentState
 
 
@@ -15,21 +16,31 @@ class DocumentAnalysisRequest:
     version: int | None
 
 
-_AnalyzeDocument = Callable[[DocumentAnalysisRequest], LspDocumentState]
-_CommitDocument = Callable[[LspDocumentState], None]
-
-
 @dataclass(frozen=True, slots=True)
 class _PendingAnalysis:
     request: DocumentAnalysisRequest
     generation: int
-    analyze: _AnalyzeDocument
-    commit: _CommitDocument
+    parser: str
+    commit: Callable[[LspDocumentState], None]
     completion: asyncio.Future[LspDocumentState | None]
+    cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class LspAnalysisQueue:
-    """Bounded URI-keyed queue for replaceable background document analysis."""
+    """Bounded URI-keyed queue with reusable semantic-analysis processes.
+
+    Parameters
+    ----------
+    worker_count : int
+        Positive maximum number of owned worker processes.
+    pending_limit : int
+        Positive maximum number of admitted pending document snapshots.
+
+    Raises
+    ------
+    ValueError
+        Either limit is less than one.
+    """
 
     def __init__(self, *, worker_count: int, pending_limit: int) -> None:
         if worker_count < 1:
@@ -52,15 +63,42 @@ class LspAnalysisQueue:
         self._condition = asyncio.Condition()
         self._worker_tasks: tuple[asyncio.Task[None], ...] = ()
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     async def analyze(
         self,
         request: DocumentAnalysisRequest,
         *,
-        analyze: _AnalyzeDocument,
-        commit: _CommitDocument,
+        parser: str,
+        commit: Callable[[LspDocumentState], None],
     ) -> LspDocumentState | None:
-        """Analyze one snapshot and commit it only while it remains current."""
+        """Analyze one snapshot and commit it only while it remains current.
+
+        Parameters
+        ----------
+        request : DocumentAnalysisRequest
+            Document snapshot; a newer submission replaces work for this URI.
+        parser : str
+            Built-in parser name sent to the isolated worker.
+        commit : Callable[[LspDocumentState], None]
+            Parent-side callback invoked only for a still-current result.
+
+        Returns
+        -------
+        LspDocumentState or None
+            Committed snapshot, or ``None`` after invalidation or shutdown.
+
+        Raises
+        ------
+        RuntimeError
+            The queue is closed or worker execution failed.
+        ValueError
+            The selected parser is unsupported, or the commit callback raises it.
+        Exception
+            The commit callback failed; its original exception is preserved.
+        asyncio.CancelledError
+            The submission was cancelled; running work is signalled for retirement.
+        """
         loop = asyncio.get_running_loop()
         completion: asyncio.Future[LspDocumentState | None] = loop.create_future()
         generation: int | None = None
@@ -85,7 +123,7 @@ class LspAnalysisQueue:
                     await self._condition.wait()
                     if self._closed:
                         _resolve_stale(completion)
-                        return None
+                        return completion.result()
                     if self._generations.get(request.uri) != generation:
                         _resolve_stale(completion)
                         return None
@@ -93,7 +131,7 @@ class LspAnalysisQueue:
                 item = _PendingAnalysis(
                     request=request,
                     generation=generation,
-                    analyze=analyze,
+                    parser=parser,
                     commit=commit,
                     completion=completion,
                 )
@@ -139,42 +177,65 @@ class LspAnalysisQueue:
                 _resolve_stale(completion)
             for (running_uri, _), running in self._running.items():
                 if running_uri == uri:
+                    running.cancelled.set()
                     _resolve_stale(running.completion)
 
             self._condition.notify_all()
             self._discard_generation_if_idle(uri)
 
     async def close(self) -> None:
-        """Invalidate queued work and stop queue worker tasks."""
-        async with self._condition:
-            if self._closed:
-                return
-            self._closed = True
+        """Invalidate work and wait for the shared process-cleanup operation.
 
-            for item in self._pending.values():
-                _resolve_stale(item.completion)
-            for item in self._running.values():
-                _resolve_stale(item.completion)
+        Raises
+        ------
+        AnalysisProcessCleanupError
+            An owned worker could not finish cleanup within its deadline.
+        """
+        async with self._condition:
+            if self._close_task is None:
+                self._closed = True
+
+                for item in self._pending.values():
+                    _resolve_stale(item.completion)
+                for item in self._running.values():
+                    item.cancelled.set()
+                    _resolve_stale(item.completion)
+                for submission in self._latest_submissions.values():
+                    _resolve_stale(submission)
+                for completion in self._latest_completions.values():
+                    _resolve_stale(completion)
+                self._pending.clear()
+                self._latest_submissions.clear()
+                self._latest_completions.clear()
+
+                self._close_task = asyncio.create_task(self._close_workers())
+                self._condition.notify_all()
+            close_task = self._close_task
+
+        await asyncio.shield(close_task)
+
+    async def _close_workers(self) -> None:
+        results = await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+        async with self._condition:
+            self._worker_tasks = ()
+            self._running.clear()
+            self._generations.clear()
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+    async def _fail_cleanup(self, error: AnalysisProcessCleanupError) -> None:
+        async with self._condition:
+            self._closed = True
             for submission in self._latest_submissions.values():
-                _resolve_stale(submission)
-            for completion in self._latest_completions.values():
-                _resolve_stale(completion)
+                if not submission.done():
+                    submission.set_exception(error)
+            for item in self._running.values():
+                item.cancelled.set()
             self._pending.clear()
             self._latest_submissions.clear()
             self._latest_completions.clear()
-
-            worker_tasks = self._worker_tasks
-            self._worker_tasks = ()
             self._condition.notify_all()
-
-        for worker_task in worker_tasks:
-            worker_task.cancel()
-        if worker_tasks:
-            await asyncio.gather(*worker_tasks, return_exceptions=True)
-
-        async with self._condition:
-            self._running.clear()
-            self._generations.clear()
 
     def _ensure_workers(self) -> None:
         if self._worker_tasks:
@@ -188,6 +249,13 @@ class LspAnalysisQueue:
         )
 
     async def _run_worker(self) -> None:
+        process = LspAnalysisProcess()
+        try:
+            await self._work_until_closed(process)
+        finally:
+            await process.close()
+
+    async def _work_until_closed(self, process: LspAnalysisProcess) -> None:
         while True:
             async with self._condition:
                 next_item = self._take_runnable_pending()
@@ -205,9 +273,12 @@ class LspAnalysisQueue:
                 self._condition.notify_all()
 
             try:
-                state = await asyncio.to_thread(item.analyze, item.request)
+                state = await self._analyze_pending(process=process, item=item)
             except asyncio.CancelledError:
                 _resolve_stale(item.completion)
+                raise
+            except AnalysisProcessCleanupError as error:
+                await self._fail_cleanup(error)
                 raise
             except Exception as error:  # noqa: BLE001
                 await self._finish_failure(
@@ -222,6 +293,33 @@ class LspAnalysisQueue:
                     state=state,
                 )
 
+    async def _analyze_pending(
+        self, *, process: LspAnalysisProcess, item: _PendingAnalysis
+    ) -> LspDocumentState | None:
+        if item.cancelled.is_set():
+            return None
+        execution = asyncio.create_task(
+            process.analyze(item.request, parser=item.parser)
+        )
+        interruption = asyncio.create_task(item.cancelled.wait())
+        try:
+            await asyncio.wait(
+                (execution, interruption), return_when=asyncio.FIRST_COMPLETED
+            )
+            if item.cancelled.is_set():
+                execution.cancel()
+                try:
+                    await execution
+                except asyncio.CancelledError:
+                    pass
+                return None
+            return await execution
+        finally:
+            interruption.cancel()
+            if not execution.done():
+                execution.cancel()
+            await asyncio.gather(execution, interruption, return_exceptions=True)
+
     def _take_runnable_pending(self) -> tuple[str, _PendingAnalysis] | None:
         running_uris = {running_uri for running_uri, _ in self._running}
         for uri in self._pending:
@@ -234,7 +332,7 @@ class LspAnalysisQueue:
         *,
         running_key: tuple[str, int],
         item: _PendingAnalysis,
-        state: LspDocumentState,
+        state: LspDocumentState | None,
     ) -> None:
         async with self._condition:
             self._running.pop(running_key, None)
@@ -243,7 +341,7 @@ class LspAnalysisQueue:
                 and self._generations.get(item.request.uri) == item.generation
                 and not item.completion.done()
             )
-            if is_current:
+            if is_current and state is not None:
                 try:
                     item.commit(state)
                 except Exception as error:  # noqa: BLE001
@@ -283,6 +381,9 @@ class LspAnalysisQueue:
             if self._generations.get(uri) != generation:
                 return
             self._generations[uri] = generation + 1
+            for (running_uri, running_generation), running in self._running.items():
+                if running_uri == uri and running_generation == generation:
+                    running.cancelled.set()
             pending = self._pending.pop(uri, None)
             if pending is not None and pending.generation == generation:
                 _resolve_stale(pending.completion)
@@ -296,6 +397,9 @@ class LspAnalysisQueue:
             self._discard_generation_if_idle(uri)
 
     def _supersede_latest_submission(self, uri: str) -> None:
+        for (running_uri, _), running in self._running.items():
+            if running_uri == uri:
+                running.cancelled.set()
         submission = self._latest_submissions.get(uri)
         if submission is not None:
             _resolve_stale(submission)
