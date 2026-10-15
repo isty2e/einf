@@ -1,6 +1,5 @@
 import asyncio
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -20,14 +19,13 @@ from einf.analysis.checkers import (
     CheckerRequest,
     CheckerResult,
 )
+from einf.analysis.lsp import server as lsp_server
+from einf.analysis.lsp.analysis_process import LspAnalysisProcess
 from einf.analysis.lsp.analysis_queue import DocumentAnalysisRequest
 from einf.analysis.lsp.change_debounce import PendingDocumentChange
 from einf.analysis.lsp.checker_coordinator import LspCheckerCoordinator
 from einf.analysis.lsp.server import (
     EinfLanguageServer,
-    _analyze_document_request,
-    _check_document_state,
-    _coerce_initialize_options,
     build_server,
 )
 from einf.analysis.lsp.service import LspDocumentState, LspService
@@ -94,12 +92,8 @@ def _state(request: DocumentAnalysisRequest) -> LspDocumentState:
     )
 
 
-async def _wait_until_set(event: threading.Event) -> None:
-    for _ in range(1_000):
-        if event.is_set():
-            return
-        await asyncio.sleep(0.001)
-    raise AssertionError("worker did not reach the blocking analysis")
+async def _wait_until_set(event: asyncio.Event) -> None:
+    await asyncio.wait_for(event.wait(), timeout=2)
 
 
 async def _run_debounced_change(
@@ -119,7 +113,7 @@ async def _run_debounced_change(
         reported.set()
 
     async def analyze(pending_change: PendingDocumentChange) -> None:
-        await _analyze_document_request(
+        await lsp_server._analyze_document_request(
             server,
             request=DocumentAnalysisRequest(
                 uri=pending_change.uri,
@@ -151,7 +145,7 @@ def test_build_server_returns_language_server() -> None:
 
 
 def test_server_coerces_checker_cleanup_timeout_initialize_option() -> None:
-    options = _coerce_initialize_options(
+    options = lsp_server._coerce_initialize_options(
         {
             "checkerCleanupTimeoutSeconds": 0.5,
         }
@@ -178,7 +172,7 @@ def test_server_shutdown_cancels_pending_debounced_analysis(monkeypatch) -> None
 
         async def analyze(pending_change: PendingDocumentChange) -> None:
             analysis_started.set()
-            await _analyze_document_request(
+            await lsp_server._analyze_document_request(
                 server,
                 request=DocumentAnalysisRequest(
                     uri=pending_change.uri,
@@ -202,29 +196,24 @@ def test_server_shutdown_cancels_pending_debounced_analysis(monkeypatch) -> None
 
 def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> None:
     async def scenario() -> None:
-        stale_started = threading.Event()
-        release_stale = threading.Event()
+        stale_started = asyncio.Event()
+        release_stale = asyncio.Event()
         published_versions: list[int | None] = []
         server = EinfLanguageServer()
         service = server.einf_service
 
-        def analyze_document(
+        async def analyze_document(
+            self: LspAnalysisProcess,
+            request: DocumentAnalysisRequest,
             *,
-            uri: str,
-            source: str,
-            version: int | None,
+            parser: str,
         ) -> LspDocumentState:
-            request = DocumentAnalysisRequest(
-                uri=uri,
-                source=source,
-                version=version,
-            )
-            if version == 1:
+            if request.version == 1:
                 stale_started.set()
-                assert release_stale.wait(timeout=2)
+                await release_stale.wait()
             return _state(request)
 
-        monkeypatch.setattr(service, "analyze_document", analyze_document)
+        monkeypatch.setattr(LspAnalysisProcess, "analyze", analyze_document)
         monkeypatch.setattr(
             server,
             "text_document_publish_diagnostics",
@@ -232,7 +221,7 @@ def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> 
         )
 
         stale_task = asyncio.create_task(
-            _analyze_document_request(
+            lsp_server._analyze_document_request(
                 server,
                 request=DocumentAnalysisRequest(
                     uri="file:///sample.py",
@@ -246,7 +235,7 @@ def test_server_discards_stale_result_before_commit_and_publish(monkeypatch) -> 
         try:
             await _wait_until_set(stale_started)
             latest_task = asyncio.create_task(
-                _analyze_document_request(
+                lsp_server._analyze_document_request(
                     server,
                     request=DocumentAnalysisRequest(
                         uri="file:///sample.py",
@@ -291,16 +280,16 @@ def test_server_reports_debounced_analysis_failure_and_preserves_state(
             version=1,
         )
 
-        def fail_analysis(
+        async def fail_analysis(
+            self: LspAnalysisProcess,
+            request: DocumentAnalysisRequest,
             *,
-            uri: str,
-            source: str,
-            version: int | None,
+            parser: str,
         ) -> LspDocumentState:
-            _ = uri, source, version
+            _ = request, parser
             raise RuntimeError("analysis failed")
 
-        monkeypatch.setattr(service, "analyze_document", fail_analysis)
+        monkeypatch.setattr(LspAnalysisProcess, "analyze", fail_analysis)
         logged, loop_errors = await _run_debounced_change(
             server,
             PendingDocumentChange(uri=uri, source="value = 2\n", version=2),
@@ -411,7 +400,7 @@ def test_server_commits_publishes_and_reports_checker_result_for_current_state(
         monkeypatch.setattr(server, "window_log_message", logged.append)
         monkeypatch.setattr(server, "window_show_message", shown.append)
 
-        checked = await _check_document_state(server, state=state)
+        checked = await lsp_server._check_document_state(server, state=state)
         committed = server.einf_service.get_document_state(uri=state.uri)
         await server.einf_checker_coordinator.close()
 
@@ -485,7 +474,7 @@ def test_server_rejects_checker_result_for_stale_document_state(
         monkeypatch.setattr(server, "window_log_message", logged.append)
         monkeypatch.setattr(server, "window_show_message", shown.append)
 
-        checked = await _check_document_state(server, state=stale_state)
+        checked = await lsp_server._check_document_state(server, state=stale_state)
         committed = server.einf_service.get_document_state(uri=stale_state.uri)
         await server.einf_checker_coordinator.close()
 

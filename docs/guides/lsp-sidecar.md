@@ -67,10 +67,27 @@ truth. The default (and recommended) mode keeps `checkers` empty.
 1. `didOpen` analyzes immediately,
 2. `didChange` events are coalesced briefly so rapid edits analyze only the
    latest document version,
-3. semantic analysis runs in a bounded background worker queue,
+3. semantic analysis runs in a bounded queue backed by two reusable worker
+   processes,
 4. semantic tokens, hover, and inlay hints read the latest cached analysis,
 5. a pending edit is flushed before a semantic-token, hover, or inlay request
    is answered.
+
+A newer analysis request for the same document stops obsolete running analysis
+before reusing its worker slot. Closing a document also stops its analysis.
+Completed requests reuse the worker process; each edit does not start a new
+interpreter. Only the parent sidecar stores results and publishes diagnostics.
+
+Workers use Python's `-P` option so the editor's working directory is not
+implicitly added to their module search path. Explicit interpreter configuration,
+including `PYTHONPATH`, is preserved; this is not a sandbox for configured imports.
+
+Shutdown waits for worker termination and pipe cleanup. Cleanup has a one-second
+deadline per worker, separate from analysis itself: valid analysis has no default
+time limit. If cleanup cannot be confirmed, the sidecar reports an error and stops
+accepting semantic analysis rather than starting more workers. Restart the sidecar
+in that case. Process isolation does not guarantee termination when the operating
+system cannot complete it.
 
 The sidecar also takes a conservative fast path for Python files that contain
 no `einf` lexical marker. Those files produce no `einf` diagnostics or axis

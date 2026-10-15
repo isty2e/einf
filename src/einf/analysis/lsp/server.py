@@ -346,20 +346,13 @@ async def _analyze_document_request(
 ) -> LspDocumentState | None:
     service = ls.einf_service
 
-    def analyze(analysis_request: DocumentAnalysisRequest) -> LspDocumentState:
-        return service.analyze_document(
-            uri=analysis_request.uri,
-            source=analysis_request.source,
-            version=analysis_request.version,
-        )
-
     def commit(state: LspDocumentState) -> None:
         service.commit_document_state(state)
         _publish_document_state(ls, state)
 
     return await ls.einf_analysis_queue.analyze(
         request,
-        analyze=analyze,
+        parser=service.parser,
         commit=commit,
     )
 

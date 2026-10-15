@@ -419,6 +419,31 @@ match the supported native-matmul grammar.
   `signature`, `tensor_types`), but not on concrete `steps`. Nothing in
   the runtime pipeline depends on analysis.
 
+### Isolated LSP analysis
+
+`einf.analysis.lsp.analysis_queue.LspAnalysisQueue` owns document generations,
+pending admission, and parent-side result commits. Its `analyze()` method takes
+`parser="ast"` or `parser="libcst"` instead of a synchronous `analyze=` callback:
+
+```python
+state = await queue.analyze(request, parser="ast", commit=commit_document)
+```
+
+Arbitrary analyzer callbacks are not supported by this queue. Direct synchronous
+analysis remains available through `LspService.analyze_document()`.
+
+`analysis_process.py` owns the reusable child process, private request/result
+pipes, and termination. Queue invalidation signals cancellation; the worker slot
+stays occupied until process cleanup finishes. Worker code cannot commit session
+state or publish LSP messages. Concurrent `close()` callers wait for the same
+cleanup operation.
+
+Workers start with `-P` to avoid implicit imports from the editor's working
+directory. A bootstrap duplicates the response descriptor and redirects stdout
+to stderr before running `site.main()` and importing the worker. Explicit
+`PYTHONPATH`, site-packages, and startup hooks remain enabled; their output does
+not share the response channel.
+
 ## Layering sketch
 
 ```
