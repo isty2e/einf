@@ -73,6 +73,27 @@ Diagnostic scripts under `benchmarks/audit/` and `benchmarks/profile/` may
 define broader task-specific timed regions; their own methodology is
 authoritative.
 
+### Repeat Input Identity
+
+Dynamic library comparisons and expression-parity keep the execution order
+`round -> repeat -> batch`. Before reference evaluation or target materialization,
+each repeated measured batch is checked against its first repeat in that round.
+The check uses a SHA-256 fingerprint of the ordered host arrays' shapes, dtypes,
+strides, and exact contents. A mismatch aborts the case with its round, unit, and
+repeat indices; it is not reported as another timing sample.
+
+Custom factories must return numeric or boolean NumPy arrays and reproduce the
+same input for the same generator state. Output comparison tolerances do not
+apply to input identity: even a one-bit input change can represent a different
+workload. Different rounds may still use different inputs.
+
+Fingerprinting reads every measured input outside the timer when there is more
+than one repeat. It adds host work, not device work or transfers. Contiguous
+arrays are read directly; strided arrays use buffers of at most 16,384 elements.
+Only one digest per measured batch in the current round is retained, not the
+arrays. Single-repeat runs skip this check. These are local consistency checks,
+not evidence that a receipt is authentic.
+
 ## Taxonomy Refactor Performance Gate
 
 Use this gate before closing any non-LSP taxonomy migration ticket that touches

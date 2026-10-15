@@ -25,6 +25,7 @@ from benchmarks.harness import (
 from benchmarks.harness.comparison import compare_paired_timings
 from benchmarks.harness.config import BenchSizes
 from benchmarks.harness.generator import derive_coordinate_seed
+from benchmarks.harness.input_identity import numpy_batch_fingerprint
 from benchmarks.harness.receipt import (
     dynamic_input_units_payload,
     execution_target_payload,
@@ -107,6 +108,8 @@ class ExpressionParityCase:
     batch_factory : BatchFactory
         Generate a tuple of NumPy arrays using a NumPy TensorGenerator.
         The executor, not the factory, materializes target tensors.
+        Repeated generation with the same generator state must preserve shapes,
+        dtypes, strides and exact contents; a mismatch aborts measurement.
     runner_specs : tuple[ExpressionRunnerSpec, ...]
         Strategies and their individual output references.
 
@@ -663,6 +666,7 @@ def _run_dynamic_case(
     observations: list[ExpressionObservation] = []
     realized_units: list[DynamicInputUnit] = []
     for round_index, round_order in enumerate(round_orders):
+        input_fingerprints: list[bytes] = []
         for batch_index in range(config.warmup_batches):
             numpy_batch = make_numpy_batch(
                 round_index=round_index,
@@ -688,11 +692,7 @@ def _run_dynamic_case(
                     round_index=round_index,
                     batch_index=(config.warmup_batches + measured_batch_index),
                 )
-                batch = backend.to_backend_batch(numpy_batch)
-                input_shapes = tuple(
-                    tuple(int(dimension) for dimension in array.shape)
-                    for array in batch
-                )
+                input_shapes = tuple(array.shape for array in numpy_batch)
                 if repeat_index == 0:
                     batch_index = config.warmup_batches + measured_batch_index
                     realized_units.append(
@@ -714,8 +714,23 @@ def _run_dynamic_case(
                     ].input_shapes
                 ):
                     raise RuntimeError(
-                        "expression repeated input produced different shapes"
+                        f"{case.name}: expression repeated input produced different "
+                        f"shapes at round {round_index}, unit {measured_batch_index}, "
+                        f"repeat {repeat_index}"
                     )
+
+                if config.repeats > 1:
+                    fingerprint = numpy_batch_fingerprint(numpy_batch)
+                    if repeat_index == 0:
+                        input_fingerprints.append(fingerprint)
+                    elif fingerprint != input_fingerprints[measured_batch_index]:
+                        raise RuntimeError(
+                            f"{case.name}: expression repeated input changed at "
+                            f"round {round_index}, unit {measured_batch_index}, "
+                            f"repeat {repeat_index} (dtype, layout or contents)"
+                        )
+
+                batch = backend.to_backend_batch(numpy_batch)
                 batch_order = _rotate_order(
                     round_order,
                     offset=(repeat_index * measured_batch_count + measured_batch_index),
