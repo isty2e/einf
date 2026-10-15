@@ -1074,14 +1074,14 @@ def test_reduce_required_scalar_keyword_partial_preserves_tensor_slot() -> None:
 def test_reduce_partial_configuration_is_captured_at_plan_ingress() -> None:
     b, h = axes("partial_snapshot_b", "partial_snapshot_h")
     tensor = np.arange(2 * 2).reshape(2, 2)
-    reducer = partial(np.sum, axis=(1,))
+    reducer = partial(np.max, axis=(1,))
     op = reduce(ax[b, h], ax[b]).reduce_by(reducer)
 
-    assert reducer.keywords is not None
+    assert isinstance(reducer, partial)
     reducer.keywords["axis"] = (0,)
     result = op(tensor)
 
-    np.testing.assert_array_equal(result, np.sum(tensor, axis=1))
+    np.testing.assert_array_equal(result, np.max(tensor, axis=1))
 
 
 def test_reduce_partial_subclass_is_rejected_at_plan_ingress() -> None:
