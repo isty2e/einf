@@ -30,6 +30,7 @@ from benchmarks.harness import (
     dynamic_sizes_for_scale,
 )
 from benchmarks.harness.receipt import (
+    available_library_members,
     dynamic_input_units_payload,
     execution_target_payload,
     paired_evidence_payload,
@@ -530,8 +531,10 @@ def _receipt_payload(
                 ),
                 "validation": validation_coverage_payload(
                     coordinate_source="realized_input_units",
-                    coordinate_count=len(case_result.realized_units),
+                    expected_rounds=config.rounds,
+                    expected_units_per_round=config.batches - config.warmup_batches,
                     expected_executions_per_member_per_coordinate=config.repeats,
+                    expected_members=available_library_members(case_result.runs),
                     execution_identities_by_member={
                         library: tuple(
                             (
@@ -542,9 +545,8 @@ def _receipt_payload(
                             for observation in case_result.evidence.observations
                             if observation.library == library
                         )
-                        for library in ("einf", "einops", "einx")
-                        if any(
-                            observation.library == library
+                        for library in dict.fromkeys(
+                            observation.library
                             for observation in case_result.evidence.observations
                         )
                     },

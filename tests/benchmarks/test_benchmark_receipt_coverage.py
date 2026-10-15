@@ -1,0 +1,546 @@
+import re
+from dataclasses import replace
+from itertools import product
+from typing import Literal, cast
+
+import pytest
+
+pytest.importorskip("numpy")
+
+import benchmarks.compare.einf_einops_einx as fixed_module
+import benchmarks.compare.einf_einops_einx_dynamic as dynamic_module
+import benchmarks.compare.expression_parity as expression_module
+from benchmarks.harness import (
+    AvailableRun,
+    BackendSpec,
+    BenchmarkCase,
+    BenchSizes,
+    CaseCalls,
+    DynamicCaseResult,
+    DynamicShapeWorkload,
+    DynamicTaskConfig,
+    FixedCaseResult,
+    FixedTaskConfig,
+    LibraryTimingObservation,
+    PairedComparison,
+    PairedEvidence,
+    TimingSummary,
+    UnavailableRun,
+)
+from benchmarks.harness.receipt import (
+    available_library_members,
+    validation_coverage_payload,
+)
+from benchmarks.harness.result import DynamicInputUnit
+from benchmarks.harness.types import LibraryName
+
+_Family = Literal["fixed", "dynamic", "expression"]
+
+
+def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
+    identities = list(product(range(2), range(3), range(4)))
+    if defect == "missing_round":
+        identities = [identity for identity in identities if identity[0] == 0]
+    elif defect == "missing_unit":
+        identities = [identity for identity in identities if identity[1] != 2]
+    elif defect == "foreign_round":
+        identities = [
+            (round_index + 1, unit, repeat) for round_index, unit, repeat in identities
+        ]
+    elif defect == "foreign_unit":
+        identities = [
+            (round_index, unit + 1, repeat) for round_index, unit, repeat in identities
+        ]
+    elif defect == "missing_execution":
+        identities.pop()
+    elif defect == "duplicate_execution":
+        identities.append(identities[0])
+    elif defect == "extra_execution":
+        identities.append((0, 0, 4))
+    elif defect == "shifted_execution":
+        identities = [
+            (round_index, unit, repeat + 1) for round_index, unit, repeat in identities
+        ]
+    elif defect == "empty_available":
+        identities = []
+
+    libraries: tuple[LibraryName, ...] = ("einf", "einops")
+    if defect in ("missing_available_member", "missing_run_and_observations"):
+        libraries = ("einf",)
+    elif defect == "missing_baseline_run_and_observations":
+        libraries = ("einops",)
+    elif defect == "foreign_run_and_observations":
+        libraries = ("einf", cast(LibraryName, "foreign"))
+    elif defect == "unavailable_member":
+        libraries = ("einf", "einops", "einx")
+    observations = tuple(
+        LibraryTimingObservation(
+            round_index=round_index,
+            unit_index=unit_index,
+            repeat_index=repeat_index,
+            library=library,
+            order_position=position,
+            latency_ms=1.0 + position,
+        )
+        for round_index, unit_index, repeat_index in reversed(identities)
+        for position, library in enumerate(libraries)
+    )
+    if defect == "incomplete_second_member":
+        observations = observations[:-1]
+    realized_units = tuple(
+        DynamicInputUnit(
+            round_index=round_index,
+            unit_index=unit_index,
+            stream_index=unit_index + 1,
+            seed=round_index * 10 + unit_index,
+            input_shapes=((2,),),
+        )
+        for round_index, unit_index in sorted({identity[:2] for identity in identities})
+    )
+    summary = TimingSummary(
+        count=24,
+        p25_ms=1.0,
+        median_ms=1.0,
+        p75_ms=1.0,
+        iqr_ms=0.0,
+        p95_ms=1.0,
+        mean_ms=1.0,
+        min_ms=1.0,
+        max_ms=1.0,
+    )
+    case = BenchmarkCase(
+        name="coverage",
+        description="Synthetic receipt coverage",
+        calls=CaseCalls(einf="identity()", einops="identity()", einx="identity()"),
+        reference=lambda batch: batch[0],
+        make_einf_runner=lambda: lambda batch: batch[0],
+        make_einops_runner=lambda: lambda batch: batch[0],
+        make_einx_runner=lambda: lambda batch: batch[0],
+    )
+    runs: dict[LibraryName, AvailableRun | UnavailableRun] = {
+        "einf": AvailableRun(summary, (summary, summary)),
+        "einops": AvailableRun(summary, (summary, summary)),
+        "einx": UnavailableRun("not installed"),
+    }
+    orders: list[tuple[LibraryName, ...]] = [("einops", "einf"), ("einf", "einops")]
+    if defect in ("all_unavailable", "missing_status_in_empty_case"):
+        runs = {name: UnavailableRun("not installed") for name in runs}
+        observations = ()
+        realized_units = ()
+        orders = []
+    elif defect == "empty_registry":
+        observations = ()
+        realized_units = ()
+        orders = []
+    elif defect == "all_available":
+        runs["einx"] = AvailableRun(summary, (summary, summary))
+        observations = tuple(
+            replace(observation, library=library, order_position=position)
+            for observation in observations
+            if observation.library == "einf"
+            for position, library in enumerate(("einf", "einops", "einx"))
+        )
+        orders = [("einf", "einops", "einx")] * 2
+    elif defect == "reordered_registry":
+        runs = dict(reversed(tuple(runs.items())))
+
+    observed_order = tuple(dict.fromkeys(item.library for item in observations))
+
+    def corrupt_run_registry() -> None:
+        if defect in ("missing_unavailable_run", "missing_status_in_empty_case"):
+            runs.pop("einx")
+        elif defect == "missing_run_and_observations":
+            runs.pop("einops")
+            orders[:] = [observed_order] * 2
+        elif defect == "missing_baseline_run_and_observations":
+            runs.pop("einf")
+            orders[:] = [observed_order] * 2
+        elif defect == "foreign_run_and_observations":
+            runs[cast(LibraryName, "foreign")] = runs.pop("einops")
+            orders[:] = [observed_order] * 2
+        elif defect == "foreign_unavailable_run":
+            runs[cast(LibraryName, "foreign")] = UnavailableRun("not installed")
+        elif defect == "replaced_unavailable_run":
+            runs[cast(LibraryName, "foreign")] = runs.pop("einx")
+        elif defect == "empty_registry":
+            runs.clear()
+
+    evidence = PairedEvidence(observations=observations, comparisons=())
+    sizes = BenchSizes(b=2, n=2, d=2, h=2, w=2, r=2, j=2)
+    backend = BackendSpec(name="numpy")
+    source: dict[str, str | bool | None] = {"kind": "test"}
+    if family == "fixed":
+        config = FixedTaskConfig(
+            scale="small", seed=7, rounds=2, warmup=1, repeats=3, iterations=4
+        )
+        if defect == "configuration_rounds":
+            config = replace(config, rounds=3)
+        fixed_result = FixedCaseResult(case, runs, orders, evidence)
+        corrupt_run_registry()
+        return fixed_module._receipt_payload(
+            config=config,
+            sizes=sizes,
+            case_results=[fixed_result],
+            backend=backend,
+            einf_source=source,
+        )
+
+    dynamic_config = DynamicTaskConfig(
+        scale="medium",
+        seed=7,
+        rounds=2,
+        batches=4,
+        warmup_batches=1,
+        repeats=4,
+        round_order_seed=11,
+    )
+    if defect == "configuration_rounds":
+        dynamic_config = replace(dynamic_config, rounds=3)
+    if family == "dynamic":
+        workload = DynamicShapeWorkload(
+            sampled_dimensions=(),
+            input_shapes=lambda dimensions: ((dimensions["b"],),),
+            output_shapes=lambda dimensions: ((dimensions["b"],),),
+        ).metadata(sizes=sizes)
+        dynamic_result = DynamicCaseResult(
+            case, workload, realized_units, runs, orders, evidence
+        )
+        corrupt_run_registry()
+        return dynamic_module._receipt_payload(
+            config=dynamic_config,
+            sizes=sizes,
+            case_results=[dynamic_result],
+            workload_comparisons={
+                case.name: workload.compare_to(
+                    workload, scale="medium", reference_scale="medium"
+                )
+            },
+            backend=backend,
+            einf_source=source,
+        )
+
+    strategy_names = {"einf": "target", "einops": "equivalent", "einx": "unavailable"}
+    expression_case = expression_module.ExpressionParityCase(
+        name=case.name,
+        description=case.description,
+        target_name="target",
+        batch_factory=lambda generator: (generator.randn_numpy((2,)),),
+        runner_specs=tuple(
+            expression_module.ExpressionRunnerSpec(
+                name=name,
+                semantics="output_equivalent",
+                description=name,
+                call_repr="identity()",
+                available=name != "unavailable",
+                reason="test",
+                reference=lambda batch: batch[0],
+                make_runner=lambda: lambda batch: batch[0],
+            )
+            for name in strategy_names.values()
+        ),
+    )
+    result = expression_module.ExpressionCaseResult(
+        case=expression_case,
+        realized_units=realized_units,
+        runs={
+            name: expression_module.ExpressionRun(summary, (summary, summary))
+            for name in ("target", "equivalent")
+        },
+        round_orders=[("equivalent", "target"), ("target", "equivalent")],
+        observations=tuple(
+            expression_module.ExpressionObservation(
+                round_index=observation.round_index,
+                unit_index=observation.unit_index,
+                repeat_index=observation.repeat_index,
+                strategy=strategy_names[observation.library],
+                order_position=observation.order_position,
+                latency_ms=observation.latency_ms,
+            )
+            for observation in observations
+        ),
+        comparisons=(
+            PairedComparison(
+                baseline="target",
+                competitor="equivalent",
+                call_pair_count=24,
+                paired_unit_count=6,
+                latency_ratio=2.0,
+                confidence_level=0.95,
+                confidence_interval_low=1.0,
+                confidence_interval_high=3.0,
+                bootstrap_resamples=10,
+                bootstrap_seed=7,
+            ),
+        ),
+    )
+    return expression_module._to_json(
+        expression_module.ExpressionParityReport(
+            title="coverage",
+            configuration=[],
+            methodology=[],
+            case_results=(result,),
+            notes=[],
+        ),
+        backend=backend,
+        config=dynamic_config,
+        einf_source=source,
+    )
+
+
+_EXPRESSION_CONSTRUCTOR_FAILURES = (
+    ("foreign_round", "expression observation references an unknown round"),
+    (
+        "missing_available_member",
+        "expression observations must cover every available strategy",
+    ),
+    (
+        "unavailable_member",
+        "expression observations must cover every available strategy",
+    ),
+    (
+        "empty_available",
+        "expression observations must cover every available strategy",
+    ),
+)
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic"))
+@pytest.mark.parametrize(
+    "defect",
+    (
+        "missing_unavailable_run",
+        "missing_run_and_observations",
+        "missing_baseline_run_and_observations",
+        "foreign_run_and_observations",
+        "foreign_unavailable_run",
+        "replaced_unavailable_run",
+        "empty_registry",
+        "missing_status_in_empty_case",
+    ),
+)
+def test_library_receipt_rejects_incomplete_run_registry(
+    family: _Family, defect: str
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="^library runs must explicitly cover exactly einf, einops, and einx$",
+    ):
+        _serialize(family, defect)
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic"))
+@pytest.mark.parametrize("availability", ("all_available", "reordered_registry"))
+def test_library_receipt_accepts_complete_run_registry(
+    family: _Family, availability: str
+) -> None:
+    payload = _serialize(family, availability)
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+    assert cases[0]["validation"]["members"] == (
+        ["einf", "einops", "einx"]
+        if availability == "all_available"
+        else ["einf", "einops"]
+    )
+
+
+@pytest.mark.parametrize("library", ("einf", "einops", "einx"))
+def test_library_registry_rejects_missing_availability_state(
+    library: LibraryName,
+) -> None:
+    runs: dict[LibraryName, AvailableRun | UnavailableRun] = {
+        name: UnavailableRun("not installed") for name in ("einf", "einops", "einx")
+    }
+    runs[library] = cast(AvailableRun, None)
+
+    with pytest.raises(
+        TypeError,
+        match=f"^library run for '{library}' must be available or unavailable$",
+    ):
+        available_library_members(runs)
+
+
+@pytest.mark.parametrize(
+    ("family", "defect", "message"),
+    [
+        pytest.param(family, defect, message, id=f"{family}-{defect}")
+        for family in ("fixed", "dynamic", "expression")
+        for defect, message in (
+            (
+                "missing_round",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "missing_unit",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "foreign_round",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "foreign_unit",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "missing_execution",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "duplicate_execution",
+                "validation identities for '{member}' must be unique",
+            ),
+            (
+                "extra_execution",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "shifted_execution",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "missing_available_member",
+                "validation members must match available members",
+            ),
+            (
+                "incomplete_second_member",
+                "validation identities for '{second_member}' do not cover every configured execution",
+            ),
+            ("unavailable_member", "validation members must match available members"),
+            ("empty_available", "validation members must match available members"),
+            (
+                "configuration_rounds",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+        )
+        if family != "expression"
+        or defect not in dict(_EXPRESSION_CONSTRUCTOR_FAILURES)
+    ],
+)
+def test_receipt_rejects_incomplete_execution_coverage(
+    family: _Family, defect: str, message: str
+) -> None:
+    expected = message.format(
+        member="target" if family == "expression" else "einf",
+        second_member="equivalent" if family == "expression" else "einops",
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(expected)}$"):
+        _serialize(family, defect)
+
+
+@pytest.mark.parametrize(("defect", "message"), _EXPRESSION_CONSTRUCTOR_FAILURES)
+def test_expression_result_rejects_invalid_coverage_before_serialization(
+    monkeypatch: pytest.MonkeyPatch, defect: str, message: str
+) -> None:
+    def reject_serialization(*args, **kwargs) -> None:
+        pytest.fail("invalid expression result reached serialization")
+
+    monkeypatch.setattr(expression_module, "_to_json", reject_serialization)
+
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _serialize("expression", defect)
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic", "expression"))
+def test_receipt_accepts_complete_reordered_execution_coverage(family: _Family) -> None:
+    payload = _serialize(family)
+    cases = payload["case_results" if family == "expression" else "cases"]
+    assert isinstance(cases, list)
+    validation = cases[0]["validation"]
+    assert validation["coordinate_count"] == 6
+    assert validation["executions_per_member_per_coordinate"] == 4
+    assert validation["members"] == (
+        ["target", "equivalent"] if family == "expression" else ["einf", "einops"]
+    )
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic"))
+def test_receipt_preserves_all_unavailable_case(family: _Family) -> None:
+    payload = _serialize(family, "all_unavailable")
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+    assert cases[0]["validation"]["coordinate_count"] == 0
+    assert cases[0]["validation"]["members"] == []
+
+
+@pytest.mark.parametrize("mask", range(256))
+def test_coverage_admits_only_the_complete_small_execution_grid(mask: int) -> None:
+    grid = tuple(product(range(2), range(2), range(2)))
+    identities = tuple(
+        identity for index, identity in enumerate(grid) if mask & (1 << index)
+    )
+
+    def serialize() -> dict[str, object]:
+        return validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            expected_rounds=2,
+            expected_units_per_round=2,
+            expected_executions_per_member_per_coordinate=2,
+            expected_members=("einf",),
+            execution_identities_by_member={"einf": identities},
+        )
+
+    if mask == 255:
+        assert serialize()["coordinate_count"] == 4
+    else:
+        with pytest.raises(ValueError, match="do not cover every configured execution"):
+            serialize()
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        (-1, 0, 0),
+        (0, -1, 0),
+        (0, 0, -1),
+        (1, 0, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (False, 0, 0),
+        (0, False, 0),
+        (0, 0, False),
+        (0.0, 0, 0),
+        (0, 0.0, 0),
+        (0, 0, 0.0),
+    ),
+)
+def test_coverage_rejects_invalid_grid_indices(identity: tuple[int, int, int]) -> None:
+    with pytest.raises(ValueError, match="outside benchmark configuration"):
+        validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            expected_rounds=1,
+            expected_units_per_round=1,
+            expected_executions_per_member_per_coordinate=1,
+            expected_members=("einf",),
+            execution_identities_by_member={"einf": (identity,)},
+        )
+
+
+@pytest.mark.parametrize("members", (("einf", "einf"), ("einf", "foreign"), ()))
+def test_coverage_rejects_declared_member_mismatch(members: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError, match="members"):
+        validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            expected_rounds=1,
+            expected_units_per_round=1,
+            expected_executions_per_member_per_coordinate=1,
+            expected_members=members,
+            execution_identities_by_member={"einf": ((0, 0, 0),)},
+        )
+
+
+@pytest.mark.parametrize("dimension", ("rounds", "units", "executions"))
+@pytest.mark.parametrize("value", (0, -1, True, 1.0))
+def test_coverage_rejects_invalid_schedule_dimensions(
+    dimension: str, value: int
+) -> None:
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        validation_coverage_payload(
+            coordinate_source="measurement_observations",
+            expected_rounds=value if dimension == "rounds" else 1,
+            expected_units_per_round=value if dimension == "units" else 1,
+            expected_executions_per_member_per_coordinate=value
+            if dimension == "executions"
+            else 1,
+            expected_members=("einf",),
+            execution_identities_by_member={"einf": ((0, 0, 0),)},
+        )

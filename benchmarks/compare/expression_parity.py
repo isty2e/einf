@@ -891,20 +891,28 @@ def _to_json(
                 ),
                 "validation": validation_coverage_payload(
                     coordinate_source="realized_input_units",
-                    coordinate_count=len(case_result.realized_units),
+                    expected_rounds=config.rounds,
+                    expected_units_per_round=config.batches - config.warmup_batches,
                     expected_executions_per_member_per_coordinate=config.repeats,
+                    expected_members=tuple(
+                        spec.name
+                        for spec in case_result.case.runner_specs
+                        if spec.available
+                    ),
                     execution_identities_by_member={
-                        spec.name: tuple(
+                        name: tuple(
                             (
                                 observation.round_index,
                                 observation.unit_index,
                                 observation.repeat_index,
                             )
                             for observation in case_result.observations
-                            if observation.strategy == spec.name
+                            if observation.strategy == name
                         )
-                        for spec in case_result.case.runner_specs
-                        if spec.available
+                        for name in dict.fromkeys(
+                            observation.strategy
+                            for observation in case_result.observations
+                        )
                     },
                 ),
                 "measured_round_start_orders": [
