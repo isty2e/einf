@@ -94,6 +94,21 @@ Only one digest per measured batch in the current round is retained, not the
 arrays. Single-repeat runs skip this check. These are local consistency checks,
 not evidence that a receipt is authentic.
 
+### Failure Cleanup
+
+When an ordinary exception leaves a fixed, dynamic, or expression-parity case,
+its entrypoint clears local variables from completed traceback frames, including
+chained and grouped exceptions. For the built-in output checks, this releases
+harness-held references to inputs, expected arrays, conversion buffers, and timed
+outputs. The original exception, message, notes, cause/context
+links, and source locations remain available, but postmortem inspection of
+completed frame locals does not.
+
+Callback closures, caller-owned references, and tensors explicitly attached to
+user exceptions are outside this cleanup boundary. This does not flush backend
+allocator caches or guarantee a reduction in process memory. Cleanup runs only
+on failure, outside the timed and per-coordinate execution paths.
+
 ## Taxonomy Refactor Performance Gate
 
 Use this gate before closing any non-LSP taxonomy migration ticket that touches

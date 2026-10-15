@@ -7,6 +7,7 @@ import platform
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -35,6 +36,7 @@ from benchmarks.harness.receipt import (
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import Array, NumpyArray, Output, Runner, TorchTensor
 from benchmarks.shared.artifacts import publish_receipt
+from benchmarks.shared.failures import clear_failed_case_frames
 from benchmarks.shared.metadata import (
     einf_source_receipt_metadata,
     require_einf_source_root,
@@ -345,11 +347,11 @@ def generate_expression_numpy_batch(
 
 
 def _validate_output(
+    output: Output,
     *,
     backend: BackendSpec,
     runner_spec: ExpressionRunnerSpec,
     expected: tuple[NumpyArray, ...],
-    output: Output,
 ) -> None:
     backend.validate_output_target(output)
     got = backend.to_numpy_output(output)
@@ -603,6 +605,7 @@ def _find_case(*, sizes: BenchSizes, case_name: str) -> ExpressionParityCase:
     raise ValueError(f"unknown expression parity case: {case_name!r}")
 
 
+@clear_failed_case_frames
 def _run_dynamic_case(
     *,
     case: ExpressionParityCase,
@@ -749,17 +752,12 @@ def _run_dynamic_case(
                     )
                     del reference_batch
 
-                    def validate_output(
-                        output: Output,
-                        runner_spec: ExpressionRunnerSpec = spec,
-                        expected_output: tuple[NumpyArray, ...] = expected,
-                    ) -> None:
-                        _validate_output(
-                            backend=backend,
-                            runner_spec=runner_spec,
-                            expected=expected_output,
-                            output=output,
-                        )
+                    validate_output = partial(
+                        _validate_output,
+                        backend=backend,
+                        runner_spec=spec,
+                        expected=expected,
+                    )
 
                     observations.append(
                         ExpressionObservation(
