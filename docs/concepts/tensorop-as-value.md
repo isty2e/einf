@@ -29,9 +29,15 @@ A `TensorOp` carries:
 
 ## Calls reuse the plan
 
-Planning and lowering happen when the op is built. Subsequent calls
-go through the cached plan; they do not re-parse, re-lower, or
-re-search. That is the warm-path contract.
+Structural planning and lowering happen when the op is built. Calls
+reuse that plan, but may still need runtime specialization for their
+input shapes and backend.
+
+Runtime specialization uses bounded caches. A retained entry is reused;
+an evicted entry must be built again when needed. A shape stream larger
+than the cache can therefore cause repeated specialization. Concurrent
+first calls with the same input shapes and backend may still repeat
+that specialization independently.
 
 ```python
 import numpy as np
@@ -46,9 +52,8 @@ y2 = matmul(np.zeros((7, 3, 4), dtype=np.float32), np.zeros((4, 5), dtype=np.flo
 # Same op, two different batch sizes, one planning pass.
 ```
 
-This is how `einf` can compete on warm-path cost with libraries that
-compile per call: the compilation happens once, then stays out of
-your way.
+Keeping the op alive avoids repeated structural planning. Runtime cache
+hits avoid repeating that specialization.
 
 ## Contrast with string-pattern libraries
 
@@ -62,7 +67,7 @@ shapes).
 | Concern | string-pattern libraries | `einf` |
 | --- | --- | --- |
 | Unit of compilation | call site | op value |
-| Shape variance | parsed or keyed per call | absorbed by one plan |
+| Shape variance | parsed or keyed per call | runtime specializations under one plan |
 | Hoisting out of loops | convention | idiomatic — the type encourages it |
 
 The convention in a string library is to cache the parsed pattern
