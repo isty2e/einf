@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 from itertools import product
 from typing import Literal
@@ -241,30 +242,102 @@ def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
     )
 
 
-@pytest.mark.parametrize("family", ("fixed", "dynamic", "expression"))
-@pytest.mark.parametrize(
-    "defect",
+_EXPRESSION_CONSTRUCTOR_FAILURES = (
+    ("foreign_round", "expression observation references an unknown round"),
     (
-        "missing_round",
-        "missing_unit",
-        "foreign_round",
-        "foreign_unit",
-        "missing_execution",
-        "duplicate_execution",
-        "extra_execution",
-        "shifted_execution",
         "missing_available_member",
-        "incomplete_second_member",
+        "expression observations must cover every available strategy",
+    ),
+    (
         "unavailable_member",
+        "expression observations must cover every available strategy",
+    ),
+    (
         "empty_available",
-        "configuration_rounds",
+        "expression observations must cover every available strategy",
     ),
 )
+
+
+@pytest.mark.parametrize(
+    ("family", "defect", "message"),
+    [
+        pytest.param(family, defect, message, id=f"{family}-{defect}")
+        for family in ("fixed", "dynamic", "expression")
+        for defect, message in (
+            (
+                "missing_round",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "missing_unit",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "foreign_round",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "foreign_unit",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "missing_execution",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+            (
+                "duplicate_execution",
+                "validation identities for '{member}' must be unique",
+            ),
+            (
+                "extra_execution",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "shifted_execution",
+                "validation identities for '{member}' are outside benchmark configuration",
+            ),
+            (
+                "missing_available_member",
+                "validation members must match available members",
+            ),
+            (
+                "incomplete_second_member",
+                "validation identities for '{second_member}' do not cover every configured execution",
+            ),
+            ("unavailable_member", "validation members must match available members"),
+            ("empty_available", "validation members must match available members"),
+            (
+                "configuration_rounds",
+                "validation identities for '{member}' do not cover every configured execution",
+            ),
+        )
+        if family != "expression"
+        or defect not in dict(_EXPRESSION_CONSTRUCTOR_FAILURES)
+    ],
+)
 def test_receipt_rejects_incomplete_execution_coverage(
-    family: _Family, defect: str
+    family: _Family, defect: str, message: str
 ) -> None:
-    with pytest.raises(ValueError):
+    expected = message.format(
+        member="target" if family == "expression" else "einf",
+        second_member="equivalent" if family == "expression" else "einops",
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(expected)}$"):
         _serialize(family, defect)
+
+
+@pytest.mark.parametrize(("defect", "message"), _EXPRESSION_CONSTRUCTOR_FAILURES)
+def test_expression_result_rejects_invalid_coverage_before_serialization(
+    monkeypatch: pytest.MonkeyPatch, defect: str, message: str
+) -> None:
+    def reject_serialization(*args, **kwargs) -> None:
+        pytest.fail("invalid expression result reached serialization")
+
+    monkeypatch.setattr(expression_module, "_to_json", reject_serialization)
+
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _serialize("expression", defect)
 
 
 @pytest.mark.parametrize("family", ("fixed", "dynamic", "expression"))
