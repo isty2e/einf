@@ -6,6 +6,8 @@ from typing import Self
 from einf.analysis.checkers import SUPPORTED_CHECKER_NAMES, CheckerExecutionPolicy
 from einf.analysis.parser import SUPPORTED_PARSER_NAMES
 
+from .analysis_limits import LspAnalysisLimits
+
 InitializeOptionValue = str | int | float | Sequence[str] | None
 InitializeOptions = Mapping[str, InitializeOptionValue]
 
@@ -18,6 +20,17 @@ class LspConfig:
     language server and leaves ``checkers`` empty. Configured checkers act as a
     fallback single-server mode for editors that cannot comfortably host a
     separate Python checker server.
+
+    Parameters
+    ----------
+    parser : str, optional
+        Semantic parser name, normally ``ast`` or ``libcst``.
+    checkers : tuple[str, ...], optional
+        External checkers enabled on saved-file boundaries.
+    checker_execution_policy : CheckerExecutionPolicy, optional
+        Independent process and output bounds for external checkers.
+    analysis_limits : LspAnalysisLimits, optional
+        Opt-in limits on logical semantic-analysis source captures.
     """
 
     parser: str = "ast"
@@ -25,13 +38,30 @@ class LspConfig:
     checker_execution_policy: CheckerExecutionPolicy = field(
         default_factory=CheckerExecutionPolicy
     )
+    analysis_limits: LspAnalysisLimits = field(default_factory=LspAnalysisLimits)
 
     @classmethod
     def from_initialize_options(
         cls,
         initialize_options: InitializeOptions | None,
     ) -> Self:
-        """Build one canonical sidecar config from LSP initialize options."""
+        """Build a session configuration from LSP initialize options.
+
+        Parameters
+        ----------
+        initialize_options : InitializeOptions or None
+            Editor options. Missing or null analysis limits remain unrestricted.
+
+        Returns
+        -------
+        Self
+            Normalized parser, checker and analysis policies.
+
+        Raises
+        ------
+        ValueError
+            An explicit analysis limit is not a positive built-in integer or null.
+        """
         if initialize_options is None:
             return cls()
 
@@ -84,7 +114,27 @@ class LspConfig:
                 max_diagnostics=max_diagnostics,
                 max_field_length=max_field_length,
             ),
+            analysis_limits=LspAnalysisLimits(
+                max_documents=_optional_limit(
+                    initialize_options, "analysisMaxDocuments"
+                ),
+                max_document_bytes=_optional_limit(
+                    initialize_options, "analysisMaxDocumentBytes"
+                ),
+                max_source_bytes=_optional_limit(
+                    initialize_options, "analysisMaxSourceBytes"
+                ),
+            ),
         )
+
+
+def _optional_limit(options: InitializeOptions, name: str) -> int | None:
+    value = options.get(name)
+    if value is None:
+        return None
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{name} must be a positive integer or null")
+    return value
 
 
 def _positive_float(value: InitializeOptionValue, *, default: float) -> float:

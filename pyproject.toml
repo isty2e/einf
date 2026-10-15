@@ -95,6 +95,7 @@ exclude = [
   "src/einf/analysis/lsp/server.py",
   "tests/analysis/test_analysis_lsp_position_encoding.py",
   "tests/analysis/test_analysis_lsp_server.py",
+  "tests/analysis/test_analysis_lsp_resource_limits.py",
   "tests/analysis/test_conformance_analysis_lsp.py",
   "tests/analysis/test_pyright_lsp_positions.py",
   # Checked by the optional PyTorch integration job.
@@ -118,6 +119,7 @@ project-excludes = [
   "src/einf/analysis/lsp/server.py",
   "tests/analysis/test_analysis_lsp_position_encoding.py",
   "tests/analysis/test_analysis_lsp_server.py",
+  "tests/analysis/test_analysis_lsp_resource_limits.py",
   "tests/analysis/test_conformance_analysis_lsp.py",
   "tests/analysis/test_pyright_lsp_positions.py",
   "tests/integration/test_array_api_contract_einop_execution.py",

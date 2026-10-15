@@ -158,6 +158,7 @@ jobs:
           src/einf/analysis/lsp/semantic_tokens.py
           tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
+          tests/analysis/test_analysis_lsp_resource_limits.py
           tests/analysis/test_conformance_analysis_lsp.py
           tests/analysis/test_pyright_lsp_positions.py
           tests/benchmarks/test_benchmark_lsp_latency.py
@@ -168,6 +169,7 @@ jobs:
           tests/analysis/test_analysis_lsp_debounce.py
           tests/analysis/test_analysis_lsp_position_encoding.py
           tests/analysis/test_analysis_lsp_server.py
+          tests/analysis/test_analysis_lsp_resource_limits.py
           tests/analysis/test_conformance_analysis.py
           tests/analysis/test_conformance_analysis_lsp.py
           tests/analysis/test_pyright_lsp_positions.py

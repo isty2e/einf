@@ -3,6 +3,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from .analysis_limits import LspSourceReservation
 from .analysis_process import AnalysisProcessCleanupError, LspAnalysisProcess
 from .service import LspDocumentState
 
@@ -23,6 +24,7 @@ class _PendingAnalysis:
     parser: str
     commit: Callable[[LspDocumentState], None]
     completion: asyncio.Future[LspDocumentState | None]
+    source_reservation: LspSourceReservation | None = None
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -72,6 +74,7 @@ class LspAnalysisQueue:
         *,
         parser: str,
         commit: Callable[[LspDocumentState], None],
+        source_reservation: LspSourceReservation | None = None,
     ) -> LspDocumentState | None:
         """Analyze one snapshot and commit it only while it remains current.
 
@@ -83,6 +86,9 @@ class LspAnalysisQueue:
             Built-in parser name sent to the isolated worker.
         commit : Callable[[LspDocumentState], None]
             Parent-side callback invoked only for a still-current result.
+        source_reservation : LspSourceReservation or None, optional
+            Borrowed accounting token for this capture. The queue retains an
+            owner while waiting, pending or running, even after stale delivery.
 
         Returns
         -------
@@ -103,6 +109,9 @@ class LspAnalysisQueue:
         loop = asyncio.get_running_loop()
         completion: asyncio.Future[LspDocumentState | None] = loop.create_future()
         generation: int | None = None
+        if source_reservation is not None:
+            source_reservation.retain()
+        installed = False
 
         try:
             async with self._condition:
@@ -124,6 +133,7 @@ class LspAnalysisQueue:
                 previous_pending = self._pending.pop(request.uri, None)
                 if previous_pending is not None:
                     _resolve_stale(previous_pending.completion)
+                    _release_source(previous_pending)
 
                 while len(self._pending) >= self._pending_limit:
                     await self._condition.wait()
@@ -140,8 +150,10 @@ class LspAnalysisQueue:
                     parser=parser,
                     commit=commit,
                     completion=completion,
+                    source_reservation=source_reservation,
                 )
                 self._pending[request.uri] = item
+                installed = True
                 self._latest_completions[request.uri] = completion
                 self._condition.notify()
 
@@ -152,6 +164,9 @@ class LspAnalysisQueue:
                     self._cancel_generation(uri=request.uri, generation=generation)
                 )
             raise
+        finally:
+            if not installed and source_reservation is not None:
+                source_reservation.release()
 
     async def wait_for_latest(self, *, uri: str) -> LspDocumentState | None:
         """Wait for the latest queued or running analysis for one URI."""
@@ -166,6 +181,7 @@ class LspAnalysisQueue:
                 replacement = self._latest_completions.get(uri)
             if replacement is None or replacement is completion:
                 return state
+            del state
 
     async def cancel(self, *, uri: str) -> None:
         """Invalidate pending and running analysis for one document URI."""
@@ -174,6 +190,7 @@ class LspAnalysisQueue:
             pending = self._pending.pop(uri, None)
             if pending is not None:
                 _resolve_stale(pending.completion)
+                _release_source(pending)
 
             submission = self._latest_submissions.pop(uri, None)
             if submission is not None:
@@ -203,6 +220,7 @@ class LspAnalysisQueue:
 
                 for item in self._pending.values():
                     _resolve_stale(item.completion)
+                    _release_source(item)
                 for item in self._running.values():
                     item.cancelled.set()
                     _resolve_stale(item.completion)
@@ -224,6 +242,8 @@ class LspAnalysisQueue:
         results = await asyncio.gather(*self._worker_tasks, return_exceptions=True)
         async with self._condition:
             self._worker_tasks = ()
+            for item in self._running.values():
+                _release_source(item)
             self._running.clear()
             self._generations.clear()
         for result in results:
@@ -240,6 +260,8 @@ class LspAnalysisQueue:
                     submission.set_exception(error)
             for item in self._running.values():
                 item.cancelled.set()
+            for item in self._pending.values():
+                _release_source(item)
             self._pending.clear()
             self._latest_submissions.clear()
             self._latest_completions.clear()
@@ -280,6 +302,7 @@ class LspAnalysisQueue:
                 self._running[running_key] = item
                 self._condition.notify_all()
 
+            state = None
             try:
                 state = await self._analyze_pending(process=process, item=item)
             except asyncio.CancelledError:
@@ -300,6 +323,8 @@ class LspAnalysisQueue:
                     item=item,
                     state=state,
                 )
+            finally:
+                del state, item, next_item
 
     async def _analyze_pending(
         self, *, process: LspAnalysisProcess, item: _PendingAnalysis
@@ -360,6 +385,7 @@ class LspAnalysisQueue:
                 _resolve_stale(item.completion)
 
             self._complete_generation(item)
+            _release_source(item)
             self._condition.notify_all()
 
     async def _finish_failure(
@@ -382,6 +408,7 @@ class LspAnalysisQueue:
                 _resolve_stale(item.completion)
 
             self._complete_generation(item)
+            _release_source(item)
             self._condition.notify_all()
 
     async def _cancel_generation(self, *, uri: str, generation: int) -> None:
@@ -395,6 +422,7 @@ class LspAnalysisQueue:
             pending = self._pending.pop(uri, None)
             if pending is not None and pending.generation == generation:
                 _resolve_stale(pending.completion)
+                _release_source(pending)
             submission = self._latest_submissions.pop(uri, None)
             if submission is not None:
                 _resolve_stale(submission)
@@ -429,6 +457,11 @@ class LspAnalysisQueue:
             and uri not in self._latest_completions
         ):
             self._generations.pop(uri, None)
+
+
+def _release_source(item: _PendingAnalysis) -> None:
+    if item.source_reservation is not None:
+        item.source_reservation.release()
 
 
 def _resolve_stale(

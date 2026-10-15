@@ -438,6 +438,24 @@ stays occupied until process cleanup finishes. Worker code cannot commit session
 state or publish LSP messages. Concurrent `close()` callers wait for the same
 cleanup operation.
 
+`analysis_limits.py` owns the opt-in logical-source budget. The transport uses
+one reservation per admitted capture and shares it through debounce, queue
+admission and current results. Reservations contain accounting metadata, not
+source text. See [analysis limits](../guides/lsp-sidecar.md#optional-analysis-limits)
+for the configured resources and exclusions.
+
+Direct `LspService` calls remain unrestricted. Low-level queue callers may pass
+`source_reservation=` to `analyze()`; it is borrowed, and the queue retains its
+own reference until waiting, pending or running work relinquishes the capture.
+The caller releases its reference independently. Without a reservation, the
+queue keeps its existing worker and pending-count bounds only.
+
+`PendingDocumentChange` accepts the same optional reservation. Scheduling borrows
+it, but `take_pending()` transfers an additional reference to its caller, which
+must release it after the flush. Cancellation and shutdown release task-owned
+references only after the tasks terminate. Existing callers that do not supply
+reservations need no changes.
+
 Workers start with `-P` to avoid implicit imports from the editor's working
 directory. A bootstrap duplicates the response descriptor and redirects stdout
 to stderr before running `site.main()` and importing the worker. Explicit
