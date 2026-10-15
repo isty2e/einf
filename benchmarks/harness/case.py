@@ -65,7 +65,19 @@ class DynamicCaseSpec:
         generator: TensorGenerator,
         /,
     ) -> tuple[NumpyArray, ...]:
-        """Generate one standard-normal NumPy batch from the shape workload."""
+        """Generate one standard-normal NumPy batch from the shape workload.
+
+        Parameters
+        ----------
+        generator : TensorGenerator
+            Source of dimensions and values for this input unit.
+
+        Returns
+        -------
+        tuple[NumpyArray, ...]
+            Fresh host inputs. Overrides must reproduce shapes, dtypes, strides
+            and exact contents for the same generator state across repeats.
+        """
         input_shapes = self.workload.draw_input_shapes(
             sizes=self.sizes,
             generator=generator,

@@ -7,6 +7,7 @@ from .case import BenchmarkCase, DynamicCaseSpec, FixedCaseSpec, RunnerFactory
 from .comparison import compare_library_timings
 from .config import DynamicTaskConfig, FixedTaskConfig
 from .generator import TensorGenerator, derive_coordinate_seed
+from .input_identity import numpy_batch_fingerprint
 from .profiler import Profiler
 from .result import (
     AvailableRun,
@@ -410,6 +411,7 @@ class BenchmarkRunner:
         observations: list[LibraryTimingObservation] = []
         realized_units: list[DynamicInputUnit] = []
         for round_index, round_order in enumerate(round_orders):
+            input_fingerprints: list[bytes] = []
             for stream_index in range(config.warmup_batches):
                 numpy_batch = self._make_dynamic_numpy_batch(
                     case_spec=case_spec,
@@ -463,8 +465,22 @@ class BenchmarkRunner:
                         ].input_shapes
                     ):
                         raise RuntimeError(
-                            "dynamic repeated input produced different shapes"
+                            f"{case.name}: dynamic repeated input produced different "
+                            f"shapes at round {round_index}, unit {unit_index}, "
+                            f"repeat {repeat_index}"
                         )
+
+                    if config.repeats > 1:
+                        fingerprint = numpy_batch_fingerprint(numpy_batch)
+                        if repeat_index == 0:
+                            input_fingerprints.append(fingerprint)
+                        elif fingerprint != input_fingerprints[unit_index]:
+                            raise RuntimeError(
+                                f"{case.name}: dynamic repeated input changed at "
+                                f"round {round_index}, unit {unit_index}, "
+                                f"repeat {repeat_index} (dtype, layout or contents)"
+                            )
+
                     reference_batch = tuple(array.copy() for array in numpy_batch)
                     expected = tuple(
                         array.copy()
