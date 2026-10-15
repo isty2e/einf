@@ -796,9 +796,12 @@ def test_symbolic_plan_specialization_retries_after_later_step_failure(
         backend_profile=None,
     )
 
-    with pytest.raises(
-        ValueError, match="controlled specialization failure|arity drift"
-    ):
+    expected_message = {
+        "exception": "controlled specialization failure",
+        "input_arity": "input arity drift",
+        "output_arity": "output arity drift",
+    }[failure]
+    with pytest.raises(ValueError, match=expected_message):
         plan.specialize(context)
 
     assert plan._runtime.runtime_steps.get(context) is None

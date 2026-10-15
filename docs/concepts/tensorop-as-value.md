@@ -36,8 +36,8 @@ input shapes and backend.
 Runtime specialization uses bounded caches. A retained entry is reused;
 an evicted entry must be built again when needed. A shape stream larger
 than the cache can therefore cause repeated specialization. Concurrent
-first calls may also build the same missing entry independently: cold
-construction is not guaranteed to happen exactly once per key.
+first calls with the same input shapes and backend may still repeat
+that specialization independently.
 
 ```python
 import numpy as np
@@ -53,7 +53,7 @@ y2 = matmul(np.zeros((7, 3, 4), dtype=np.float32), np.zeros((4, 5), dtype=np.flo
 ```
 
 Keeping the op alive avoids repeated structural planning. Runtime cache
-hits also avoid rebuilding specialized steps and runners.
+hits avoid repeating that specialization.
 
 ## Contrast with string-pattern libraries
 

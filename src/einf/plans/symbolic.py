@@ -151,7 +151,7 @@ class SymbolicPlan:
         Parameters
         ----------
         context : RuntimeSpecializationContext
-            Input shapes and backend identity used for specialization.
+            Input shapes and backend profile used for specialization.
 
         Returns
         -------
