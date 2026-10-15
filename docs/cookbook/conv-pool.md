@@ -26,9 +26,9 @@ Window of size `k=4`, stride `k`. Split the long time axis into
 `(t * k)`, then reduce the window axis.
 
 ```python
-split_1d  = rearrange(ax[b, (t * k), c], ax[b, t, k, c]).with_sizes(k=4)
+split_1d = rearrange(ax[b, (t * k), c], ax[b, t, k, c]).with_sizes(k=4)
 pool_mean = reduce(ax[b, t, k, c], ax[b, t, c]).reduce_by("mean")
-pool_max  = reduce(ax[b, t, k, c], ax[b, t, c]).reduce_by("max")
+pool_max = reduce(ax[b, t, k, c], ax[b, t, c]).reduce_by("max")
 ```
 
 ### Quick test
@@ -49,12 +49,10 @@ This is the einops idiom
 a signature pair and a single reduction:
 
 ```python
-split_2d  = rearrange(
-    ax[b, c, (h * h1), (w * w1)], ax[b, c, h, w, h1, w1]
-).with_sizes(h1=2, w1=2)
-pool_mean_2d = reduce(
-    ax[b, c, h, w, h1, w1], ax[b, c, h, w]
-).reduce_by("mean")
+split_2d = rearrange(ax[b, c, (h * h1), (w * w1)], ax[b, c, h, w, h1, w1]).with_sizes(
+    h1=2, w1=2
+)
+pool_mean_2d = reduce(ax[b, c, h, w, h1, w1], ax[b, c, h, w]).reduce_by("mean")
 ```
 
 ### Quick test
@@ -76,14 +74,14 @@ the window and channel axes after the same unfold:
 
 ```python
 split_1d = rearrange(ax[b, (t * k), c], ax[b, t, k, c]).with_sizes(k=4)
-conv_op  = einop((ax[b, t, k, c], ax[k, c, co]), ax[b, t, co])
+conv_op = einop((ax[b, t, k, c], ax[k, c, co]), ax[b, t, co])
 ```
 
 ### Quick test
 
 ```python
-x = np.random.randn(2, 16, 8).astype(np.float32)    # b, t*k=16, c=8
-W = np.random.randn(4, 8, 12).astype(np.float32)    # k=4, c=8, co=12
+x = np.random.randn(2, 16, 8).astype(np.float32)  # b, t*k=16, c=8
+W = np.random.randn(4, 8, 12).astype(np.float32)  # k=4, c=8, co=12
 
 conv_op(split_1d(x), W).shape
 # (2, 4, 12)

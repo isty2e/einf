@@ -21,10 +21,10 @@ v, d, b, t, k = axes("v", "d", "b", "t", "k")
 ## Unbatched gather (embedding lookup)
 
 ```python
-W   = np.random.randn(100, 16).astype(np.float32)   # (V=100, d=16)
-ids = np.array([3, 7, 42, 11, 5])                   # (t=5,)
+W = np.random.randn(100, 16).astype(np.float32)  # (V=100, d=16)
+ids = np.array([3, 7, 42, 11, 5])  # (t=5,)
 
-emb = W[ids]                                        # (t, d)
+emb = W[ids]  # (t, d)
 ```
 
 The gather step is fancy indexing — host-library territory. What
@@ -43,10 +43,10 @@ When the index array itself has a batch dim, fancy indexing broadcasts
 the gather across it:
 
 ```python
-W   = np.random.randn(100, 16).astype(np.float32)   # (V, d)
-ids = np.random.randint(0, 100, size=(4, 7))        # (b, t)
+W = np.random.randn(100, 16).astype(np.float32)  # (V, d)
+ids = np.random.randint(0, 100, size=(4, 7))  # (b, t)
 
-emb = W[ids]                                        # (b, t, d)
+emb = W[ids]  # (b, t, d)
 ```
 
 No einf in the gather, but the result carries a `(b, t, d)` signature
@@ -54,7 +54,7 @@ and the next step is a named-axis einop. For example, score each
 token against a per-batch query vector:
 
 ```python
-q     = np.random.randn(4, 16).astype(np.float32)   # (b, d)
+q = np.random.randn(4, 16).astype(np.float32)  # (b, d)
 score = einop((ax[b, t, d], ax[b, d]), ax[b, t])
 
 scores = score(emb, q)
@@ -72,11 +72,11 @@ matrix, the index tensor has shape `(b, k)` and is paired with an
 explicit batch-index broadcast:
 
 ```python
-x   = np.random.randn(3, 20, 8).astype(np.float32)  # (b, n, d)
-idx = np.random.randint(0, 20, size=(3, 4))         # (b, k)
+x = np.random.randn(3, 20, 8).astype(np.float32)  # (b, n, d)
+idx = np.random.randint(0, 20, size=(3, 4))  # (b, k)
 
-bidx = np.arange(3)[:, None]          # (b, 1) — lines up against idx
-y    = x[bidx, idx]                   # (b, k, d)
+bidx = np.arange(3)[:, None]  # (b, 1) — lines up against idx
+y = x[bidx, idx]  # (b, k, d)
 ```
 
 Downstream einf is unchanged by the gather:
@@ -94,11 +94,11 @@ need every step to be an `einf` op), you can reach the same result by
 multiplying a one-hot matrix against the embedding table:
 
 ```python
-W   = np.random.randn(50, 16).astype(np.float32)   # (V, d)
-ids = np.random.randint(0, 50, size=(2, 5))        # (b, t)
+W = np.random.randn(50, 16).astype(np.float32)  # (V, d)
+ids = np.random.randint(0, 50, size=(2, 5))  # (b, t)
 
-one_hot = np.eye(50, dtype=np.float32)[ids]        # (b, t, V)
-lookup  = einop((ax[b, t, v], ax[v, d]), ax[b, t, d])
+one_hot = np.eye(50, dtype=np.float32)[ids]  # (b, t, V)
+lookup = einop((ax[b, t, v], ax[v, d]), ax[b, t, d])
 
 emb = lookup(one_hot, W)
 # emb.shape == (2, 5, 16)

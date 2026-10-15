@@ -80,8 +80,10 @@ opt in; you just keep a reference.
 # good: one-time construction
 REDUCE_BD = reduce(ax[b, n, d], ax[b, d])
 
+
 def forward(x):
     return REDUCE_BD(x)
+
 
 # avoid: cold construction per call
 def slow_forward(x):
@@ -104,9 +106,9 @@ from einf import ax, axes, reduce
 
 b, n, d = axes("b", "n", "d")
 
-base = reduce(ax[b, n, d], ax[b, d])       # sum by default
-mean = base.reduce_by("mean")              # a different TensorOp
-mx   = base.reduce_by(np.max)              # another one
+base = reduce(ax[b, n, d], ax[b, d])  # sum by default
+mean = base.reduce_by("mean")  # a different TensorOp
+mx = base.reduce_by(np.max)  # another one
 ```
 
 `with_sizes` and `reduce_by` compose; each returns a fully-formed op
@@ -125,14 +127,18 @@ from einf import ReducibleTensorOp, TensorLike, TensorOp
 
 T = TypeVar("T", bound=TensorLike)
 
+
 def apply(op: TensorOp[[T], T], tensor: T) -> T:
     return op(tensor)
+
 
 def apply_binary(op: TensorOp[[T, T], T], left: T, right: T) -> T:
     return op(left, right)
 
+
 def split(op: TensorOp[[T], tuple[T, T]], tensor: T) -> tuple[T, T]:
     return op(tensor)
+
 
 def apply_mean(op: ReducibleTensorOp[[T], T], tensor: T) -> T:
     return op.reduce_by("mean")(tensor)

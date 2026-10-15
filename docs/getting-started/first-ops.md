@@ -232,8 +232,10 @@ loops and reuse the op across calls.
 # good: one-time construction
 REDUCE_BD = reduce(ax[b, n, d], ax[b, d])
 
+
 def forward(x):
     return REDUCE_BD(x)
+
 
 # avoid: cold construction per call
 def slow_forward(x):

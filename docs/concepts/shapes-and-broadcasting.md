@@ -110,10 +110,10 @@ from einf import ax, axes, einop
 b, n, d, m = axes("b", "n", "d", "m")
 matmul = einop((ax[b, n, d], ax[d, m]), ax[b, n, m])
 
-matmul(np.zeros((2, 3, 4), dtype=np.float32),
-       np.zeros((4, 5),    dtype=np.float32)).shape       # numpy
-matmul(torch.zeros(2, 3, 4),
-       torch.zeros(4, 5)).shape                           # torch
+matmul(
+    np.zeros((2, 3, 4), dtype=np.float32), np.zeros((4, 5), dtype=np.float32)
+).shape  # numpy
+matmul(torch.zeros(2, 3, 4), torch.zeros(4, 5)).shape  # torch
 ```
 
 ## Broadcasting, in a named-axis world
@@ -131,6 +131,7 @@ b, c, n = axes("b", "c", "n")
 broadcast = repeat(ax[b, c], ax[b, c, n]).with_sizes(n=5)
 
 import numpy as np
+
 broadcast(np.ones((2, 3), dtype=np.float32)).shape  # (2, 3, 5)
 ```
 
@@ -145,7 +146,7 @@ b, c, n = axes("b", "c", "n")
 # A per-batch, per-channel scale multiplied into every n step.
 apply = einop((ax[b, c, n], ax[b, c]), ax[b, c, n])
 
-x  = np.ones((2, 3, 4), dtype=np.float32)
+x = np.ones((2, 3, 4), dtype=np.float32)
 sc = np.full((2, 3), 2.0, dtype=np.float32)
 apply(x, sc).shape  # (2, 3, 4); each element doubled
 ```

@@ -14,6 +14,7 @@ from einf import ax, axes, einop, rearrange
 
 b, t, s, d, dh, h = axes("b", "t", "s", "d", "dh", "h")
 
+
 def softmax_over_last(x: np.ndarray) -> np.ndarray:
     m = x.max(axis=-1, keepdims=True)
     e = np.exp(x - m)
@@ -25,8 +26,8 @@ def softmax_over_last(x: np.ndarray) -> np.ndarray:
 ```python
 def attention_single(x, Wq, Wk, Wv):
     project = einop((ax[b, t, d], ax[d, dh]), ax[b, t, dh])
-    score   = einop((ax[b, t, dh], ax[b, s, dh]), ax[b, t, s])
-    apply_  = einop((ax[b, t, s], ax[b, s, dh]), ax[b, t, dh])
+    score = einop((ax[b, t, dh], ax[b, s, dh]), ax[b, t, s])
+    apply_ = einop((ax[b, t, s], ax[b, s, dh]), ax[b, t, dh])
 
     Q, K, V = project(x, Wq), project(x, Wk), project(x, Wv)
     scale = 1.0 / np.sqrt(Q.shape[-1])
@@ -37,7 +38,7 @@ def attention_single(x, Wq, Wk, Wv):
 ### Quick test
 
 ```python
-x  = np.random.randn(2, 5, 16).astype(np.float32)
+x = np.random.randn(2, 5, 16).astype(np.float32)
 Wq = np.random.randn(16, 8).astype(np.float32)
 Wk = np.random.randn(16, 8).astype(np.float32)
 Wv = np.random.randn(16, 8).astype(np.float32)
@@ -58,16 +59,16 @@ def attention_multihead(x, Wq, Wk, Wv, Wo, n_heads):
     merge_heads = rearrange(ax[b, h, t, dh], ax[b, t, (h * dh)])
 
     project_io = einop((ax[b, t, d], ax[d, d]), ax[b, t, d])
-    score_mh   = einop((ax[b, h, t, dh], ax[b, h, s, dh]), ax[b, h, t, s])
-    apply_mh   = einop((ax[b, h, t, s], ax[b, h, s, dh]), ax[b, h, t, dh])
+    score_mh = einop((ax[b, h, t, dh], ax[b, h, s, dh]), ax[b, h, t, s])
+    apply_mh = einop((ax[b, h, t, s], ax[b, h, s, dh]), ax[b, h, t, dh])
 
     Q = split_heads(project_io(x, Wq))
     K = split_heads(project_io(x, Wk))
     V = split_heads(project_io(x, Wv))
 
-    raw  = score_mh(Q, K) / np.sqrt(Q.shape[-1])
+    raw = score_mh(Q, K) / np.sqrt(Q.shape[-1])
     attn = softmax_over_last(raw)
-    out  = apply_mh(attn, V)
+    out = apply_mh(attn, V)
 
     return project_io(merge_heads(out), Wo)
 ```
@@ -75,7 +76,7 @@ def attention_multihead(x, Wq, Wk, Wv, Wo, n_heads):
 ### Quick test
 
 ```python
-x  = np.random.randn(2, 5, 32).astype(np.float32)
+x = np.random.randn(2, 5, 32).astype(np.float32)
 Wq = np.random.randn(32, 32).astype(np.float32)
 Wk = np.random.randn(32, 32).astype(np.float32)
 Wv = np.random.randn(32, 32).astype(np.float32)
@@ -104,8 +105,8 @@ def attention_causal(x, Wq, Wk, Wv, Wo, n_heads):
     merge_heads = rearrange(ax[b, h, t, dh], ax[b, t, (h * dh)])
 
     project_io = einop((ax[b, t, d], ax[d, d]), ax[b, t, d])
-    score_mh   = einop((ax[b, h, t, dh], ax[b, h, s, dh]), ax[b, h, t, s])
-    apply_mh   = einop((ax[b, h, t, s], ax[b, h, s, dh]), ax[b, h, t, dh])
+    score_mh = einop((ax[b, h, t, dh], ax[b, h, s, dh]), ax[b, h, t, s])
+    apply_mh = einop((ax[b, h, t, s], ax[b, h, s, dh]), ax[b, h, t, dh])
 
     Q = split_heads(project_io(x, Wq))
     K = split_heads(project_io(x, Wk))
@@ -119,7 +120,7 @@ def attention_causal(x, Wq, Wk, Wv, Wo, n_heads):
     raw = np.where(mask, -np.inf, raw)
 
     attn = softmax_over_last(raw)
-    out  = apply_mh(attn, V)
+    out = apply_mh(attn, V)
     return project_io(merge_heads(out), Wo)
 ```
 
@@ -129,7 +130,7 @@ Perturb tokens after position 3 and verify the output at positions
 `0..2` is unchanged:
 
 ```python
-out  = attention_causal(x,  Wq, Wk, Wv, Wo, n_heads=4)
+out = attention_causal(x, Wq, Wk, Wv, Wo, n_heads=4)
 
 x2 = x.copy()
 x2[:, 3:] = np.random.randn(*x2[:, 3:].shape).astype(np.float32)

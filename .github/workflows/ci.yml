@@ -80,7 +80,9 @@ jobs:
           python -m pip install -e ".[dev,analysis,docs]"
           python -c "import array_api_strict; import libcst; import numpy"
       - name: Lint
-        run: ruff check src tests benchmarks
+        run: ruff check .
+      - name: Check formatting
+        run: ruff format --check .
       - name: Typecheck project
         run: pyrefly check --python-interpreter-path "$(which python)"
       - name: Test
