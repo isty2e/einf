@@ -82,6 +82,12 @@ adjust the limits; restart the sidecar after changing initialize options. The
 next edit, save or semantic request can retry. Other documents are not evicted
 to make room.
 
+With limits enabled, results for documents that the client has not opened are
+returned to requesting features without being cached or published as session
+diagnostics. In-flight work keeps its reservation until retirement. Once it
+finishes, the next request reads the file again; completed unmanaged results do
+not consume capacity needed by opened documents.
+
 These are logical source-snapshot limits, **not a process-memory cap**. They do
 not bound pygls's document text, incoming messages, parser allocations, worker
 copies or OS memory. An on-demand request for an unopened file reads it before

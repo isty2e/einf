@@ -298,6 +298,179 @@ def test_unopened_file_request_obeys_limits_without_workspace_containment(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "options",
+    [{"analysisMaxDocuments": 2}, {"analysisMaxSourceBytes": 12}],
+    ids=["document-count", "source-bytes"],
+)
+def test_unopened_results_do_not_exhaust_managed_document_budget(
+    tmp_path: Path,
+    options: dict[str, int],
+    analyzed: list[DocumentAnalysisRequest],
+    published: list[lsp.PublishDiagnosticsParams],
+) -> None:
+    async def scenario() -> None:
+        server = _initialize(options)
+        try:
+            for name in ("one", "two"):
+                target = tmp_path / f"{name}.py"
+                target.write_text("# disk", encoding="utf-8")
+                state = await lsp_server._get_or_open_document_state(
+                    server, uri=target.as_uri()
+                )
+                assert state is not None and state.source == "# disk"
+
+            for uri in ("untitled:real", "untitled:real2"):
+                await _open(server, uri, "# open")
+                state = server.einf_service.get_document_state(uri=uri)
+                assert state is not None and state.source == "# open"
+            assert len(analyzed) == 4
+            assert all(not notification.diagnostics for notification in published)
+        finally:
+            await _shutdown(server)
+
+    asyncio.run(scenario())
+
+
+def test_unopened_result_is_request_local_and_disk_changes_are_reanalyzed(
+    tmp_path: Path,
+    analyzed: list[DocumentAnalysisRequest],
+    published: list[lsp.PublishDiagnosticsParams],
+) -> None:
+    async def scenario() -> None:
+        server = _initialize({"analysisMaxDocuments": 1})
+        target = tmp_path / "changing.py"
+        uri = target.as_uri()
+        try:
+            for source in ("# first", "# changed"):
+                target.write_text(source, encoding="utf-8")
+                state = await lsp_server._get_or_open_document_state(server, uri=uri)
+                assert state is not None and state.source == source
+                assert server.einf_service.get_document_state(uri=uri) is None
+            assert len(analyzed) == 2
+            assert published == []
+            server.einf_source_budget.reserve(uri="untitled:free", source="x").release()
+        finally:
+            await _shutdown(server)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL,
+        lsp.TEXT_DOCUMENT_INLAY_HINT,
+        lsp.TEXT_DOCUMENT_HOVER,
+    ],
+)
+def test_unopened_editor_features_return_data_without_retaining_budget(
+    tmp_path: Path,
+    method: str,
+    analyzed: list[DocumentAnalysisRequest],
+    published: list[lsp.PublishDiagnosticsParams],
+) -> None:
+    async def scenario() -> None:
+        source = (
+            'from einf import ax, axes, repeat\nb, n = axes("b", "n")\n'
+            "repeat(ax[b], ax[b, n])\n"
+        )
+        server = _initialize({"analysisMaxSourceBytes": len(source)})
+        target = tmp_path / "features.py"
+        target.write_text(source, encoding="utf-8")
+        identifier = lsp.TextDocumentIdentifier(uri=target.as_uri())
+        if method == lsp.TEXT_DOCUMENT_HOVER:
+            params = lsp.HoverParams(
+                text_document=identifier, position=lsp.Position(line=2, character=10)
+            )
+        elif method == lsp.TEXT_DOCUMENT_INLAY_HINT:
+            params = lsp.InlayHintParams(
+                text_document=identifier,
+                range=lsp.Range(
+                    start=lsp.Position(line=0, character=0),
+                    end=lsp.Position(line=3, character=0),
+                ),
+            )
+        else:
+            params = lsp.SemanticTokensParams(text_document=identifier)
+        try:
+            for _ in range(2):
+                result = await server.protocol.fm.features[method](params)
+                if method == lsp.TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL:
+                    assert isinstance(result, lsp.SemanticTokens) and result.data
+                else:
+                    assert result
+            assert published == []
+            await _open(server, "untitled:managed", source)
+            state = server.einf_service.get_document_state(uri="untitled:managed")
+            assert state is not None and state.source == source
+            assert len(analyzed) == 3
+        finally:
+            await _shutdown(server)
+
+    asyncio.run(scenario())
+
+
+def test_inflight_unopened_request_cannot_commit_into_a_newly_opened_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published: list[lsp.PublishDiagnosticsParams],
+) -> None:
+    async def scenario() -> None:
+        server = _initialize({"analysisMaxDocuments": 1})
+        target = tmp_path / "opened_during_request.py"
+        target.write_text("# disk", encoding="utf-8")
+        uri = target.as_uri()
+        started, retiring, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def analyze(
+            self: LspAnalysisProcess,
+            request: DocumentAnalysisRequest,
+            *,
+            parser: str,
+        ) -> LspDocumentState:
+            if request.version is None:
+                started.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    retiring.set()
+                    await release.wait()
+            return LspService(parser).analyze_document(
+                uri=request.uri, source=request.source, version=request.version
+            )
+
+        monkeypatch.setattr(LspAnalysisProcess, "analyze", analyze)
+        transient = asyncio.create_task(
+            lsp_server._get_or_open_document_state(server, uri=uri)
+        )
+        opened = None
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            opened = asyncio.create_task(_open(server, uri, "# managed"))
+            await asyncio.wait_for(retiring.wait(), timeout=2)
+            assert await transient is None
+            release.set()
+            await asyncio.wait_for(opened, timeout=2)
+            state = server.einf_service.get_document_state(uri=uri)
+            assert state is not None and state.source == "# managed"
+            assert [(item.uri, item.version) for item in published] == [(uri, 1)]
+            await _close(server, uri)
+            await _open(server, "untitled:replacement", "# recovered")
+            assert (
+                server.einf_service.get_document_state(uri="untitled:replacement")
+                is not None
+            )
+        finally:
+            release.set()
+            if opened is not None:
+                await opened
+            await transient
+            await _shutdown(server)
+
+    asyncio.run(scenario())
+
+
 def test_refused_edit_cannot_be_overwritten_by_running_analysis(
     monkeypatch: pytest.MonkeyPatch,
     published: list[lsp.PublishDiagnosticsParams],

@@ -451,6 +451,8 @@ async def _analyze_document_request(
     def commit(state: LspDocumentState) -> None:
         if not _source_is_current(ls, request, managed_document):
             return
+        if ls.einf_config.analysis_limits.enabled and managed_document is None:
+            return
         if reservation is not None:
             _discard_document_state(ls, uri=state.uri)
             ls.einf_document_sources[state.uri] = reservation.retain()
@@ -480,12 +482,14 @@ def _managed_document(ls: EinfLanguageServer, uri: str) -> TextDocument | None:
 
 
 def _state_is_current(ls: EinfLanguageServer, state: LspDocumentState) -> bool:
+    if not ls.einf_config.analysis_limits.enabled:
+        return True
     return _source_is_current(
         ls,
         DocumentAnalysisRequest(
             uri=state.uri, source=state.source, version=state.version
         ),
-        None,
+        _managed_document(ls, state.uri),
     )
 
 
@@ -497,7 +501,7 @@ def _source_is_current(
     if not ls.einf_config.analysis_limits.enabled:
         return True
     current = _managed_document(ls, request.uri)
-    if managed_document is not None and current is not managed_document:
+    if current is not managed_document:
         return False
     return current is None or (
         current.version == request.version and current.source == request.source

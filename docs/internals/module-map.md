@@ -444,6 +444,11 @@ admission and current results. Reservations contain accounting metadata, not
 source text. See [analysis limits](../guides/lsp-sidecar.md#optional-analysis-limits)
 for the configured resources and exclusions.
 
+When limits are enabled, only results captured from managed pygls documents enter
+the session cache. Unmanaged results serve the requesting feature without a
+session-state commit or persistent reservation. A concurrent `didOpen` cannot
+promote an in-flight unmanaged result into session state.
+
 Direct `LspService` calls remain unrestricted. Low-level queue callers may pass
 `source_reservation=` to `analyze()`; it is borrowed, and the queue retains its
 own reference until waiting, pending or running work relinquishes the capture.
