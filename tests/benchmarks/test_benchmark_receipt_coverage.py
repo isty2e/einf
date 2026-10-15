@@ -1,7 +1,7 @@
 import re
 from dataclasses import replace
 from itertools import product
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 
@@ -27,7 +27,10 @@ from benchmarks.harness import (
     TimingSummary,
     UnavailableRun,
 )
-from benchmarks.harness.receipt import validation_coverage_payload
+from benchmarks.harness.receipt import (
+    available_library_members,
+    validation_coverage_payload,
+)
 from benchmarks.harness.result import DynamicInputUnit
 from benchmarks.harness.types import LibraryName
 
@@ -62,8 +65,12 @@ def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
         identities = []
 
     libraries: tuple[LibraryName, ...] = ("einf", "einops")
-    if defect == "missing_available_member":
+    if defect in ("missing_available_member", "missing_run_and_observations"):
         libraries = ("einf",)
+    elif defect == "missing_baseline_run_and_observations":
+        libraries = ("einops",)
+    elif defect == "foreign_run_and_observations":
+        libraries = ("einf", cast(LibraryName, "foreign"))
     elif defect == "unavailable_member":
         libraries = ("einf", "einops", "einx")
     observations = tuple(
@@ -116,11 +123,47 @@ def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
         "einx": UnavailableRun("not installed"),
     }
     orders: list[tuple[LibraryName, ...]] = [("einops", "einf"), ("einf", "einops")]
-    if defect == "all_unavailable":
+    if defect in ("all_unavailable", "missing_status_in_empty_case"):
         runs = {name: UnavailableRun("not installed") for name in runs}
         observations = ()
         realized_units = ()
         orders = []
+    elif defect == "empty_registry":
+        observations = ()
+        realized_units = ()
+        orders = []
+    elif defect == "all_available":
+        runs["einx"] = AvailableRun(summary, (summary, summary))
+        observations = tuple(
+            replace(observation, library=library, order_position=position)
+            for observation in observations
+            if observation.library == "einf"
+            for position, library in enumerate(("einf", "einops", "einx"))
+        )
+        orders = [("einf", "einops", "einx")] * 2
+    elif defect == "reordered_registry":
+        runs = dict(reversed(tuple(runs.items())))
+
+    observed_order = tuple(dict.fromkeys(item.library for item in observations))
+
+    def corrupt_run_registry() -> None:
+        if defect in ("missing_unavailable_run", "missing_status_in_empty_case"):
+            runs.pop("einx")
+        elif defect == "missing_run_and_observations":
+            runs.pop("einops")
+            orders[:] = [observed_order] * 2
+        elif defect == "missing_baseline_run_and_observations":
+            runs.pop("einf")
+            orders[:] = [observed_order] * 2
+        elif defect == "foreign_run_and_observations":
+            runs[cast(LibraryName, "foreign")] = runs.pop("einops")
+            orders[:] = [observed_order] * 2
+        elif defect == "foreign_unavailable_run":
+            runs[cast(LibraryName, "foreign")] = UnavailableRun("not installed")
+        elif defect == "replaced_unavailable_run":
+            runs[cast(LibraryName, "foreign")] = runs.pop("einx")
+        elif defect == "empty_registry":
+            runs.clear()
 
     evidence = PairedEvidence(observations=observations, comparisons=())
     sizes = BenchSizes(b=2, n=2, d=2, h=2, w=2, r=2, j=2)
@@ -132,10 +175,12 @@ def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
         )
         if defect == "configuration_rounds":
             config = replace(config, rounds=3)
+        fixed_result = FixedCaseResult(case, runs, orders, evidence)
+        corrupt_run_registry()
         return fixed_module._receipt_payload(
             config=config,
             sizes=sizes,
-            case_results=[FixedCaseResult(case, runs, orders, evidence)],
+            case_results=[fixed_result],
             backend=backend,
             einf_source=source,
         )
@@ -157,14 +202,14 @@ def _serialize(family: _Family, defect: str = "") -> dict[str, object]:
             input_shapes=lambda dimensions: ((dimensions["b"],),),
             output_shapes=lambda dimensions: ((dimensions["b"],),),
         ).metadata(sizes=sizes)
+        dynamic_result = DynamicCaseResult(
+            case, workload, realized_units, runs, orders, evidence
+        )
+        corrupt_run_registry()
         return dynamic_module._receipt_payload(
             config=dynamic_config,
             sizes=sizes,
-            case_results=[
-                DynamicCaseResult(
-                    case, workload, realized_units, runs, orders, evidence
-                )
-            ],
+            case_results=[dynamic_result],
             workload_comparisons={
                 case.name: workload.compare_to(
                     workload, scale="medium", reference_scale="medium"
@@ -257,6 +302,61 @@ _EXPRESSION_CONSTRUCTOR_FAILURES = (
         "expression observations must cover every available strategy",
     ),
 )
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic"))
+@pytest.mark.parametrize(
+    "defect",
+    (
+        "missing_unavailable_run",
+        "missing_run_and_observations",
+        "missing_baseline_run_and_observations",
+        "foreign_run_and_observations",
+        "foreign_unavailable_run",
+        "replaced_unavailable_run",
+        "empty_registry",
+        "missing_status_in_empty_case",
+    ),
+)
+def test_library_receipt_rejects_incomplete_run_registry(
+    family: _Family, defect: str
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="^library runs must explicitly cover exactly einf, einops, and einx$",
+    ):
+        _serialize(family, defect)
+
+
+@pytest.mark.parametrize("family", ("fixed", "dynamic"))
+@pytest.mark.parametrize("availability", ("all_available", "reordered_registry"))
+def test_library_receipt_accepts_complete_run_registry(
+    family: _Family, availability: str
+) -> None:
+    payload = _serialize(family, availability)
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+    assert cases[0]["validation"]["members"] == (
+        ["einf", "einops", "einx"]
+        if availability == "all_available"
+        else ["einf", "einops"]
+    )
+
+
+@pytest.mark.parametrize("library", ("einf", "einops", "einx"))
+def test_library_registry_rejects_missing_availability_state(
+    library: LibraryName,
+) -> None:
+    runs: dict[LibraryName, AvailableRun | UnavailableRun] = {
+        name: UnavailableRun("not installed") for name in ("einf", "einops", "einx")
+    }
+    runs[library] = cast(AvailableRun, None)
+
+    with pytest.raises(
+        TypeError,
+        match=f"^library run for '{library}' must be available or unavailable$",
+    ):
+        available_library_members(runs)
 
 
 @pytest.mark.parametrize(

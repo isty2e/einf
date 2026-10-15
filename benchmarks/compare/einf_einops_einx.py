@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 
 from benchmarks.harness import (
-    AvailableRun,
     BackendName,
     BackendSpec,
     BenchmarkCase,
@@ -27,6 +26,7 @@ from benchmarks.harness import (
     fixed_sizes_for_scale,
 )
 from benchmarks.harness.receipt import (
+    available_library_members,
     execution_target_payload,
     paired_evidence_payload,
     synchronized_measurement_contract_payload,
@@ -475,13 +475,7 @@ def _receipt_payload(
                     expected_rounds=config.rounds,
                     expected_units_per_round=config.repeats,
                     expected_executions_per_member_per_coordinate=config.iterations,
-                    expected_members=tuple(
-                        sorted(
-                            library
-                            for library, run in case_result.runs.items()
-                            if isinstance(run, AvailableRun)
-                        )
-                    ),
+                    expected_members=available_library_members(case_result.runs),
                     execution_identities_by_member={
                         library: tuple(
                             (

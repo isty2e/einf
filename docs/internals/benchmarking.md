@@ -473,7 +473,10 @@ Before emitting that claim, serialization checks every available member's
 execution records against the configured rounds, measured units, and executions
 per unit. Missing, duplicate, out-of-range, or unexpected-member records are
 rejected. Unavailable libraries are excluded explicitly; an all-unavailable case
-keeps empty coverage. This checks the supplied records, not their authenticity:
+keeps empty coverage. Fixed and dynamic results must state whether each of
+`einf`, `einops`, and `einx` is available or unavailable. Missing or foreign
+library entries are rejected before the available subset is selected.
+This checks the supplied records, not their authenticity:
 serialization does not rerun or independently verify the measurements.
 
 Ratios use integer `numerator` and `denominator` fields rather than rounded

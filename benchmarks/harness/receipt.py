@@ -2,7 +2,53 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from .backend import BackendSpec
-from .result import DynamicInputUnit, PairedEvidence, TimingSummary
+from .result import (
+    AvailableRun,
+    DynamicInputUnit,
+    PairedEvidence,
+    RunResult,
+    TimingSummary,
+    UnavailableRun,
+)
+from .types import LibraryName
+
+
+def available_library_members(
+    runs: Mapping[LibraryName, RunResult],
+) -> tuple[LibraryName, ...]:
+    """Select available members from a complete library status registry.
+
+    Parameters
+    ----------
+    runs : Mapping[LibraryName, RunResult]
+        Explicit available or unavailable status for each comparison library.
+
+    Returns
+    -------
+    tuple[LibraryName, ...]
+        Available libraries in canonical receipt order.
+
+    Raises
+    ------
+    ValueError
+        If a canonical library is missing or a foreign key is present.
+    TypeError
+        If a run does not have a supported availability state.
+    """
+    libraries: tuple[LibraryName, ...] = ("einf", "einops", "einx")
+    if frozenset(runs) != frozenset(libraries):
+        raise ValueError(
+            "library runs must explicitly cover exactly einf, einops, and einx"
+        )
+    for library in libraries:
+        if not isinstance(runs[library], (AvailableRun, UnavailableRun)):
+            raise TypeError(
+                f"library run for {library!r} must be available or unavailable"
+            )
+
+    return tuple(
+        library for library in libraries if isinstance(runs[library], AvailableRun)
+    )
 
 
 def execution_target_payload(backend: BackendSpec) -> dict[str, str]:
