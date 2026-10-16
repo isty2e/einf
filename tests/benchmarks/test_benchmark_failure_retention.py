@@ -1,5 +1,6 @@
 import gc
 import itertools
+import sys
 from typing import Literal
 from weakref import ReferenceType, ref
 
@@ -235,3 +236,96 @@ def test_retained_case_failure_releases_coordinate_payloads(
     }
     assert not any(alive.values()), alive
     assert caught.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize("backend_name", ["numpy", "torch"])
+@pytest.mark.parametrize("stage", ["reference", "runner"])
+def test_case_releases_payloads_when_callback_reraises_caller_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_name: BackendName,
+    stage: Literal["reference", "runner"],
+) -> None:
+    if backend_name == "torch":
+        pytest.importorskip("torch")
+    ticks = itertools.count()
+    monkeypatch.setattr(profiler_module.time, "perf_counter", lambda: next(ticks))
+    payloads: dict[str, list[ReferenceType[Array]]] = {}
+
+    def track(label: str, array: Array) -> None:
+        payloads.setdefault(label, []).append(ref(array))
+
+    def reference(inputs: tuple[NumpyArray, ...]) -> NumpyOutput:
+        track("reference", inputs[0])
+        if stage == "reference":
+            active = sys.exception()
+            assert active is not None
+            raise active
+        return inputs[0]
+
+    def make_runner() -> Runner:
+        def run(inputs: tuple[Array, ...]) -> Output:
+            track("runner", inputs[0])
+            active = sys.exception()
+            assert active is not None
+            raise active
+
+        return run
+
+    backend = BackendSpec(name=backend_name)
+    runner = BenchmarkRunner(
+        backend=backend,
+        profiler=Profiler(backend=backend),
+        available={
+            "einf": (True, "available"),
+            "einops": (False, "unused"),
+            "einx": (False, "unused"),
+        },
+    )
+    case = BenchmarkCase(
+        name="reraised_caller_exception",
+        description="A callback re-raises the caller's active exception.",
+        calls=CaseCalls(einf="raise", einops="unused", einx="unused"),
+        reference=reference,
+        make_einf_runner=make_runner,
+        make_einops_runner=make_runner,
+        make_einx_runner=make_runner,
+    )
+
+    def materialize() -> tuple[Array, ...]:
+        batch = backend.to_backend_batch((np.ones(2, dtype=np.float32),))
+        track("prepared", batch[0])
+        return batch
+
+    def caller_helper() -> None:
+        payload = np.ones(2, dtype=np.float32)
+        track("caller", payload)
+        raise KeyError("caller failure")
+
+    try:
+        caller_helper()
+    except KeyError as outer:
+        assert outer.__traceback__ is not None
+        assert outer.__traceback__.tb_next is not None
+        caller_frame = outer.__traceback__.tb_next.tb_frame
+        with pytest.raises(KeyError, match="caller failure") as caught:
+            runner.run_fixed_case(
+                case_spec=FixedCaseSpec(case=case, inputs=materialize()),
+                config=FixedTaskConfig(
+                    scale="small", seed=1, rounds=1, warmup=0, repeats=1, iterations=1
+                ),
+                order_seed=1,
+            )
+
+        gc.collect()
+        assert caught.value is outer
+        assert caller_frame.f_locals["payload"] is payloads["caller"][0]()
+        expected_labels = {"caller", "prepared", "reference"}
+        if stage == "runner":
+            expected_labels.add("runner")
+        assert set(payloads) == expected_labels
+        for label in expected_labels - {"caller"}:
+            assert payloads[label] and all(
+                weak() is None for weak in payloads[label]
+            ), label
+    else:
+        pytest.fail("caller helper did not raise")

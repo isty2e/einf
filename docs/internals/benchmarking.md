@@ -97,19 +97,20 @@ not evidence that a receipt is authentic.
 ### Failure Cleanup
 
 When an ordinary exception leaves a fixed, dynamic, or expression-parity case,
-its entrypoint clears local variables from completed traceback frames for
-exceptions raised within the case, including chains and groups. Cleanup stops
-at the exception already being handled when the case was entered, preserving
-that caller exception's frame locals. For the built-in output checks, this
-releases harness-held references to inputs, expected arrays, conversion buffers,
-and timed outputs. The original exception, message, notes, cause/context links,
-and source locations remain available, but postmortem inspection of completed
-case frame locals does not.
+its entrypoint clears local variables from completed traceback frames in the
+exception's chains and groups. Frames already reachable from the active caller
+exception at case entry are preserved. Re-raising that same exception can add
+case frames; those new completed frames are still cleared. For the built-in
+output checks, this releases harness-held references to inputs, expected arrays,
+conversion buffers, and timed outputs. The original exception, message, notes,
+cause/context links, and source locations remain available, but postmortem
+inspection of cleared frame locals does not.
 
 Callback closures, caller-owned references, and tensors explicitly attached to
 user exceptions are outside this cleanup boundary. This does not flush backend
 allocator caches or guarantee a reduction in process memory. Cleanup runs only
-on failure, outside the timed and per-coordinate execution paths.
+on failure; the caller-frame snapshot is taken once per case. Both are outside
+the timed and per-coordinate execution paths.
 
 ## Taxonomy Refactor Performance Gate
 

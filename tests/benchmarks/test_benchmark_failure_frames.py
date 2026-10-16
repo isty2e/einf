@@ -2,6 +2,7 @@ import gc
 import inspect
 import sys
 import traceback
+from types import FrameType
 from typing import Literal
 from weakref import ReferenceType, ref
 
@@ -115,9 +116,14 @@ def test_case_cleanup_preserves_caller_owned_references() -> None:
     assert reference() is payload
 
 
-@pytest.mark.parametrize("link", ["context", "cause", "group"])
+@pytest.mark.parametrize(
+    "link",
+    ["context", "cause", "group", "reraise", "explicit_reraise", "reraise_from_case"],
+)
 def test_case_failure_preserves_inherited_caller_exception_locals(
-    link: Literal["context", "cause", "group"],
+    link: Literal[
+        "context", "cause", "group", "reraise", "explicit_reraise", "reraise_from_case"
+    ],
 ) -> None:
     caller_payloads: list[ReferenceType[Payload]] = []
     case_payloads: list[ReferenceType[Payload]] = []
@@ -129,6 +135,16 @@ def test_case_failure_preserves_inherited_caller_exception_locals(
 
     def case_helper(value: Payload) -> None:
         case_payloads.append(ref(value))
+        if link in {"reraise", "explicit_reraise"}:
+            active = sys.exception()
+            assert active is not None
+            if link == "reraise":
+                try:
+                    raise active
+                except KeyError:
+                    assert sys.exception() is active
+                    raise
+            raise active
         raise ValueError("case failure")
 
     @clear_failed_case_frames
@@ -138,6 +154,8 @@ def test_case_failure_preserves_inherited_caller_exception_locals(
         try:
             case_helper(value)
         except ValueError as error:
+            if link == "reraise_from_case":
+                raise inherited from error
             if link == "group":
                 raise ExceptionGroup("case failure", [error, inherited])
             if link == "cause":
@@ -153,8 +171,14 @@ def test_case_failure_preserves_inherited_caller_exception_locals(
         assert caller_frame.f_code.co_name == "caller_helper"
         assert "payload" in caller_frame.f_locals
 
-        expected_type = ExceptionGroup if link == "group" else ValueError
-        with pytest.raises(expected_type, match="case failure") as caught:
+        reraised = link in {"reraise", "explicit_reraise", "reraise_from_case"}
+        expected_type = (
+            KeyError
+            if reraised
+            else (ExceptionGroup if link == "group" else ValueError)
+        )
+        message = "caller failure" if reraised else "case failure"
+        with pytest.raises(expected_type, match=message) as caught:
             fail(Payload())
 
         gc.collect()
@@ -162,7 +186,12 @@ def test_case_failure_preserves_inherited_caller_exception_locals(
         assert "payload" in caller_frame.f_locals
         assert len(caller_payloads) == 1 and caller_payloads[0]() is not None
         assert caller_frame.f_locals["payload"] is caller_payloads[0]()
-        if link == "group":
+        if reraised:
+            assert caught.value is outer
+            if link == "reraise_from_case":
+                assert isinstance(caught.value.__cause__, ValueError)
+                assert str(caught.value.__cause__) == "case failure"
+        elif link == "group":
             assert isinstance(caught.value, ExceptionGroup)
             assert caught.value.exceptions[1] is outer
         else:
@@ -174,11 +203,71 @@ def test_case_failure_preserves_inherited_caller_exception_locals(
         pytest.fail("caller helper did not raise")
 
 
+@pytest.mark.parametrize("ancestry", ["cause", "group"])
+def test_case_failure_preserves_preexisting_caller_ancestor_frames(
+    ancestry: Literal["cause", "group"],
+) -> None:
+    caller_payloads: list[ReferenceType[Payload]] = []
+    case_payloads: list[ReferenceType[Payload]] = []
+
+    def original_failure() -> None:
+        payload = Payload()
+        caller_payloads.append(ref(payload))
+        raise KeyError("original failure")
+
+    def caller_helper() -> None:
+        try:
+            original_failure()
+        except KeyError as error:
+            if ancestry == "cause":
+                raise RuntimeError("caller failure") from error
+            raise ExceptionGroup("caller failure", [error]) from None
+
+    def case_helper(value: Payload) -> None:
+        case_payloads.append(ref(value))
+        raise ValueError("case failure")
+
+    @clear_failed_case_frames
+    def fail(value: Payload) -> None:
+        active = sys.exception()
+        assert active is not None
+        if isinstance(active, ExceptionGroup):
+            previous = active.exceptions[0]
+        else:
+            previous = active.__cause__
+        assert isinstance(previous, KeyError)
+        try:
+            case_helper(value)
+        except ValueError as error:
+            raise ExceptionGroup("case failure", [error, previous])
+
+    try:
+        caller_helper()
+    except (RuntimeError, ExceptionGroup) as outer:
+        with pytest.raises(ExceptionGroup, match="case failure") as caught:
+            fail(Payload())
+
+        previous = caught.value.exceptions[1]
+        assert isinstance(previous, KeyError)
+        assert previous.__traceback__ is not None
+        caller_frames = tuple(traceback.walk_tb(previous.__traceback__))
+        original_frame = caller_frames[-1][0]
+        assert original_frame.f_code.co_name == "original_failure"
+        assert "payload" in original_frame.f_locals
+        gc.collect()
+        assert len(caller_payloads) == 1 and caller_payloads[0]() is not None
+        assert original_frame.f_locals["payload"] is caller_payloads[0]()
+        assert len(case_payloads) == 1 and case_payloads[0]() is None
+        assert sys.exception() is outer
+    else:
+        pytest.fail("caller helper did not raise")
+
+
 def test_case_success_preserves_signature_arguments_and_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected_cleanup(
-        error: BaseException, inherited: BaseException | None
+        error: BaseException, protected_frames: frozenset[FrameType]
     ) -> None:
         pytest.fail(f"success triggered failure cleanup: {error}")
 
