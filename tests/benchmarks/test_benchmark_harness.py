@@ -713,6 +713,26 @@ def test_numpy_input_guard_restores_state_after_partial_setup_failure() -> None:
     assert input_array.flags.writeable
 
 
+@pytest.mark.parametrize("writeable", [True, False])
+def test_numpy_input_guard_restores_state_without_replacing_body_error(
+    *, writeable: bool
+) -> None:
+    input_array = np.asarray([1.0], dtype=np.float32)
+    input_array.setflags(write=writeable)
+    original = ValueError("runner failure")
+
+    with (
+        pytest.raises(ValueError, match="runner failure") as caught,
+        BackendSpec(name="numpy").preserve_input_batch((input_array,)) as scope,
+    ):
+        assert scope is None
+        input_array.setflags(write=True)
+        raise original
+
+    assert caught.value is original
+    assert input_array.flags.writeable == writeable
+
+
 def test_torch_profiler_detects_in_place_input_mutation() -> None:
     if backend_module.torch is None:
         pytest.skip("torch is not installed")

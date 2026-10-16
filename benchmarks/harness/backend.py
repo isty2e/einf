@@ -1,13 +1,23 @@
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import partial
 from importlib import import_module
 from inspect import signature
+from types import TracebackType
+from typing import Literal
 
 import numpy as np
 
-from .types import Array, BackendName, NumpyArray, Output, TorchDevice, torch
+from .types import (
+    Array,
+    BackendName,
+    NumpyArray,
+    Output,
+    TorchDevice,
+    TorchTensor,
+    torch,
+)
 
 
 def _synchronize_numpy() -> None:
@@ -36,6 +46,121 @@ def _bind_synchronizer(
             ) from error
         return synchronize
     return partial(synchronize, device)
+
+
+class _NumpyInputBatchGuard(AbstractContextManager[None]):
+    """Own one batch's write protection and base/view restoration state."""
+
+    def __init__(self, batch: tuple[Array, ...]) -> None:
+        self._batch = batch
+        self._protected: list[NumpyArray] = []
+        self._restoration: dict[int, tuple[NumpyArray, bool]] = {}
+
+    def __enter__(self) -> None:
+        protected_ids: set[int] = set()
+        try:
+            for index, value in enumerate(self._batch):
+                if not isinstance(value, np.ndarray):
+                    raise TypeError(
+                        "numpy benchmark input has an unsupported type at "
+                        f"index {index}: {type(value)!r}"
+                    )
+                if id(value) in protected_ids:
+                    continue
+                protected_ids.add(id(value))
+                self._protected.append(value)
+
+                current: object | None = value
+                while isinstance(current, np.ndarray):
+                    self._restoration.setdefault(
+                        id(current), (current, bool(current.flags.writeable))
+                    )
+                    current = current.base
+                value.setflags(write=False)
+        except BaseException:
+            self._restore()
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        try:
+            if exc_type is None:
+                for index, value in enumerate(self._protected):
+                    if value.flags.writeable:
+                        raise RuntimeError(
+                            "numpy benchmark runner removed input write protection "
+                            f"at index {index}"
+                        )
+        finally:
+            self._restore()
+        return False
+
+    def _restore(self) -> None:
+        restoration = list(self._restoration.values())
+
+        def base_depth(item: tuple[NumpyArray, bool]) -> int:
+            depth = 0
+            base = item[0].base
+            while isinstance(base, np.ndarray):
+                depth += 1
+                base = base.base
+            return depth
+
+        restoration.sort(key=base_depth)
+        for value, writeable in restoration:
+            try:
+                value.setflags(write=True)
+            except ValueError:
+                if writeable:
+                    raise
+        for value, writeable in reversed(restoration):
+            if not writeable:
+                value.setflags(write=False)
+
+
+class _TorchInputBatchGuard(AbstractContextManager[None]):
+    """Own one batch's mutation counters without copying device tensors."""
+
+    def __init__(self, batch: tuple[Array, ...]) -> None:
+        self._batch = batch
+        self._versions: list[tuple[TorchTensor, int]] = []
+
+    def __enter__(self) -> None:
+        if torch is None:
+            raise RuntimeError("torch benchmark target is not resolved")
+
+        for index, value in enumerate(self._batch):
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(
+                    "torch benchmark input has an unsupported type at "
+                    f"index {index}: {type(value)!r}"
+                )
+            try:
+                version = value._version
+            except RuntimeError as error:
+                raise RuntimeError(
+                    "torch benchmark input does not expose a mutation version "
+                    f"at index {index}"
+                ) from error
+            self._versions.append((value, version))
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        if exc_type is None:
+            for index, (value, version) in enumerate(self._versions):
+                if value._version != version:
+                    raise RuntimeError(
+                        f"torch benchmark runner mutated input at index {index}"
+                    )
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,10 +253,9 @@ class BackendSpec:
         """Wait until work submitted to the execution target is complete."""
         self._synchronize()
 
-    @contextmanager
     def preserve_input_batch(
         self, batch: tuple[Array, ...]
-    ) -> Generator[None, None, None]:
+    ) -> AbstractContextManager[None]:
         """Prevent or detect runner mutation without copying input tensors.
 
         Parameters
@@ -139,105 +263,26 @@ class BackendSpec:
         batch : tuple[Array, ...]
             Input tensors already materialized on the selected backend.
 
-        Yields
-        ------
-        None
-            Scope with NumPy write protection or Torch mutation monitoring.
+        Returns
+        -------
+        AbstractContextManager[None]
+            Guard applying NumPy write protection or Torch mutation monitoring
+            on entry and checking/restoring inputs on exit.
 
         Raises
         ------
         TypeError
-            If an input is not a tensor of the selected backend.
+            On entry, if an input is not a tensor of the selected backend.
         RuntimeError
-            If the Torch target or mutation counter is unavailable, or a
-            mutation is detected on normal exit.
+            On entry, if the Torch target or mutation counter is unavailable;
+            on normal exit, if a mutation is detected.
         ValueError
-            If restoring a previously writable NumPy input fails.
+            If restoring a previously writable NumPy input fails during entry
+            cleanup or exit.
         """
         if self.name == "numpy":
-            numpy_batch: list[NumpyArray] = []
-            protected_ids: set[int] = set()
-            restoration_state: dict[int, tuple[NumpyArray, bool]] = {}
-            try:
-                for index, value in enumerate(batch):
-                    if not isinstance(value, np.ndarray):
-                        raise TypeError(
-                            "numpy benchmark input has an unsupported type at "
-                            f"index {index}: {type(value)!r}"
-                        )
-                    if id(value) in protected_ids:
-                        continue
-                    protected_ids.add(id(value))
-                    numpy_batch.append(value)
-
-                    current: object | None = value
-                    while isinstance(current, np.ndarray):
-                        restoration_state.setdefault(
-                            id(current),
-                            (current, bool(current.flags.writeable)),
-                        )
-                        current = current.base
-                    value.setflags(write=False)
-
-                yield
-                for index, value in enumerate(numpy_batch):
-                    if value.flags.writeable:
-                        raise RuntimeError(
-                            "numpy benchmark runner removed input write protection "
-                            f"at index {index}"
-                        )
-            finally:
-                restoration = list(restoration_state.values())
-
-                def base_depth(item: tuple[NumpyArray, bool]) -> int:
-                    depth = 0
-                    base = item[0].base
-                    while isinstance(base, np.ndarray):
-                        depth += 1
-                        base = base.base
-                    return depth
-
-                restoration.sort(key=base_depth)
-                for value, writeable in restoration:
-                    try:
-                        value.setflags(write=True)
-                    except ValueError:
-                        if writeable:
-                            raise
-                for value, writeable in reversed(restoration):
-                    if not writeable:
-                        value.setflags(write=False)
-            return
-
-        if torch is None:
-            raise RuntimeError("torch benchmark target is not resolved")
-
-        torch_batch = []
-        versions: list[int] = []
-        for index, value in enumerate(batch):
-            if not isinstance(value, torch.Tensor):
-                raise TypeError(
-                    "torch benchmark input has an unsupported type at "
-                    f"index {index}: {type(value)!r}"
-                )
-            try:
-                version = value._version
-            except RuntimeError as error:
-                raise RuntimeError(
-                    "torch benchmark input does not expose a mutation version "
-                    f"at index {index}"
-                ) from error
-            torch_batch.append(value)
-            versions.append(version)
-
-        yield
-        for index, (value, version) in enumerate(
-            zip(torch_batch, versions, strict=True)
-        ):
-            if value._version != version:
-                raise RuntimeError(
-                    f"torch benchmark runner mutated input at index {index}"
-                )
+            return _NumpyInputBatchGuard(batch)
+        return _TorchInputBatchGuard(batch)
 
     def to_backend_batch(
         self,

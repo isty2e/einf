@@ -1,6 +1,9 @@
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
+
+from benchmarks.shared.failures import clear_failed_case_frames
 
 from .backend import BackendSpec
 from .case import BenchmarkCase, DynamicCaseSpec, FixedCaseSpec, RunnerFactory
@@ -111,10 +114,10 @@ class BenchmarkRunner:
 
     def _validate_output(
         self,
+        output: Array | tuple[Array, ...],
         *,
         case: BenchmarkCase,
         expected: tuple[NumpyArray, ...],
-        output: Array | tuple[Array, ...],
         library_name: str,
     ) -> None:
         self.backend.validate_output_target(output)
@@ -173,17 +176,12 @@ class BenchmarkRunner:
         """Measure every library at one paired prepared-input coordinate."""
         observations: list[LibraryTimingObservation] = []
         for order_position, library_name in enumerate(order):
-
-            def validate_output(
-                output: Array | tuple[Array, ...],
-                current_library: LibraryName = library_name,
-            ) -> None:
-                self._validate_output(
-                    case=case,
-                    expected=expected,
-                    output=output,
-                    library_name=current_library,
-                )
+            validate_output = partial(
+                self._validate_output,
+                case=case,
+                expected=expected,
+                library_name=library_name,
+            )
 
             observations.append(
                 LibraryTimingObservation(
@@ -231,6 +229,7 @@ class BenchmarkRunner:
             ),
         )
 
+    @clear_failed_case_frames
     def run_fixed_case(
         self,
         *,
@@ -360,6 +359,7 @@ class BenchmarkRunner:
             stream_index=stream_index,
         )
 
+    @clear_failed_case_frames
     def run_dynamic_case(
         self,
         *,

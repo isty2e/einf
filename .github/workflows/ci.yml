@@ -208,3 +208,4 @@ jobs:
           tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_in_place_input_mutation
           tests/benchmarks/test_benchmark_harness.py::test_torch_profiler_detects_mutation_without_real_torch
           tests/benchmarks/test_benchmark_expression_host_inputs.py
+          tests/benchmarks/test_benchmark_failure_retention.py
