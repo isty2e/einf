@@ -1,6 +1,8 @@
 import gc
 import inspect
+import sys
 import traceback
+from typing import Literal
 from weakref import ReferenceType, ref
 
 import pytest
@@ -113,10 +115,71 @@ def test_case_cleanup_preserves_caller_owned_references() -> None:
     assert reference() is payload
 
 
+@pytest.mark.parametrize("link", ["context", "cause", "group"])
+def test_case_failure_preserves_inherited_caller_exception_locals(
+    link: Literal["context", "cause", "group"],
+) -> None:
+    caller_payloads: list[ReferenceType[Payload]] = []
+    case_payloads: list[ReferenceType[Payload]] = []
+
+    def caller_helper() -> None:
+        payload = Payload()
+        caller_payloads.append(ref(payload))
+        raise KeyError("caller failure")
+
+    def case_helper(value: Payload) -> None:
+        case_payloads.append(ref(value))
+        raise ValueError("case failure")
+
+    @clear_failed_case_frames
+    def fail(value: Payload) -> None:
+        inherited = sys.exception()
+        assert isinstance(inherited, Exception)
+        try:
+            case_helper(value)
+        except ValueError as error:
+            if link == "group":
+                raise ExceptionGroup("case failure", [error, inherited])
+            if link == "cause":
+                raise error from inherited
+            raise
+
+    try:
+        caller_helper()
+    except KeyError as outer:
+        assert outer.__traceback__ is not None
+        assert outer.__traceback__.tb_next is not None
+        caller_frame = outer.__traceback__.tb_next.tb_frame
+        assert caller_frame.f_code.co_name == "caller_helper"
+        assert "payload" in caller_frame.f_locals
+
+        expected_type = ExceptionGroup if link == "group" else ValueError
+        with pytest.raises(expected_type, match="case failure") as caught:
+            fail(Payload())
+
+        gc.collect()
+        assert len(case_payloads) == 1 and case_payloads[0]() is None
+        assert "payload" in caller_frame.f_locals
+        assert len(caller_payloads) == 1 and caller_payloads[0]() is not None
+        assert caller_frame.f_locals["payload"] is caller_payloads[0]()
+        if link == "group":
+            assert isinstance(caught.value, ExceptionGroup)
+            assert caught.value.exceptions[1] is outer
+        else:
+            assert caught.value.__context__ is outer
+            if link == "cause":
+                assert caught.value.__cause__ is outer
+        assert sys.exception() is outer
+    else:
+        pytest.fail("caller helper did not raise")
+
+
 def test_case_success_preserves_signature_arguments_and_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unexpected_cleanup(error: BaseException) -> None:
+    def unexpected_cleanup(
+        error: BaseException, inherited: BaseException | None
+    ) -> None:
         pytest.fail(f"success triggered failure cleanup: {error}")
 
     monkeypatch.setattr(

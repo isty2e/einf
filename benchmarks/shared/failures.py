@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable
 from functools import wraps
 from traceback import clear_frames
@@ -7,9 +8,11 @@ P = ParamSpec("P")
 Result = TypeVar("Result")
 
 
-def _clear_exception_frames(error: BaseException) -> None:
+def _clear_exception_frames(
+    error: BaseException, inherited: BaseException | None
+) -> None:
     pending = [error]
-    seen: set[int] = set()
+    seen = set() if inherited is None else {id(inherited)}
     while pending:
         current = pending.pop()
         if id(current) in seen:
@@ -37,14 +40,15 @@ def clear_failed_case_frames(case_call: Callable[P, Result]) -> Callable[P, Resu
     -------
     Callable[P, Result]
         Entrypoint with unchanged results and per-coordinate execution. On an
-        ordinary exception, clears completed traceback frames, including chained
-        and grouped exceptions, then re-raises the original exception. Traceback
-        locations remain available; completed frame locals do not.
+        ordinary exception, clears completed traceback frames for exceptions
+        raised within the case, including chains and groups, then re-raises the
+        original exception. Stops at the exception active on entry. Traceback
+        locations remain available; completed case frame locals do not.
 
     Raises
     ------
     Exception
-        The wrapped case's original failure, with completed frame locals cleared.
+        The wrapped case's original failure, with completed case frame locals cleared.
 
     Notes
     -----
@@ -55,12 +59,14 @@ def clear_failed_case_frames(case_call: Callable[P, Result]) -> Callable[P, Resu
 
     @wraps(case_call)
     def run(*args: P.args, **kwargs: P.kwargs) -> Result:
+        inherited = sys.exception()
         try:
             return case_call(*args, **kwargs)
         except Exception as error:
             # This wrapper is still executing, so clear_frames cannot clear it.
             del args, kwargs
-            _clear_exception_frames(error)
+            _clear_exception_frames(error, inherited)
+            del inherited
             raise
 
     return run
