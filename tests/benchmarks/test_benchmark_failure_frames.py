@@ -2,6 +2,7 @@ import gc
 import inspect
 import sys
 import traceback
+from collections.abc import Generator
 from types import FrameType
 from typing import Literal
 from weakref import ReferenceType, ref
@@ -263,12 +264,92 @@ def test_case_failure_preserves_preexisting_caller_ancestor_frames(
         pytest.fail("caller helper did not raise")
 
 
+@pytest.mark.parametrize("link", ["reraise", "cause", "group"])
+def test_case_failure_preserves_inactive_saved_exception_frames(
+    link: Literal["reraise", "cause", "group"],
+) -> None:
+    caller_payloads: list[ReferenceType[Payload]] = []
+    case_payloads: list[ReferenceType[Payload]] = []
+
+    def caller_helper() -> None:
+        payload = Payload()
+        caller_payloads.append(ref(payload))
+        raise KeyError("saved caller failure")
+
+    try:
+        caller_helper()
+    except KeyError as error:
+        saved = error
+    else:
+        pytest.fail("caller helper did not raise")
+
+    assert sys.exception() is None
+    assert saved.__traceback__ is not None
+    caller_frame = tuple(traceback.walk_tb(saved.__traceback__))[-1][0]
+
+    @clear_failed_case_frames
+    def fail(value: Payload) -> None:
+        case_payloads.append(ref(value))
+        if link == "reraise":
+            raise saved
+        if link == "group":
+            raise ExceptionGroup("case failure", [saved])
+        raise ValueError("case failure") from saved
+
+    with pytest.raises(Exception) as caught:
+        fail(Payload())
+
+    gc.collect()
+    assert case_payloads[0]() is None
+    assert caller_payloads[0]() is not None
+    assert caller_frame.f_locals["payload"] is caller_payloads[0]()
+    if link == "reraise":
+        assert caught.value is saved
+    elif link == "cause":
+        assert caught.value.__cause__ is saved
+    else:
+        assert isinstance(caught.value, ExceptionGroup)
+        assert caught.value.exceptions == (saved,)
+
+
+def test_case_failure_preserves_saved_suspended_generator() -> None:
+    caller_payloads: list[ReferenceType[Payload]] = []
+    case_payloads: list[ReferenceType[Payload]] = []
+
+    def caller_generator() -> Generator[KeyError | Payload, None, None]:
+        payload = Payload()
+        caller_payloads.append(ref(payload))
+        try:
+            raise KeyError("saved generator failure")
+        except KeyError as error:
+            yield error
+        yield payload
+
+    generator = caller_generator()
+    saved = next(generator)
+    assert isinstance(saved, KeyError)
+    assert sys.exception() is None
+
+    @clear_failed_case_frames
+    def fail(value: Payload) -> None:
+        case_payloads.append(ref(value))
+        raise saved
+
+    with pytest.raises(KeyError, match="saved generator failure") as caught:
+        fail(Payload())
+
+    gc.collect()
+    assert caught.value is saved
+    assert case_payloads[0]() is None
+    assert caller_payloads[0]() is not None
+    assert next(generator) is caller_payloads[0]()
+    generator.close()
+
+
 def test_case_success_preserves_signature_arguments_and_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unexpected_cleanup(
-        error: BaseException, protected_frames: frozenset[FrameType]
-    ) -> None:
+    def unexpected_cleanup(error: BaseException, boundary: FrameType) -> None:
         pytest.fail(f"success triggered failure cleanup: {error}")
 
     monkeypatch.setattr(

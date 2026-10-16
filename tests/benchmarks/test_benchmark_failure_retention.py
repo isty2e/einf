@@ -240,10 +240,13 @@ def test_retained_case_failure_releases_coordinate_payloads(
 
 @pytest.mark.parametrize("backend_name", ["numpy", "torch"])
 @pytest.mark.parametrize("stage", ["reference", "runner"])
+@pytest.mark.parametrize("active_at_entry", [True, False], ids=["active", "saved"])
 def test_case_releases_payloads_when_callback_reraises_caller_exception(
     monkeypatch: pytest.MonkeyPatch,
     backend_name: BackendName,
     stage: Literal["reference", "runner"],
+    *,
+    active_at_entry: bool,
 ) -> None:
     if backend_name == "torch":
         pytest.importorskip("torch")
@@ -257,17 +260,13 @@ def test_case_releases_payloads_when_callback_reraises_caller_exception(
     def reference(inputs: tuple[NumpyArray, ...]) -> NumpyOutput:
         track("reference", inputs[0])
         if stage == "reference":
-            active = sys.exception()
-            assert active is not None
-            raise active
+            raise saved
         return inputs[0]
 
     def make_runner() -> Runner:
         def run(inputs: tuple[Array, ...]) -> Output:
             track("runner", inputs[0])
-            active = sys.exception()
-            assert active is not None
-            raise active
+            raise saved
 
         return run
 
@@ -283,7 +282,7 @@ def test_case_releases_payloads_when_callback_reraises_caller_exception(
     )
     case = BenchmarkCase(
         name="reraised_caller_exception",
-        description="A callback re-raises the caller's active exception.",
+        description="A callback re-raises a caller-owned exception.",
         calls=CaseCalls(einf="raise", einops="unused", einx="unused"),
         reference=reference,
         make_einf_runner=make_runner,
@@ -301,12 +300,8 @@ def test_case_releases_payloads_when_callback_reraises_caller_exception(
         track("caller", payload)
         raise KeyError("caller failure")
 
-    try:
-        caller_helper()
-    except KeyError as outer:
-        assert outer.__traceback__ is not None
-        assert outer.__traceback__.tb_next is not None
-        caller_frame = outer.__traceback__.tb_next.tb_frame
+    def execute() -> Exception:
+        assert (sys.exception() is saved) == active_at_entry
         with pytest.raises(KeyError, match="caller failure") as caught:
             runner.run_fixed_case(
                 case_spec=FixedCaseSpec(case=case, inputs=materialize()),
@@ -316,16 +311,93 @@ def test_case_releases_payloads_when_callback_reraises_caller_exception(
                 order_seed=1,
             )
 
-        gc.collect()
-        assert caught.value is outer
-        assert caller_frame.f_locals["payload"] is payloads["caller"][0]()
-        expected_labels = {"caller", "prepared", "reference"}
-        if stage == "runner":
-            expected_labels.add("runner")
-        assert set(payloads) == expected_labels
-        for label in expected_labels - {"caller"}:
-            assert payloads[label] and all(
-                weak() is None for weak in payloads[label]
-            ), label
+        return caught.value
+
+    try:
+        caller_helper()
+    except KeyError as outer:
+        saved = outer
+        assert outer.__traceback__ is not None
+        assert outer.__traceback__.tb_next is not None
+        caller_frame = outer.__traceback__.tb_next.tb_frame
+        if active_at_entry:
+            retained = execute()
     else:
         pytest.fail("caller helper did not raise")
+
+    if not active_at_entry:
+        retained = execute()
+
+    gc.collect()
+    assert retained is saved
+    assert caller_frame.f_locals["payload"] is payloads["caller"][0]()
+    expected_labels = {"caller", "prepared", "reference"}
+    if stage == "runner":
+        expected_labels.add("runner")
+    assert set(payloads) == expected_labels
+    for label in expected_labels - {"caller"}:
+        assert payloads[label] and all(weak() is None for weak in payloads[label]), (
+            label
+        )
+
+
+@pytest.mark.parametrize("backend_name", ["numpy", "torch"])
+def test_case_input_guard_failure_releases_inputs(
+    monkeypatch: pytest.MonkeyPatch, backend_name: BackendName
+) -> None:
+    if backend_name == "torch":
+        pytest.importorskip("torch")
+    ticks = itertools.count()
+    monkeypatch.setattr(profiler_module.time, "perf_counter", lambda: next(ticks))
+    inputs: list[ReferenceType[Array]] = []
+
+    def make_runner() -> Runner:
+        def run(batch: tuple[Array, ...]) -> Output:
+            if isinstance(batch[0], np.ndarray):
+                batch[0].setflags(write=True)
+            else:
+                batch[0].add_(1)
+            return batch[0]
+
+        return run
+
+    backend = BackendSpec(name=backend_name)
+    runner = BenchmarkRunner(
+        backend=backend,
+        profiler=Profiler(backend=backend),
+        available={
+            "einf": (True, "available"),
+            "einops": (False, "unused"),
+            "einx": (False, "unused"),
+        },
+    )
+    case = BenchmarkCase(
+        name="input_guard_failure",
+        description="The runner violates input preservation.",
+        calls=CaseCalls(einf="mutate", einops="unused", einx="unused"),
+        reference=lambda batch: batch[0],
+        make_einf_runner=make_runner,
+        make_einops_runner=make_runner,
+        make_einx_runner=make_runner,
+    )
+
+    def materialize() -> tuple[Array, ...]:
+        batch = backend.to_backend_batch((np.ones(2, dtype=np.float32),))
+        inputs.append(ref(batch[0]))
+        return batch
+
+    message = (
+        "removed input write protection" if backend_name == "numpy" else "mutated input"
+    )
+    with pytest.raises(RuntimeError, match=message) as caught:
+        runner.run_fixed_case(
+            case_spec=FixedCaseSpec(case=case, inputs=materialize()),
+            config=FixedTaskConfig(
+                scale="small", seed=1, rounds=1, warmup=0, repeats=1, iterations=1
+            ),
+            order_seed=1,
+        )
+
+    gc.collect()
+    assert caught.value.__traceback__ is not None
+    assert len(inputs) == 1 and inputs[0]() is None
