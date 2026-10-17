@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 import venv
 from pathlib import Path
@@ -30,6 +32,30 @@ def _write_wheel(directory: Path, name: str, version: str) -> None:
             f"{name}-{version}.dist-info/METADATA",
             f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
         )
+
+
+def _write_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    _write_project(root)
+    helper = root / "tests" / "ci" / "dependencies.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# resolver input\n", encoding="utf-8")
+    directory = root / "release bundle"
+    directory.mkdir()
+    for profile in dependencies.SNAPSHOT_PROFILES:
+        (directory / f"{profile}.txt").write_text("pip==26.2.1\n", encoding="utf-8")
+
+    monkeypatch.setattr(dependencies, "checkout_revision", lambda root: "a" * 40)
+    (directory / "resolution.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "source_sha": "a" * 40,
+                "hashes": dependencies.bundle_hashes(root, directory),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return directory
 
 
 @pytest.mark.parametrize(
@@ -134,9 +160,15 @@ def test_wheel_constraints_require_pinned_installer(tmp_path: Path) -> None:
         "non_cpu",
     ],
 )
+@pytest.mark.parametrize("use_bundle", [False, True])
 def test_preparation_activates_only_verified_complete_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+    use_bundle: bool,
 ) -> None:
+    bundle = _write_bundle(tmp_path, monkeypatch) if use_bundle else None
+    snapshots = bundle if bundle is not None else tmp_path / ".github" / "requirements"
     wheelhouse = tmp_path / "path with spaces" / "wheels"
     github_env = tmp_path / "environment"
     github_env.write_text("EXISTING=kept\n", encoding="utf-8")
@@ -156,7 +188,7 @@ def test_preparation_activates_only_verified_complete_environment(
             assert "--require-hashes" in command
             assert "--only-binary=:all:" in command
             assert "--no-deps" in command
-            assert command[-1].endswith("build.txt")
+            assert Path(command[-1]) == snapshots / "build.txt"
             if failure == "download":
                 raise subprocess.CalledProcessError(1, command)
 
@@ -167,7 +199,7 @@ def test_preparation_activates_only_verified_complete_environment(
             assert "--require-hashes" in command
             assert "--no-build-isolation" in command
             assert "--check-build-dependencies" in command
-            assert command[-1].endswith("torch.txt")
+            assert Path(command[-1]) == snapshots / "torch.txt"
             if failure == "assembly":
                 raise subprocess.CalledProcessError(1, command)
 
@@ -213,12 +245,16 @@ def test_preparation_activates_only_verified_complete_environment(
             "non_cpu": (ValueError, "CPU-only torch"),
         }[failure]
         with pytest.raises(expected, match=message):
-            dependencies.prepare_dependencies(tmp_path, "torch", wheelhouse, github_env)
+            dependencies.prepare_dependencies(
+                tmp_path, "torch", wheelhouse, github_env, bundle=bundle
+            )
 
         assert github_env.read_text() == "EXISTING=kept\n"
         return
 
-    dependencies.prepare_dependencies(tmp_path, "torch", wheelhouse, github_env)
+    dependencies.prepare_dependencies(
+        tmp_path, "torch", wheelhouse, github_env, bundle=bundle
+    )
 
     assert len(commands) == 4
     constraints = wheelhouse / "constraints.txt"
@@ -285,3 +321,204 @@ def test_refresh_uses_universal_snapshots_except_the_existing_cpu_torch_role(
             assert content.startswith(f"--extra-index-url {dependencies.CPU_INDEX}\n")
         else:
             assert "--universal" in command
+
+
+def test_resolve_bundle_records_complete_evidence_without_refreshing_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_project(tmp_path)
+    helper = tmp_path / "tests" / "ci" / "dependencies.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# resolver input\n", encoding="utf-8")
+    destination = tmp_path / "new bundle"
+    commands: list[list[str]] = []
+
+    def run(
+        command: list[str], *, check: bool, timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        assert check and timeout > 0
+        commands.append(command)
+        Path(command[command.index("--output-file") + 1]).write_text("pip==26.2.1\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dependencies.subprocess, "run", run)
+    monkeypatch.setattr(dependencies, "checkout_revision", lambda root: "a" * 40)
+    monkeypatch.setattr(
+        dependencies.subprocess, "check_output", lambda *args, **kwargs: "uv 0.12.23\n"
+    )
+    dependencies.resolve_bundle(tmp_path, destination)
+
+    assert len(commands) == 7
+    assert not (tmp_path / ".github").exists()
+    receipt = json.loads((destination / "resolution.json").read_text())
+    assert receipt["source_sha"] == "a" * 40
+    assert receipt["resolver"] == "uv 0.12.23"
+    assert receipt["resolved_at"].endswith("+00:00")
+    assert receipt["python"] and receipt["platform"]
+    assert receipt["hashes"]["snapshots"] == {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in destination.glob("*.txt")
+    }
+    assert len(receipt["hashes"]["snapshots"]) == 7
+    dependencies.validate_bundle(tmp_path, destination)
+
+
+def test_bundle_resolution_failure_cannot_leave_a_completed_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_project(tmp_path)
+    destination = tmp_path / "failed bundle"
+    monkeypatch.setattr(dependencies, "checkout_revision", lambda root: "a" * 40)
+    monkeypatch.setattr(
+        dependencies.subprocess, "check_output", lambda *args, **kwargs: "uv 0.12.23\n"
+    )
+
+    def fail(root: Path, destination: Path) -> None:
+        (destination / "build.txt").write_text("partial result\n")
+        raise subprocess.CalledProcessError(1, ["uv", "pip", "compile"])
+
+    monkeypatch.setattr(dependencies, "refresh_snapshots", fail)
+    with pytest.raises(subprocess.CalledProcessError, match="non-zero exit status"):
+        dependencies.resolve_bundle(tmp_path, destination)
+
+    assert not (destination / "resolution.json").exists()
+
+
+def test_bundle_resolution_refuses_preexisting_destination(tmp_path: Path) -> None:
+    with pytest.raises(FileExistsError):
+        dependencies.resolve_bundle(tmp_path, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "schema",
+        "scalar",
+        "source",
+        "hashes",
+        "receipt",
+        *dependencies.RESOLUTION_INPUTS,
+        *(f"{profile}.txt" for profile in dependencies.SNAPSHOT_PROFILES),
+    ],
+)
+def test_external_bundle_is_rejected_before_preparation_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    bundle = _write_bundle(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        dependencies.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invalid bundle reached the installer"),
+    )
+    receipt_path = bundle / "resolution.json"
+    receipt = json.loads(receipt_path.read_text())
+    if damage == "schema":
+        receipt["schema_version"] = "v2"
+    elif damage == "scalar":
+        receipt = None
+    elif damage == "source":
+        receipt["source_sha"] = "b" * 40
+    elif damage == "hashes":
+        del receipt["hashes"]
+    elif damage == "receipt":
+        receipt_path.unlink()
+    else:
+        path = (
+            tmp_path / damage
+            if damage in dependencies.RESOLUTION_INPUTS
+            else bundle / damage
+        )
+        path.write_text("changed\n", encoding="utf-8")
+
+    if damage != "receipt":
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    wheelhouse = tmp_path / "uncreated wheels"
+    environment = tmp_path / "environment"
+    environment.write_text("EXISTING=kept\n")
+    expected = {
+        "schema": (ValueError, "unsupported dependency resolution receipt"),
+        "scalar": (ValueError, "unsupported dependency resolution receipt"),
+        "source": (ValueError, "source does not match"),
+        "receipt": (FileNotFoundError, "resolution.json"),
+    }.get(damage, (ValueError, "hashes do not match"))
+    with pytest.raises(expected[0], match=expected[1]):
+        dependencies.prepare_dependencies(
+            tmp_path, "base", wheelhouse, environment, bundle=bundle
+        )
+
+    assert not wheelhouse.exists()
+    assert environment.read_text() == "EXISTING=kept\n"
+
+
+def test_bundle_accepts_native_checkout_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _write_bundle(tmp_path, monkeypatch)
+    for name in dependencies.RESOLUTION_INPUTS:
+        path = tmp_path / name
+        path.write_bytes(path.read_text().replace("\n", "\r\n").encode("utf-8"))
+
+    dependencies.validate_bundle(tmp_path, bundle)
+
+
+@pytest.mark.parametrize("profile", dependencies.SNAPSHOT_PROFILES)
+def test_bundle_requires_every_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    bundle = _write_bundle(tmp_path, monkeypatch)
+    (bundle / f"{profile}.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match=f"{profile}.txt"):
+        dependencies.validate_bundle(tmp_path, bundle)
+
+
+@pytest.mark.parametrize("use_bundle", [False, True])
+def test_prepare_cli_preserves_dependency_source_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_bundle: bool
+) -> None:
+    bundle = tmp_path / "release bundle" if use_bundle else None
+    argv = ["dependencies.py", "prepare", "base"]
+    if bundle is not None:
+        argv.extend(["--bundle", str(bundle)])
+
+    calls: list[Path | None] = []
+
+    def prepare(
+        root: Path,
+        profile: str,
+        wheelhouse: Path,
+        github_env: Path,
+        *,
+        bundle: Path | None = None,
+    ) -> None:
+        assert root == Path(dependencies.__file__).resolve().parents[2]
+        assert profile == "base"
+        assert wheelhouse == tmp_path / "einf-ci-wheels"
+        assert github_env == tmp_path / "environment"
+        calls.append(bundle)
+
+    monkeypatch.setattr(dependencies.sys, "argv", argv)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_ENV", str(tmp_path / "environment"))
+    monkeypatch.setattr(dependencies, "prepare_dependencies", prepare)
+    dependencies.main()
+
+    assert calls == [bundle]
+
+
+def test_resolve_cli_routes_to_bundle_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        dependencies.sys, "argv", ["dependencies.py", "resolve", str(tmp_path)]
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "resolve_bundle",
+        lambda root, destination: calls.append((root, destination)),
+    )
+    dependencies.main()
+
+    assert calls == [(Path(dependencies.__file__).resolve().parents[2], tmp_path)]

@@ -1,13 +1,17 @@
-"""Prepare fixed CI dependencies or refresh their reviewed snapshots."""
+"""Resolve, verify, and prepare CI dependency snapshots."""
 
 import argparse
+import hashlib
+import json
 import os
+import platform
 import re
 import subprocess
 import sys
 import tempfile
 import tomllib
 import venv
+from datetime import UTC, datetime
 from email.parser import Parser
 from pathlib import Path
 from types import MappingProxyType
@@ -34,6 +38,8 @@ PROFILE_TOOLS = MappingProxyType(
 )
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 BUILD_REQUIREMENTS = ("pip>=25.3", "setuptools", "wheel", "Cython")
+SNAPSHOT_PROFILES = ("build", *PROFILE_EXTRAS)
+RESOLUTION_INPUTS = ("pyproject.toml", "tests/ci/dependencies.py")
 
 
 def profile_requirements(root: Path, profile: str) -> tuple[str, ...]:
@@ -121,7 +127,12 @@ def wheel_constraints(wheelhouse: Path) -> dict[str, str]:
 
 
 def prepare_dependencies(
-    root: Path, profile: str, wheelhouse: Path, github_env: Path
+    root: Path,
+    profile: str,
+    wheelhouse: Path,
+    github_env: Path,
+    *,
+    bundle: Path | None = None,
 ) -> None:
     """Assemble the role's wheels, then activate offline constrained installs.
 
@@ -135,20 +146,29 @@ def prepare_dependencies(
         New directory retained for the lifetime of the CI job.
     github_env : Path
         GitHub Actions environment file, appended only after preparation succeeds.
+    bundle : Path or None, optional
+        Fresh-resolution bundle for this checkout. None uses reviewed snapshots.
 
     Raises
     ------
     FileExistsError
         The wheelhouse already exists and could contain unreviewed wheels.
     ValueError
-        Wheel metadata is incomplete or the Torch role is not CPU-only.
+        Bundle evidence does not match, wheel metadata is incomplete, or the
+        Torch role is not CPU-only.
+    OSError
+        A required bundle file cannot be read.
     subprocess.CalledProcessError
-        Hash verification, downloading, building, or bootstrapping fails.
+        Git discovery, hash verification, downloading, building, or bootstrapping fails.
     subprocess.TimeoutExpired
-        Downloading, building, or installer bootstrapping exceeds its deadline.
+        Git discovery, downloading, building, or bootstrapping exceeds its deadline.
     """
-    snapshot = root / ".github" / "requirements" / f"{profile}.txt"
-    build_snapshot = root / ".github" / "requirements" / "build.txt"
+    if bundle is not None:
+        validate_bundle(root, bundle)
+
+    snapshots = bundle if bundle is not None else root / ".github" / "requirements"
+    snapshot = snapshots / f"{profile}.txt"
+    build_snapshot = snapshots / "build.txt"
     wheelhouse.mkdir(parents=True, exist_ok=False)
     build_wheels = wheelhouse / "build-wheels"
     build_wheels.mkdir()
@@ -257,13 +277,15 @@ def prepare_dependencies(
         output.writelines(f"{name}={value}\n" for name, value in environment.items())
 
 
-def refresh_snapshots(root: Path) -> None:
+def refresh_snapshots(root: Path, destination: Path | None = None) -> None:
     """Resolve new CI snapshots without changing the package's allowed ranges.
 
     Parameters
     ----------
     root : Path
         Checkout whose package metadata supplies requirement ranges.
+    destination : Path or None, optional
+        Output directory. None refreshes the checkout's reviewed snapshots.
 
     Raises
     ------
@@ -272,11 +294,13 @@ def refresh_snapshots(root: Path) -> None:
     subprocess.TimeoutExpired
         Resolving a role exceeds its deadline.
     """
-    destination = root / ".github" / "requirements"
+    if destination is None:
+        destination = root / ".github" / "requirements"
+
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
-        for profile in ("build", *PROFILE_EXTRAS):
+        for profile in SNAPSHOT_PROFILES:
             requirements = directory / f"{profile}.in"
             specifiers = (
                 BUILD_REQUIREMENTS
@@ -315,24 +339,166 @@ def refresh_snapshots(root: Path) -> None:
             (destination / f"{profile}.txt").write_text(content, encoding="utf-8")
 
 
+def checkout_revision(root: Path) -> str:
+    """Read the commit checked out by the workflow.
+
+    Parameters
+    ----------
+    root : Path
+        Git checkout being tested.
+
+    Returns
+    -------
+    str
+        Full commit object identifier.
+
+    Raises
+    ------
+    subprocess.CalledProcessError
+        Git cannot identify the checkout.
+    subprocess.TimeoutExpired
+        Git does not respond within ten seconds.
+    """
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=10
+    ).strip()
+
+
+def bundle_hashes(root: Path, directory: Path) -> dict[str, dict[str, str]]:
+    """Fingerprint the resolution inputs and complete role snapshot set.
+
+    Parameters
+    ----------
+    root : Path
+        Checkout supplying package and resolver inputs.
+    directory : Path
+        Directory containing all seven requirements snapshots.
+
+    Returns
+    -------
+    dict[str, dict[str, str]]
+        Input and snapshot names mapped to SHA-256 digests. Text inputs use
+        normalized newlines so Windows and POSIX checkouts agree.
+
+    Raises
+    ------
+    OSError
+        A required input or snapshot cannot be read.
+    """
+    return {
+        "inputs": {
+            name: hashlib.sha256(
+                (root / name).read_text(encoding="utf-8").encode("utf-8")
+            ).hexdigest()
+            for name in RESOLUTION_INPUTS
+        },
+        "snapshots": {
+            f"{profile}.txt": hashlib.sha256(
+                (directory / f"{profile}.txt").read_bytes()
+            ).hexdigest()
+            for profile in SNAPSHOT_PROFILES
+        },
+    }
+
+
+def resolve_bundle(root: Path, destination: Path) -> None:
+    """Resolve a fresh, source-bound dependency bundle.
+
+    Parameters
+    ----------
+    root : Path
+        Checkout supplying package and CI role requirements.
+    destination : Path
+        New directory for snapshots and resolution evidence.
+
+    Raises
+    ------
+    FileExistsError
+        The destination already exists.
+    OSError
+        An input or output file cannot be accessed.
+    subprocess.CalledProcessError
+        Git, uv version discovery, or dependency resolution fails.
+    subprocess.TimeoutExpired
+        A discovery or resolution command exceeds its deadline.
+    """
+    destination.mkdir(parents=True, exist_ok=False)
+    source_sha = checkout_revision(root)
+    resolver = subprocess.check_output(
+        ["uv", "--version"], text=True, timeout=10
+    ).strip()
+    refresh_snapshots(root, destination)
+    receipt = {
+        "schema_version": "v1",
+        "source_sha": source_sha,
+        "resolved_at": datetime.now(UTC).isoformat(),
+        "resolver": resolver,
+        "python": platform.python_version(),
+        "platform": sys.platform,
+        "machine": platform.machine(),
+        "hashes": bundle_hashes(root, destination),
+    }
+    (destination / "resolution.json").write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def validate_bundle(root: Path, directory: Path) -> None:
+    """Reject a bundle not bound to this checkout and its resolution inputs.
+
+    Parameters
+    ----------
+    root : Path
+        Checkout whose code will consume the dependency bundle.
+    directory : Path
+        Downloaded complete bundle and resolution evidence.
+
+    Raises
+    ------
+    ValueError
+        The receipt is invalid or its source, inputs, or snapshots do not match.
+    OSError
+        Required resolution evidence cannot be read.
+    subprocess.CalledProcessError
+        Git cannot identify the checkout.
+    subprocess.TimeoutExpired
+        Git does not respond within ten seconds.
+    """
+    receipt = json.loads((directory / "resolution.json").read_text(encoding="utf-8"))
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != "v1":
+        raise ValueError("unsupported dependency resolution receipt")
+
+    if receipt.get("source_sha") != checkout_revision(root):
+        raise ValueError("dependency bundle source does not match the checkout")
+
+    if receipt.get("hashes") != bundle_hashes(root, directory):
+        raise ValueError("dependency bundle input or snapshot hashes do not match")
+
+
 def main() -> None:
     """Run the selected CI dependency command."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("profile", choices=tuple(PROFILE_EXTRAS))
+    prepare.add_argument("--bundle", type=Path)
     commands.add_parser("refresh")
+    resolve = commands.add_parser("resolve")
+    resolve.add_argument("destination", type=Path)
     arguments = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
 
     if arguments.command == "refresh":
         refresh_snapshots(root)
+    elif arguments.command == "resolve":
+        resolve_bundle(root, arguments.destination)
     else:
         prepare_dependencies(
             root,
             arguments.profile,
             Path(os.environ["RUNNER_TEMP"]) / "einf-ci-wheels",
             Path(os.environ["GITHUB_ENV"]),
+            bundle=arguments.bundle,
         )
 
 

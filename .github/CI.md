@@ -57,3 +57,40 @@ These snapshots fix project, build, and test dependency versions, not the
 entire runner environment. Runner images, Python patch versions, and
 bundled environment-bootstrap tooling can still change. A green run is
 evidence for the tested revision and environment, not every later release.
+
+## Before a release
+
+Run **Release dependency check** against the branch or tag you intend to
+release. It resolves the newest compatible dependency combination within
+the package's ranges, then calls the existing CI workflow. It runs the
+same 13 checks, including the supported Python matrix, optional LSP and
+Torch environments, actual checker executables, and installed artifacts.
+It does not update the committed snapshots or publish a package.
+
+The workflow must be present on the default branch before GitHub allows
+manual dispatch. With the GitHub CLI, for example:
+
+```sh
+gh workflow run release-check.yml --ref develop
+gh run list --workflow release-check.yml --event workflow_dispatch --limit 5
+```
+
+Use the release candidate's branch or tag instead of `develop` when
+appropriate. Check the run's commit SHA against the intended candidate;
+a moving branch name is not sufficient evidence. Only a completed,
+successful run of the whole workflow establishes compatibility for that
+candidate. Successful resolution alone is not a passing release check.
+
+The run retains a `latest-compatible-dependencies` artifact, suffixed with
+the resolution attempt number. It contains all seven hashed snapshots and
+`resolution.json`, which records the source commit, resolution time,
+resolver version, resolution environment, and input/snapshot hashes. Each
+job downloads the exact artifact ID produced by resolution and verifies
+its source and hashes before installing. Missing or mismatched evidence
+fails rather than falling back to the fixed snapshots.
+
+Retrying failed checks uses the completed resolution job's artifact. Start
+a new workflow run when you need a fresh dependency resolution; the result
+only covers the versions selected for that run. Artifact availability is
+subject to GitHub's retention policy. Ordinary PR and push checks continue
+to use the committed snapshots.
