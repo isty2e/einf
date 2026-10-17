@@ -6,3 +6,13 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci(deps)
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: weekly
+    groups:
+      ci-python:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci(deps)
