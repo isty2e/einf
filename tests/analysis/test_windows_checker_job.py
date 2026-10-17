@@ -5,8 +5,9 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import Literal, cast
 
 import pytest
@@ -232,7 +233,7 @@ def test_windows_executor_closes_scope_and_preserves_launch_failure(
     assert scope.closed and scope.terminations >= 2 and scope.queries >= 1
     if started:
         assert result.failures == ()
-        assert adapter.outputs == [("payload\n", "")]
+        assert adapter.outputs == [("payload" + os.linesep, "")]
     else:
         assert len(result.failures) == 1 and result.failures[0].kind == "spawn_error"
         assert adapter.outputs == []
@@ -357,6 +358,21 @@ def test_windows_launcher_preserves_argv_environment_and_raw_output(
         assert job.is_empty()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="native Windows error state")
+def test_windows_api_failure_uses_ctypes_error_snapshot() -> None:
+    if sys.platform == "win32":
+        native = ctypes.WinDLL("kernel32", use_last_error=False)
+        native.SetLastError.argtypes = [ctypes.c_uint32]
+        native.SetLastError.restype = None
+        previous = ctypes.get_last_error()
+        ctypes.set_last_error(5)
+        native.SetLastError(87)
+        try:
+            assert getattr(windows_job._win_error(), "winerror", None) == 5
+        finally:
+            ctypes.set_last_error(previous)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="native Windows Job integration")
 def test_windows_launcher_cannot_run_without_parent_job(tmp_path: Path) -> None:
     marker = tmp_path / "unexpected-body"
@@ -387,19 +403,52 @@ async def _wait_pid(path: Path) -> int:
     return await asyncio.wait_for(read(), timeout=10)
 
 
-def _assert_windows_pid_exited(pid: int) -> None:
-    kernel = windows_job._load_kernel32()
-    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
-    kernel.OpenProcess.restype = ctypes.c_void_p
-    handle = kernel.OpenProcess(0x00100000, False, pid)
-    if not handle:
-        # ERROR_INVALID_PARAMETER: the process object has already disappeared.
-        assert getattr(windows_job._win_error(), "winerror", None) == 87
-        return
-    try:
-        assert kernel.WaitForSingleObject(handle, 0) == 0
-    finally:
-        assert kernel.CloseHandle(handle)
+class _WindowsProcessProbe(AbstractContextManager["_WindowsProcessProbe"]):
+    def __init__(self, pid: int) -> None:
+        self.kernel = windows_job._load_kernel32()
+        self.kernel.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int32,
+            ctypes.c_uint32,
+        ]
+        self.kernel.OpenProcess.restype = ctypes.c_void_p
+        self.kernel.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        self.kernel.TerminateProcess.restype = ctypes.c_int32
+        self.handle = self.kernel.OpenProcess(0x00100001, False, pid)
+        if not self.handle:
+            raise windows_job._win_error()
+
+    def has_exited(self) -> bool:
+        status = self.kernel.WaitForSingleObject(self.handle, 0)
+        if status == 0:
+            return True
+        if status == 258:
+            return False
+        raise windows_job._win_error()
+
+    async def wait_exited(self) -> None:
+        async def observe() -> None:
+            while not self.has_exited():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(observe(), timeout=5)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        try:
+            if not self.has_exited():
+                if not self.kernel.TerminateProcess(self.handle, 1):
+                    error = windows_job._win_error()
+                    if not self.has_exited():
+                        raise error
+                assert self.kernel.WaitForSingleObject(self.handle, 5000) == 0
+        finally:
+            assert self.kernel.CloseHandle(self.handle)
+        return False
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows Job integration")
@@ -421,8 +470,10 @@ def test_windows_executor_reaps_owned_descendants(
     parent_exits: bool,
 ) -> None:
     async def scenario() -> None:
+        parent_pid_path = tmp_path / "parent.pid"
         child_pid_path = tmp_path / "child.pid"
         grandchild_pid_path = tmp_path / "grandchild.pid"
+        release = tmp_path / "release-checker"
         grandchild = (
             "import os, time; from pathlib import Path; "
             f"Path({str(grandchild_pid_path)!r}).write_text(str(os.getpid())); "
@@ -440,52 +491,63 @@ def test_windows_executor_reaps_owned_descendants(
             else ""
         )
         parent = (
-            "import subprocess, sys, time\nfrom pathlib import Path\n"
+            "import os, subprocess, sys, time\nfrom pathlib import Path\n"
+            f"Path({str(parent_pid_path)!r}).write_text(str(os.getpid()))\n"
             f"subprocess.Popen([sys.executable, '-c', {child!r}]{redirection})\n"
-            f"while not Path({str(grandchild_pid_path)!r}).exists(): time.sleep(0.01)\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
             + ("print('x' * 8192, flush=True)\n" if finish == "overflow" else "")
             + ("time.sleep(60)\n" if not parent_exits else "")
         )
         adapter = _RecordingAdapter((sys.executable, "-c", parent))
         executor = CheckerExecutor(
             CheckerExecutionPolicy(
-                timeout_seconds=5 if finish == "timeout" else 30,
+                timeout_seconds=15 if finish == "timeout" else 30,
                 cleanup_timeout_seconds=2,
                 max_output_bytes=1024 if finish == "overflow" else 8192,
             )
         )
         task = asyncio.create_task(executor.run(adapter, _request(tmp_path)))
-        child_pid = None
-        grandchild_pid = None
-        try:
-            child_pid = await _wait_pid(child_pid_path)
-            grandchild_pid = await _wait_pid(grandchild_pid_path)
-            if finish == "cancel":
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
-            else:
-                result = await asyncio.wait_for(task, timeout=15)
-                if finish == "normal":
-                    assert result.failures == ()
+        with ExitStack() as resources:
+            try:
+                parent_pid = await _wait_pid(parent_pid_path)
+                checker = resources.enter_context(_WindowsProcessProbe(parent_pid))
+                child_pid = await _wait_pid(child_pid_path)
+                child_probe = resources.enter_context(_WindowsProcessProbe(child_pid))
+                grandchild_pid = await _wait_pid(grandchild_pid_path)
+                grandchild_probe = resources.enter_context(
+                    _WindowsProcessProbe(grandchild_pid)
+                )
+                release.touch()
+                if parent_exits:
+                    await checker.wait_exited()
+                if finish == "cancel":
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(task, timeout=5)
                 else:
-                    expected = (
-                        "timeout" if finish == "timeout" else "output_limit_exceeded"
-                    )
-                    assert (
-                        len(result.failures) == 1
-                        and result.failures[0].kind == expected
-                    )
-                    assert "cleanup did not complete" not in result.failures[0].message
-            _assert_windows_pid_exited(child_pid)
-            _assert_windows_pid_exited(grandchild_pid)
-        finally:
-            if not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            for pid in (child_pid, grandchild_pid):
-                if pid is not None:
-                    _stop_windows_pid(pid)
+                    result = await asyncio.wait_for(task, timeout=25)
+                    if finish == "normal":
+                        assert result.failures == ()
+                    else:
+                        expected = (
+                            "timeout"
+                            if finish == "timeout"
+                            else "output_limit_exceeded"
+                        )
+                        assert (
+                            len(result.failures) == 1
+                            and result.failures[0].kind == expected
+                        )
+                        assert (
+                            "cleanup did not complete" not in result.failures[0].message
+                        )
+                assert checker.has_exited()
+                assert child_probe.has_exited()
+                assert grandchild_probe.has_exited()
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
 
@@ -557,24 +619,6 @@ def test_windows_checker_runs_do_not_accumulate_native_handles(tmp_path: Path) -
     asyncio.run(scenario())
 
 
-def _stop_windows_pid(pid: int) -> None:
-    kernel = windows_job._load_kernel32()
-    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
-    kernel.OpenProcess.restype = ctypes.c_void_p
-    kernel.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel.TerminateProcess.restype = ctypes.c_int32
-    handle = kernel.OpenProcess(0x00100001, False, pid)
-    if not handle:
-        assert getattr(windows_job._win_error(), "winerror", None) == 87
-        return
-    try:
-        if kernel.WaitForSingleObject(handle, 0) != 0:
-            assert kernel.TerminateProcess(handle, 1)
-            assert kernel.WaitForSingleObject(handle, 5000) == 0
-    finally:
-        assert kernel.CloseHandle(handle)
-
-
 @pytest.mark.skipif(os.name != "nt", reason="native Windows Job integration")
 def test_windows_cancellation_before_job_join_reaps_launcher(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -606,19 +650,18 @@ def test_windows_cancellation_before_job_join_reaps_launcher(
         )
         executor = CheckerExecutor(CheckerExecutionPolicy(cleanup_timeout_seconds=2))
         task = asyncio.create_task(executor.run(adapter, _request(tmp_path)))
-        pid = None
-        try:
-            pid = await _wait_pid(launcher_pid)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=5)
-            _assert_windows_pid_exited(pid)
-            assert not checker_marker.exists()
-        finally:
-            if not task.done():
+        with ExitStack() as resources:
+            try:
+                pid = await _wait_pid(launcher_pid)
+                probe = resources.enter_context(_WindowsProcessProbe(pid))
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            if pid is not None:
-                _stop_windows_pid(pid)
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+                assert probe.has_exited()
+                assert not checker_marker.exists()
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())

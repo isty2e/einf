@@ -118,7 +118,7 @@ def _load_kernel32() -> ctypes.CDLL:
 
 def _win_error() -> OSError:
     if sys.platform == "win32":
-        return ctypes.WinError()
+        return ctypes.WinError(ctypes.get_last_error())
     return OSError("Windows checker API failure")
 
 
