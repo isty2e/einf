@@ -136,12 +136,15 @@ jobs:
           PY
 
   windows-checkers:
-    name: windows-checkers (Python ${{ matrix.python-version }})
+    name: windows-checkers (Python ${{ matrix.python-version }}, ${{ matrix.environment }})
     runs-on: windows-latest
+    env:
+      EINF_WINDOWS_TEST_ENV: ${{ matrix.environment }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.14"]
+        environment: ["system", "venv"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,6 +152,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Create checker virtual environment
+        if: matrix.environment == 'venv'
+        run: |
+          python -m venv .venv-windows-checkers
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:GITHUB_WORKSPACE '.venv-windows-checkers\Scripts')
       - name: Build and install wheel
         run: |
           python -m pip install build pytest pyrefly
@@ -163,6 +171,7 @@ jobs:
       - name: Exercise installed wheel launcher
         shell: python
         run: |
+          import os
           import subprocess
           import sys
           from pathlib import Path
@@ -170,6 +179,7 @@ jobs:
           from einf.analysis.checkers.windows_job import WindowsJob
           import einf.analysis.checkers.windows_job as module
 
+          assert (sys.prefix != sys.base_prefix) == (os.environ["EINF_WINDOWS_TEST_ENV"] == "venv")
           assert Path(module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
           with WindowsJob() as job:
               completed = subprocess.run(

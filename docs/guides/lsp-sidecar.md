@@ -189,6 +189,11 @@ checks that the Job is empty within the cleanup deadline. Remaining helpers are
 also terminated after a checker finishes normally. Job setup failures are
 reported rather than falling back to an unowned process.
 
+On both platforms, output collection waits for stdout and stderr EOF, not just
+the main checker's exit. A helper that retains either pipe can keep the run
+open until `checkerTimeoutSeconds`; the run then reports a timeout rather than
+publishing incomplete output. There is no separate post-exit grace period.
+
 The Windows launcher adds one Python process per active checker run. It does
 not import `einf` or load site initialization, but still adds interpreter startup
 and memory overhead. This affects external checker runs, not `einf` semantic
