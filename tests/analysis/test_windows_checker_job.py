@@ -95,6 +95,20 @@ def test_windows_job_attempts_both_closes_and_can_retry(
     assert kernel.closed == [kernel.event, kernel.job, kernel.event]
 
 
+@pytest.mark.parametrize("executable", [None, "", 3])
+def test_windows_launcher_requires_base_interpreter_metadata(
+    monkeypatch: pytest.MonkeyPatch, executable: str | int | None
+) -> None:
+    kernel = _KernelProbe()
+    monkeypatch.setattr(
+        windows_job, "_load_kernel32", lambda: cast(ctypes.CDLL, kernel)
+    )
+    monkeypatch.setattr(sys, "_base_executable", executable, raising=False)
+    with WindowsJob() as job, pytest.raises(OSError, match="base Python executable"):
+        job.launch_command(("checker", "--json"))
+    assert kernel.closed == [kernel.event, kernel.job]
+
+
 def test_windows_job_close_failure_does_not_replace_cancellation(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -330,7 +344,7 @@ def test_windows_launcher_preserves_argv_environment_and_raw_output(
     monkeypatch.setenv("EINF_CHECKER_PROBE", "inherited")
     script = (
         "import ctypes, json, os, sys; "
-        "print(json.dumps([sys.argv[1:], os.getcwd(), os.environ['EINF_CHECKER_PROBE']]), flush=True); "
+        "print(json.dumps([sys.argv[1:], os.getcwd(), os.environ['EINF_CHECKER_PROBE'], sys.prefix]), flush=True); "
         "print('checker stderr', file=sys.stderr, flush=True); "
         f"ctypes.WinDLL('kernel32').ExitProcess(ctypes.c_uint32({exit_code}))"
     )
@@ -353,6 +367,7 @@ def test_windows_launcher_preserves_argv_environment_and_raw_output(
             ["argument with spaces", "한글"],
             str(tmp_path),
             "inherited",
+            sys.prefix,
         ]
         assert completed.stderr == "checker stderr\n"
         assert job.is_empty()
@@ -475,6 +490,8 @@ def test_windows_executor_reaps_owned_descendants(
         child_pid_path = tmp_path / "child.pid"
         grandchild_pid_path = tmp_path / "grandchild.pid"
         release = tmp_path / "release-checker"
+        helper_python = getattr(sys, "_base_executable", None)
+        assert isinstance(helper_python, str) and helper_python
         grandchild = (
             "import os, time; from pathlib import Path; "
             f"Path({str(grandchild_pid_path)!r}).write_text(str(os.getpid())); "
@@ -482,7 +499,7 @@ def test_windows_executor_reaps_owned_descendants(
         )
         child = (
             "import os, subprocess, sys, time; from pathlib import Path; "
-            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+            f"subprocess.Popen([{helper_python!r}, '-c', {grandchild!r}]); "
             f"Path({str(child_pid_path)!r}).write_text(str(os.getpid())); "
             "time.sleep(60)"
         )
@@ -494,7 +511,7 @@ def test_windows_executor_reaps_owned_descendants(
         parent = (
             "import os, subprocess, sys, time\nfrom pathlib import Path\n"
             f"Path({str(parent_pid_path)!r}).write_text(str(os.getpid()))\n"
-            f"subprocess.Popen([sys.executable, '-c', {child!r}]{redirection})\n"
+            f"subprocess.Popen([{helper_python!r}, '-c', {child!r}]{redirection})\n"
             f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
             + ("print('x' * 8192, flush=True)\n" if finish == "overflow" else "")
             + ("time.sleep(60)\n" if not parent_exits else "")

@@ -180,9 +180,18 @@ class WindowsJob(AbstractContextManager["WindowsJob"]):
         -------
         tuple[str, ...]
             Python launcher argv carrying the opaque Job name and checker argv.
+
+        Raises
+        ------
+        OSError
+            If the runtime cannot identify its base interpreter executable.
         """
+        executable = getattr(sys, "_base_executable", None)
+        if not isinstance(executable, str) or not executable:
+            raise OSError("Windows checker launcher requires a base Python executable")
+        # A venv redirector's exit does not prove that its interpreter has exited.
         return (
-            sys.executable,
+            executable,
             "-I",
             "-S",
             str(Path(__file__).resolve()),
