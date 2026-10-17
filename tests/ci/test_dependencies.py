@@ -360,6 +360,12 @@ def test_resolve_bundle_records_complete_evidence_without_refreshing_checkout(
         for path in destination.glob("*.txt")
     }
     assert len(receipt["hashes"]["snapshots"]) == 7
+    assert receipt["hashes"]["inputs"] == {
+        name: hashlib.sha256(
+            (tmp_path / name).read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+        for name in ("pyproject.toml", "tests/ci/dependencies.py")
+    }
     dependencies.validate_bundle(tmp_path, destination)
 
 
@@ -397,7 +403,8 @@ def test_bundle_resolution_refuses_preexisting_destination(tmp_path: Path) -> No
         "source",
         "hashes",
         "receipt",
-        *dependencies.RESOLUTION_INPUTS,
+        "pyproject.toml",
+        "tests/ci/dependencies.py",
         *(f"{profile}.txt" for profile in dependencies.SNAPSHOT_PROFILES),
     ],
 )
@@ -425,7 +432,7 @@ def test_external_bundle_is_rejected_before_preparation_without_fallback(
     else:
         path = (
             tmp_path / damage
-            if damage in dependencies.RESOLUTION_INPUTS
+            if damage in ("pyproject.toml", "tests/ci/dependencies.py")
             else bundle / damage
         )
         path.write_text("changed\n", encoding="utf-8")

@@ -3,9 +3,6 @@ run-name: Latest-compatible dependencies @ ${{ github.sha }}
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [develop]
-    paths: [.github/workflows/release-check.yml]
 
 permissions:
   contents: read
@@ -13,10 +10,6 @@ permissions:
 jobs:
   resolve:
     name: Resolve latest-compatible dependencies
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.head_ref == 'ci/verify-latest-compatible-release' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       requirements-artifact-id: ${{ steps.bundle.outputs.artifact-id }}
