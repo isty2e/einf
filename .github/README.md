@@ -15,9 +15,12 @@ is configured.
 ## Python snapshots
 
 Each CI role uses a hashed requirements snapshot in
-`.github/requirements/`. CI downloads the matching wheels, derives exact
-runtime and build constraints from their metadata, and limits subsequent
-pip installs to that wheelhouse. Missing packages, incompatible ranges,
+`.github/requirements/`. A separate build snapshot pins the tools used
+when a dependency has no wheel for the selected Python version. CI
+assembles wheels from hash-verified distributions in an isolated build
+environment, derives exact runtime and build constraints from their
+metadata, and limits subsequent pip installs to that wheelhouse.
+Missing packages, incompatible ranges,
 and hash mismatches fail the job instead of resolving newer dependencies.
 The package dependency ranges in `pyproject.toml` are unchanged.
 
@@ -35,7 +38,8 @@ ordinary PRs keep using the accepted snapshots.
 
 If an update introduces new transitive dependencies, regenerate the
 snapshots in that PR before merging. The offline checks reject an
-incomplete dependency set.
+incomplete dependency set. New source-build requirements must also be
+added to the build snapshot's inputs in `tests/ci/dependencies.py`.
 
 After changing package requirements or CI roles, refresh the snapshots in
 the same PR. Run from the repository root:

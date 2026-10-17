@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import venv
 from email.parser import Parser
 from pathlib import Path
 from types import MappingProxyType
@@ -32,6 +33,7 @@ PROFILE_TOOLS = MappingProxyType(
     }
 )
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+BUILD_REQUIREMENTS = ("pip>=25.3", "setuptools", "wheel", "Cython")
 
 
 def profile_requirements(root: Path, profile: str) -> tuple[str, ...]:
@@ -72,7 +74,7 @@ def wheel_constraints(wheelhouse: Path) -> dict[str, str]:
     Parameters
     ----------
     wheelhouse : Path
-        Directory containing the role's hash-verified wheels.
+        Prepared wheels, downloaded or built from reviewed inputs.
 
     Returns
     -------
@@ -121,7 +123,7 @@ def wheel_constraints(wheelhouse: Path) -> dict[str, str]:
 def prepare_dependencies(
     root: Path, profile: str, wheelhouse: Path, github_env: Path
 ) -> None:
-    """Download the role's wheels, then activate offline constrained installs.
+    """Assemble the role's wheels, then activate offline constrained installs.
 
     Parameters
     ----------
@@ -141,12 +143,15 @@ def prepare_dependencies(
     ValueError
         Wheel metadata is incomplete or the Torch role is not CPU-only.
     subprocess.CalledProcessError
-        Hash verification, downloading, or installer bootstrapping fails.
+        Hash verification, downloading, building, or bootstrapping fails.
     subprocess.TimeoutExpired
-        Downloading or installer bootstrapping exceeds its deadline.
+        Downloading, building, or installer bootstrapping exceeds its deadline.
     """
     snapshot = root / ".github" / "requirements" / f"{profile}.txt"
+    build_snapshot = root / ".github" / "requirements" / "build.txt"
     wheelhouse.mkdir(parents=True, exist_ok=False)
+    build_wheels = wheelhouse / "build-wheels"
+    build_wheels.mkdir()
     subprocess.run(
         [
             sys.executable,
@@ -158,10 +163,61 @@ def prepare_dependencies(
             "--only-binary=:all:",
             "--no-deps",
             "--dest",
+            str(build_wheels),
+            "--requirement",
+            str(build_snapshot),
+        ],
+        check=True,
+        timeout=600,
+    )
+    wheel_constraints(build_wheels)
+    build_directory = wheelhouse / "build-environment"
+    venv.EnvBuilder(with_pip=True).create(build_directory)
+    build_python = build_directory / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    build_environment = {
+        **os.environ,
+        "PIP_NO_INDEX": "1",
+        "PIP_FIND_LINKS": build_wheels.resolve().as_uri(),
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_CACHE_DIR": "1",
+    }
+    subprocess.run(
+        [
+            str(build_python),
+            "-m",
+            "pip",
+            "install",
+            "--ignore-installed",
+            "--require-hashes",
+            "-r",
+            str(build_snapshot),
+        ],
+        env=build_environment,
+        check=True,
+        timeout=120,
+    )
+    subprocess.run(
+        [
+            str(build_python),
+            "-m",
+            "pip",
+            "wheel",
+            "--require-hashes",
+            "--no-deps",
+            "--no-build-isolation",
+            "--check-build-dependencies",
+            "--wheel-dir",
             str(wheelhouse),
             "--requirement",
             str(snapshot),
         ],
+        env={
+            **os.environ,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_CACHE_DIR": "1",
+        },
         check=True,
         timeout=600,
     )
@@ -183,7 +239,15 @@ def prepare_dependencies(
         "PIP_NO_CACHE_DIR": "1",
     }
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--ignore-installed",
+            "--upgrade",
+            "pip",
+        ],
         env={**os.environ, **environment},
         check=True,
         timeout=120,
@@ -212,10 +276,15 @@ def refresh_snapshots(root: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
-        for profile in PROFILE_EXTRAS:
+        for profile in ("build", *PROFILE_EXTRAS):
             requirements = directory / f"{profile}.in"
+            specifiers = (
+                BUILD_REQUIREMENTS
+                if profile == "build"
+                else profile_requirements(root, profile)
+            )
             requirements.write_text(
-                "\n".join(profile_requirements(root, profile)) + "\n",
+                "\n".join(specifiers) + "\n",
                 encoding="utf-8",
             )
             snapshot = directory / f"{profile}.txt"

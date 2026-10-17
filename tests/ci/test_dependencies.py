@@ -1,4 +1,5 @@
 import subprocess
+import venv
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
@@ -122,7 +123,16 @@ def test_wheel_constraints_require_pinned_installer(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "download", "bootstrap", "metadata", "non_cpu"]
+    "failure",
+    [
+        None,
+        "download",
+        "build_bootstrap",
+        "assembly",
+        "bootstrap",
+        "metadata",
+        "non_cpu",
+    ],
 )
 def test_preparation_activates_only_verified_complete_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
@@ -146,8 +156,19 @@ def test_preparation_activates_only_verified_complete_environment(
             assert "--require-hashes" in command
             assert "--only-binary=:all:" in command
             assert "--no-deps" in command
-            assert command[-1].endswith("torch.txt")
+            assert command[-1].endswith("build.txt")
             if failure == "download":
+                raise subprocess.CalledProcessError(1, command)
+
+            build_wheels = Path(command[command.index("--dest") + 1])
+            _write_wheel(build_wheels, "pip", "26.2.1")
+        elif "wheel" in command:
+            assert Path(command[0]).is_relative_to(wheelhouse / "build-environment")
+            assert "--require-hashes" in command
+            assert "--no-build-isolation" in command
+            assert "--check-build-dependencies" in command
+            assert command[-1].endswith("torch.txt")
+            if failure == "assembly":
                 raise subprocess.CalledProcessError(1, command)
 
             _write_wheel(wheelhouse, "pip", "26.2.1")
@@ -161,17 +182,32 @@ def test_preparation_activates_only_verified_complete_environment(
                 (wheelhouse / "broken.whl").write_bytes(b"invalid zip")
         else:
             assert env is not None
-            bootstrap_environments.append(env)
             assert github_env.read_text() == "EXISTING=kept\n"
-            if failure == "bootstrap":
-                raise subprocess.CalledProcessError(1, command)
+            assert env["PIP_NO_INDEX"] == "1"
+            if "--require-hashes" in command:
+                assert Path(command[0]).is_relative_to(wheelhouse / "build-environment")
+                if failure == "build_bootstrap":
+                    raise subprocess.CalledProcessError(1, command)
+            else:
+                assert command[0] == dependencies.sys.executable
+                bootstrap_environments.append(env)
+                if failure == "bootstrap":
+                    raise subprocess.CalledProcessError(1, command)
 
         return subprocess.CompletedProcess(command, 0)
 
+    def create(builder: venv.EnvBuilder, directory: Path) -> None:
+        assert builder.with_pip
+        assert not builder.system_site_packages
+        assert directory == wheelhouse / "build-environment"
+
     monkeypatch.setattr(dependencies.subprocess, "run", run)
+    monkeypatch.setattr(dependencies.venv.EnvBuilder, "create", create)
     if failure is not None:
         expected, message = {
             "download": (subprocess.CalledProcessError, "non-zero exit status"),
+            "build_bootstrap": (subprocess.CalledProcessError, "non-zero exit status"),
+            "assembly": (subprocess.CalledProcessError, "non-zero exit status"),
             "bootstrap": (subprocess.CalledProcessError, "non-zero exit status"),
             "metadata": (BadZipFile, "not a zip file"),
             "non_cpu": (ValueError, "CPU-only torch"),
@@ -184,7 +220,7 @@ def test_preparation_activates_only_verified_complete_environment(
 
     dependencies.prepare_dependencies(tmp_path, "torch", wheelhouse, github_env)
 
-    assert len(commands) == 2
+    assert len(commands) == 4
     constraints = wheelhouse / "constraints.txt"
     assert constraints.read_text() == "pip==26.2.1\ntorch==2.14.1+cpu\n"
     assert len(bootstrap_environments) == 1
@@ -220,13 +256,20 @@ def test_refresh_uses_universal_snapshots_except_the_existing_cpu_torch_role(
     ) -> subprocess.CompletedProcess[str]:
         assert check and timeout > 0
         commands.append(command)
+        if Path(command[3]).stem == "build":
+            assert set(Path(command[3]).read_text().splitlines()) == {
+                "pip>=25.3",
+                "setuptools",
+                "wheel",
+                "Cython",
+            }
         Path(command[command.index("--output-file") + 1]).write_text("pip==26.2.1\n")
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(dependencies.subprocess, "run", run)
     dependencies.refresh_snapshots(tmp_path)
 
-    assert len(commands) == 6
+    assert len(commands) == 7
     for command in commands:
         profile = Path(command[3]).stem
         content = (tmp_path / ".github" / "requirements" / f"{profile}.txt").read_text()
