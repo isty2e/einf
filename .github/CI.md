@@ -67,8 +67,7 @@ same 13 checks, including the supported Python matrix, optional LSP and
 Torch environments, actual checker executables, and installed artifacts.
 It does not update the committed snapshots or publish a package.
 
-The workflow must be present on the default branch before GitHub allows
-manual dispatch. With the GitHub CLI, for example:
+With the GitHub CLI, for example:
 
 ```sh
 gh workflow run release-check.yml --ref develop
