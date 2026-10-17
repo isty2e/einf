@@ -183,6 +183,19 @@ cancellation, `checkerCleanupTimeoutSeconds` limits how long the sidecar waits
 for process and pipe cleanup. `checkerMaxConcurrency` limits checker processes
 across documents and tools. On POSIX systems, the sidecar starts each checker
 in its own process group and terminates that group on timeout or cancellation.
+On Windows, a small standard-library Python launcher joins an owned Job before
+starting the checker. The sidecar terminates the Job, reaps the launcher, and
+checks that the Job is empty within the cleanup deadline. Remaining helpers are
+also terminated after a checker finishes normally. Job setup failures are
+reported rather than falling back to an unowned process.
+
+The Windows launcher adds one Python process per active checker run. It does
+not import `einf` or load site initialization, but still adds interpreter startup
+and memory overhead. This affects external checker runs, not `einf` semantic
+analysis or tensor operations. The concurrency limit counts checker runs, not
+every descendant process. Job containment is not a security sandbox for work
+delegated to external services.
+
 Saving or closing a newer document generation cancels obsolete checker work
 before its results can be published.
 

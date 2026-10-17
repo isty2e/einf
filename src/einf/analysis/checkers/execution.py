@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import math
 import os
 import shutil
 import signal
+from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from einf.analysis.checkers.base import (
     CheckerAdapter,
@@ -18,6 +22,9 @@ from einf.analysis.checkers.model import (
     CheckerRequest,
     CheckerResult,
 )
+
+if TYPE_CHECKING:
+    from einf.analysis.checkers.windows_job import WindowsJob
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -155,6 +162,36 @@ class CheckerExecutor:
 
         command = adapter.build_command(request)
         try:
+            if os.name == "nt":
+                from einf.analysis.checkers.windows_job import WindowsJob
+
+                scope = WindowsJob()
+            else:
+                scope = nullcontext()
+        except OSError as error:
+            return _failure_result(
+                CheckerFailure(
+                    tool=adapter.name, kind="spawn_error", message=str(error)
+                )
+            )
+
+        with scope as windows_job:
+            return await self._run_process(
+                adapter=adapter,
+                request=request,
+                command=command,
+                windows_job=windows_job,
+            )
+
+    async def _run_process(
+        self,
+        *,
+        adapter: CheckerAdapter,
+        request: CheckerRequest,
+        command: tuple[str, ...],
+        windows_job: WindowsJob | None,
+    ) -> CheckerResult:
+        try:
             if os.name == "posix":
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -166,7 +203,7 @@ class CheckerExecutor:
                 process_group_id = process.pid
             else:
                 process = await asyncio.create_subprocess_exec(
-                    *command,
+                    *(windows_job.launch_command(command) if windows_job else command),
                     cwd=request.project_root,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -197,6 +234,7 @@ class CheckerExecutor:
                 process,
                 communication,
                 process_group_id=process_group_id,
+                windows_job=windows_job,
                 timeout_seconds=self._policy.cleanup_timeout_seconds,
             )
             message = (
@@ -219,6 +257,7 @@ class CheckerExecutor:
                 process,
                 communication,
                 process_group_id=process_group_id,
+                windows_job=windows_job,
                 timeout_seconds=self._policy.cleanup_timeout_seconds,
             )
             if not cleanup_completed:
@@ -233,6 +272,7 @@ class CheckerExecutor:
                 process,
                 communication,
                 process_group_id=process_group_id,
+                windows_job=windows_job,
                 timeout_seconds=self._policy.cleanup_timeout_seconds,
             )
             message = str(error)
@@ -254,6 +294,7 @@ class CheckerExecutor:
                 process,
                 communication,
                 process_group_id=process_group_id,
+                windows_job=windows_job,
                 timeout_seconds=self._policy.cleanup_timeout_seconds,
             )
             message = (
@@ -271,6 +312,35 @@ class CheckerExecutor:
                     message=message,
                 )
             )
+
+        if windows_job is not None:
+            cleanup_completed = await _kill_and_reap(
+                process,
+                communication,
+                process_group_id=None,
+                windows_job=windows_job,
+                timeout_seconds=self._policy.cleanup_timeout_seconds,
+            )
+            if not cleanup_completed:
+                return _failure_result(
+                    CheckerFailure(
+                        tool=adapter.name,
+                        kind="execution_error",
+                        message=(
+                            "Windows checker process cleanup did not complete within "
+                            f"{self._policy.cleanup_timeout_seconds:g} seconds"
+                        ),
+                    )
+                )
+            if not windows_job.checker_started():
+                return _failure_result(
+                    CheckerFailure(
+                        tool=adapter.name,
+                        kind="spawn_error",
+                        message=_decode_output(stderr_bytes).strip()
+                        or "Windows checker launcher exited before starting the checker",
+                    )
+                )
 
         if adapter_supports_limits(adapter.normalize_output):
             result = adapter.normalize_output(
@@ -425,6 +495,7 @@ async def _kill_and_reap(
     communication: asyncio.Task[object],
     *,
     process_group_id: int | None,
+    windows_job: WindowsJob | None,
     timeout_seconds: float,
 ) -> bool:
     cleanup = asyncio.create_task(
@@ -432,6 +503,7 @@ async def _kill_and_reap(
             process,
             communication,
             process_group_id=process_group_id,
+            windows_job=windows_job,
             timeout_seconds=timeout_seconds,
         )
     )
@@ -443,6 +515,11 @@ async def _kill_and_reap(
             cancellation = error
     cleanup_completed = await cleanup
     if cancellation is not None:
+        if not cleanup_completed:
+            _LOGGER.warning(
+                "checker process cleanup did not complete within %g seconds",
+                timeout_seconds,
+            )
         raise cancellation
     return cleanup_completed
 
@@ -452,38 +529,60 @@ async def _kill_and_wait(
     communication: asyncio.Task[object],
     *,
     process_group_id: int | None,
+    windows_job: WindowsJob | None,
     timeout_seconds: float,
 ) -> bool:
     termination_succeeded = _terminate_process_scope(
         process,
         process_group_id=process_group_id,
+        windows_job=windows_job,
     )
     transport_close_succeeded = _close_process_transport(process)
     process_wait = asyncio.create_task(process.wait())
+    waits: set[asyncio.Task[object]] = {communication, process_wait}
+    scope_wait = None
+    if windows_job is not None:
+        scope_wait = asyncio.create_task(
+            _wait_for_windows_job(process_wait, windows_job)
+        )
+        waits.add(scope_wait)
     done, pending = await asyncio.wait(
-        {communication, process_wait},
+        waits,
         timeout=timeout_seconds,
     )
     if communication in done:
         _consume_task_exception(communication)
     if process_wait in done:
         _consume_task_exception(process_wait)
+    scope_completed = scope_wait is None
+    if scope_wait in done:
+        scope_completed = not scope_wait.cancelled() and scope_wait.exception() is None
     if not pending:
         if not termination_succeeded:
             termination_succeeded = _terminate_process_scope(
                 process,
                 process_group_id=process_group_id,
+                windows_job=windows_job,
             )
-        return termination_succeeded and transport_close_succeeded
+        return termination_succeeded and transport_close_succeeded and scope_completed
 
-    _terminate_process_scope(process, process_group_id=process_group_id)
-    if communication in pending:
-        communication.add_done_callback(_consume_task_exception)
-        communication.cancel()
-    if process_wait in pending:
-        process_wait.add_done_callback(_consume_task_exception)
-        process_wait.cancel()
+    _terminate_process_scope(
+        process, process_group_id=process_group_id, windows_job=windows_job
+    )
+    for task in pending:
+        task.add_done_callback(_consume_task_exception)
+        task.cancel()
     return False
+
+
+async def _wait_for_windows_job(
+    process_wait: asyncio.Task[int], windows_job: WindowsJob
+) -> None:
+    await asyncio.shield(process_wait)
+    # A bootstrap may have joined just as the first termination request arrived.
+    windows_job.terminate()
+    while not windows_job.is_empty():
+        await asyncio.sleep(0.01)
 
 
 def _close_process_transport(process: asyncio.subprocess.Process) -> bool:
@@ -502,8 +601,14 @@ def _terminate_process_scope(
     process: asyncio.subprocess.Process,
     *,
     process_group_id: int | None,
+    windows_job: WindowsJob | None,
 ) -> bool:
     scope_terminated = process_group_id is None
+    if windows_job is not None:
+        try:
+            windows_job.terminate()
+        except OSError:
+            scope_terminated = False
     if process_group_id is not None:
         try:
             os.killpg(process_group_id, signal.SIGKILL)

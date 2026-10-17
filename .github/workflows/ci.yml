@@ -135,6 +135,64 @@ jobs:
           assert all(int(suite.attrib["skipped"]) == 0 for suite in suites)
           PY
 
+  windows-checkers:
+    name: windows-checkers (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build and install wheel
+        run: |
+          python -m pip install build pytest pyrefly
+          python -m build --wheel
+          python -m pip install (Get-ChildItem dist/*.whl).FullName
+      - name: Typecheck Windows checker boundary
+        run: >-
+          pyrefly check --python-interpreter-path (Get-Command python).Source
+          src/einf/analysis/checkers/windows_job.py
+          src/einf/analysis/checkers/execution.py
+          tests/analysis/test_windows_checker_job.py
+      - name: Exercise installed wheel launcher
+        shell: python
+        run: |
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from einf.analysis.checkers.windows_job import WindowsJob
+          import einf.analysis.checkers.windows_job as module
+
+          assert Path(module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          with WindowsJob() as job:
+              completed = subprocess.run(
+                  job.launch_command((sys.executable, "-I", "-S", "-c", "print('installed')")),
+                  capture_output=True, check=True, timeout=15,
+              )
+              assert completed.stdout.strip() == b"installed"
+              assert job.checker_started() and job.is_empty()
+      - name: Test Windows process ownership
+        run: >-
+          python -m pytest
+          tests/analysis/test_windows_checker_job.py
+          tests/analysis/test_checker_execution.py::test_checker_executor_normalizes_spawn_failure
+          --junitxml=windows-checker-contracts.xml
+      - name: Reject skipped native checks
+        shell: python
+        run: |
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse("windows-checker-contracts.xml").getroot().findall("testsuite")
+          assert suites and sum(int(suite.attrib["tests"]) for suite in suites) > 0
+          assert all(int(suite.attrib["skipped"]) == 0 for suite in suites)
+
   lsp:
     name: lsp-extra
     runs-on: ubuntu-latest
