@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import signal
+import sys
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -609,7 +610,7 @@ def _terminate_process_scope(
             windows_job.terminate()
         except OSError:
             scope_terminated = False
-    if process_group_id is not None:
+    if process_group_id is not None and sys.platform != "win32":
         try:
             os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:

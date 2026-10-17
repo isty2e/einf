@@ -318,7 +318,8 @@ def _main() -> int:
         finally:
             if not kernel32.CloseHandle(event):
                 raise _win_error()
-        return process.wait()
+        # SystemExit must fit Windows' signed C long without losing DWORD bits.
+        return ctypes.c_int32(process.wait()).value
     except (OSError, IndexError) as error:
         print(f"Windows checker launcher failed: {error}", file=sys.stderr)
         return 2

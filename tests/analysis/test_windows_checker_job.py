@@ -322,16 +322,16 @@ def test_repeated_windows_cancellation_waits_for_scope_cleanup(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows Job integration")
-@pytest.mark.parametrize("exit_code", [0, 1, 7])
+@pytest.mark.parametrize("exit_code", [0, 1, 7, 0xC0000005])
 def test_windows_launcher_preserves_argv_environment_and_raw_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int
 ) -> None:
     monkeypatch.setenv("EINF_CHECKER_PROBE", "inherited")
     script = (
-        "import json, os, sys; "
-        "print(json.dumps([sys.argv[1:], os.getcwd(), os.environ['EINF_CHECKER_PROBE']])); "
-        "print('checker stderr', file=sys.stderr); "
-        f"raise SystemExit({exit_code})"
+        "import ctypes, json, os, sys; "
+        "print(json.dumps([sys.argv[1:], os.getcwd(), os.environ['EINF_CHECKER_PROBE']]), flush=True); "
+        "print('checker stderr', file=sys.stderr, flush=True); "
+        f"ctypes.WinDLL('kernel32').ExitProcess(ctypes.c_uint32({exit_code}))"
     )
     with WindowsJob() as job:
         completed = subprocess.run(
