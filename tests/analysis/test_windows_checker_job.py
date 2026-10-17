@@ -441,11 +441,12 @@ class _WindowsProcessProbe(AbstractContextManager["_WindowsProcessProbe"]):
     ) -> Literal[False]:
         try:
             if not self.has_exited():
-                if not self.kernel.TerminateProcess(self.handle, 1):
-                    error = windows_job._win_error()
-                    if not self.has_exited():
-                        raise error
-                assert self.kernel.WaitForSingleObject(self.handle, 5000) == 0
+                terminated = self.kernel.TerminateProcess(self.handle, 1)
+                error = None if terminated else windows_job._win_error()
+                exited = self.kernel.WaitForSingleObject(self.handle, 5000) == 0
+                if not exited and error is not None:
+                    raise error
+                assert exited, "probe process did not exit within five seconds"
         finally:
             assert self.kernel.CloseHandle(self.handle)
         return False
@@ -541,6 +542,8 @@ def test_windows_executor_reaps_owned_descendants(
                         assert (
                             "cleanup did not complete" not in result.failures[0].message
                         )
+                await child_probe.wait_exited()
+                await grandchild_probe.wait_exited()
                 assert checker.has_exited()
                 assert child_probe.has_exited()
                 assert grandchild_probe.has_exited()
