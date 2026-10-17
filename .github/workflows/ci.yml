@@ -22,10 +22,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare base
       - name: Install base test environment
         run: |
           python -m venv .venv-base
-          .venv-base/bin/python -m pip install -e . pytest
+          .venv-base/bin/python -m pip install --upgrade pip
+          .venv-base/bin/python -m pip install --ignore-installed -e . pytest
       - name: Test without optional dependencies
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
@@ -76,11 +79,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare core
       - name: Check VCS checkout completeness
         run: python tests/package/verify_vcs_history.py
       - name: Install
         run: |
-          python -m pip install -e ".[dev,analysis,docs]"
+          python -m pip install --ignore-installed -e ".[dev,analysis,docs]"
           python -c "import array_api_strict; import libcst; import numpy"
       - name: Lint
         run: ruff check .
@@ -111,8 +116,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare checkers
       - name: Install checker integration environment
-        run: python -m pip install -e ".[dev]" pyright zuban
+        run: python -m pip install --ignore-installed -e ".[dev]" pyright zuban
       - name: Verify checker executables
         run: |
           python - <<'PY'
@@ -160,9 +167,11 @@ jobs:
         run: |
           python -m venv .venv-windows-checkers
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:GITHUB_WORKSPACE '.venv-windows-checkers\Scripts')
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare windows
       - name: Build and install wheel
         run: |
-          python -m pip install build pytest pyrefly
+          python -m pip install --ignore-installed build pytest pyrefly
           python -m build --wheel
           python -m pip install (Get-ChildItem dist/*.whl).FullName
       - name: Typecheck Windows checker boundary
@@ -214,8 +223,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare lsp
       - name: Install
-        run: python -m pip install -e ".[dev,analysis,lsp]"
+        run: python -m pip install --ignore-installed -e ".[dev,analysis,lsp]"
       - name: Typecheck optional LSP transport
         run: >-
           pyrefly check
@@ -254,10 +265,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Prepare fixed dependencies
+        run: python tests/ci/dependencies.py prepare torch
       - name: Install
-        run: |
-          python -m pip install -e ".[dev,analysis,lsp]"
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: python -m pip install --ignore-installed -e ".[dev,analysis,lsp]" torch
 
       - name: Typecheck repository with optional dependencies
         run: >-
