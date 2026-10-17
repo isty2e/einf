@@ -1,6 +1,13 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      requirements-artifact-id:
+        description: Immutable artifact ID of a fresh dependency bundle from this run.
+        required: true
+        type: string
+
   pull_request:
   push:
     branches:
@@ -22,8 +29,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare base
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare base
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Install base test environment
         run: |
           python -m venv .venv-base
@@ -79,8 +95,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare core
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare core
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Check VCS checkout completeness
         run: python tests/package/verify_vcs_history.py
       - name: Install
@@ -116,8 +141,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare checkers
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare checkers
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Install checker integration environment
         run: python -m pip install --ignore-installed -e ".[dev]" pyright zuban
       - name: Verify checker executables
@@ -167,8 +201,17 @@ jobs:
         run: |
           python -m venv .venv-windows-checkers
           Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:GITHUB_WORKSPACE '.venv-windows-checkers\Scripts')
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare windows
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare windows
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Build and install wheel
         run: |
           python -m pip install --ignore-installed build pytest pyrefly
@@ -223,8 +266,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare lsp
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare lsp
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Install
         run: python -m pip install --ignore-installed -e ".[dev,analysis,lsp]"
       - name: Typecheck optional LSP transport
@@ -265,8 +317,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Prepare fixed dependencies
-        run: python tests/ci/dependencies.py prepare torch
+      - name: Download release dependency bundle
+        if: inputs.requirements-artifact-id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.requirements-artifact-id }}
+          path: ${{ runner.temp }}/einf-ci-requirements
+          merge-multiple: true
+      - name: Prepare dependencies
+        run: >-
+          python tests/ci/dependencies.py prepare torch
+          ${{ inputs.requirements-artifact-id && format('--bundle "{0}/einf-ci-requirements"', runner.temp) || '' }}
       - name: Install
         run: python -m pip install --ignore-installed -e ".[dev,analysis,lsp]" torch
 
